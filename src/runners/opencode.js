@@ -1,11 +1,17 @@
 'use strict';
 
 const http = require('http');
+const path = require('path');
 const { spawn, execFileSync } = require('child_process');
 
 const SERVER_PORT = 4096;
 const SERVER_URL = `http://localhost:${SERVER_PORT}`;
 const PROBE_URL = `http://127.0.0.1:${SERVER_PORT}/`;
+const EXECUTOR_URL = process.env.LOOPARR_EXECUTOR_URL
+  ? String(process.env.LOOPARR_EXECUTOR_URL).replace(/\/+$/, '')
+  : null;
+const EXECUTOR_TOKEN = process.env.LOOPARR_EXECUTOR_TOKEN || '';
+const BRIDGE_CLIENT = path.join(__dirname, '..', '..', 'scripts', 'bridge-client.js');
 
 let attachFlag = null;
 let serverPromise = null;
@@ -47,6 +53,7 @@ function getAttachFlag() {
 }
 
 async function ensureServer() {
+  if (EXECUTOR_URL) return null;
   if (await probe()) return SERVER_URL;
   if (!serverPromise) {
     serverPromise = (async () => {
@@ -77,6 +84,22 @@ async function ensureServer() {
 }
 
 function buildCommand({ prompt, cwd, url = SERVER_URL, files = [] }) {
+  if (EXECUTOR_URL) {
+    return {
+      command: process.execPath,
+      args: [BRIDGE_CLIENT],
+      options: {
+        cwd,
+        env: {
+          ...process.env,
+          LOOPARR_EXECUTOR_URL: EXECUTOR_URL,
+          LOOPARR_EXECUTOR_TOKEN: EXECUTOR_TOKEN,
+          LOOPARR_TASK_PAYLOAD: JSON.stringify({ prompt, cwd, files, url })
+        },
+        shell: false
+      }
+    };
+  }
   const args = ['run', getAttachFlag(), url, '--auto'];
   for (const file of files) {
     if (file) args.push('--file', file);
@@ -103,7 +126,9 @@ function shutdown() {
 module.exports = {
   id: 'opencode',
   label: 'OpenCode',
-  description: 'Shared opencode serve on port 4096; fresh opencode run per step.',
+  description: EXECUTOR_URL
+    ? 'Host-side opencode executor via HTTP bridge; fresh opencode run per step.'
+    : 'Shared opencode serve on port 4096; fresh opencode run per step.',
   ensureServer,
   buildCommand,
   isRateLimit,

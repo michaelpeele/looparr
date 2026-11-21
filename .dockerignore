@@ -1,0 +1,10 @@
+node_modules
+.git
+.env
+config.json
+data/
+looparr-tailscale-data/
+*.log
+logs/
+.project_documents/
+serve.json

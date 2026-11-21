@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const CONFIG_PATH = path.join(__dirname, '..', 'config.json');
+const CONFIG_PATH = path.resolve(process.env.CONFIG_PATH || path.join(__dirname, '..', 'config.json'));
 
 const DEFAULT_SETTINGS = {
   maxConcurrent: 2,
