@@ -849,7 +849,11 @@
       if (!ok) return;
     }
     try {
-      await api(`/api/projects/${encodeURIComponent(project.id)}/${action}`, { method: 'POST' });
+      if (action === 'remove') {
+        await api(`/api/projects/${encodeURIComponent(project.id)}`, { method: 'DELETE' });
+      } else {
+        await api(`/api/projects/${encodeURIComponent(project.id)}/${action}`, { method: 'POST' });
+      }
     } catch (error) {
       flashCard(card, error.message);
     }
