@@ -314,6 +314,8 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(appSource, 'Drag to reorder task', 'app drag label');
   assertIncludes(appSource, '☰', 'app drag icon');
   assertIncludes(appSource, 'data-action="move-top"', 'app move-top action');
+  assertIncludes(appSource, 'data-action="move-up"', 'app move-up action');
+  assertIncludes(appSource, 'data-action="move-down"', 'app move-down action');
   assertIncludes(appSource, 'data-action="move-bottom"', 'app move-bottom action');
   assertIncludes(appSource, '⇈', 'app move-top icon');
   assertIncludes(appSource, '⇊', 'app move-bottom icon');
@@ -340,6 +342,17 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(appSource, 'data-action="save-task"', 'app save task action');
   assertIncludes(appSource, 'data-action="remove-task"', 'app remove task action');
   assertIncludes(appSource, 'class="task-actions"', 'app task action group');
+  assertIncludes(appSource, 'class="task-controls"', 'app grouped task controls wrapper');
+  const labelMarkupStart = appSource.indexOf('<div class="check-label">');
+  const controlsMarkupStart = appSource.indexOf('<div class="task-controls">');
+  const dragMarkupStart = appSource.indexOf('data-action="drag"');
+  const moveMarkupStart = appSource.indexOf('<div class="task-move">');
+  const actionsMarkupStart = appSource.indexOf('<div class="task-actions">');
+  assert.ok(
+    labelMarkupStart > 0 && controlsMarkupStart > labelMarkupStart && dragMarkupStart > controlsMarkupStart
+      && moveMarkupStart > dragMarkupStart && actionsMarkupStart > moveMarkupStart,
+    'app task controls wrapper follows the label and groups drag, move and actions in order'
+  );
   assertIncludes(appSource, 'save-task-button', 'app save task button class');
   assertIncludes(appSource, 'remove-task-button', 'app remove task button class');
   assertIncludes(appSource, 'task-edit-input', 'app edit input class');
@@ -377,6 +390,21 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(cssSource, '.remove-task-button', 'css remove button');
   assertIncludes(cssSource, '.task-edit-input', 'css edit input');
   assertIncludes(cssSource, ':focus-visible', 'css focus outline');
+  assertIncludes(cssSource, '.task-controls', 'css grouped task controls');
+  assertIncludes(cssSource, '@media (max-width: 900px)', 'css narrow breakpoint');
+  const cssNarrowStart = cssSource.indexOf('@media (max-width: 900px)');
+  const cssNarrowEnd = cssSource.indexOf('@media (max-width: 640px)');
+  const cssNarrow = cssSource.slice(cssNarrowStart, cssNarrowEnd);
+  assertIncludes(cssNarrow, '.check-item { flex-wrap: wrap; gap: 6px 4px; }', 'css narrow checklist wrapping');
+  assertIncludes(cssNarrow, '.check-label { flex: 1 1 100%; min-width: 0; }', 'css narrow full-width label');
+  assertIncludes(cssNarrow, '.task-controls { flex: 1 1 100%; flex-wrap: wrap; justify-content: flex-start; gap: 4px; }', 'css narrow controls wrapping rule');
+  assertIncludes(cssNarrow, '.task-controls .move-button, .task-controls .drag-handle, .task-controls .icon-button { width: 44px; height: 44px; }', 'css narrow 44x44 controls rule');
+  const cssNarrowestStart = cssSource.indexOf('@media (max-width: 520px)');
+  const cssNarrowestEnd = cssSource.indexOf('@media (min-width: 901px)');
+  const cssNarrowest = cssSource.slice(cssNarrowestStart, cssNarrowestEnd);
+  assert.ok(!/\.task-move\s*\{[^}]*flex:\s*1 1 100%/.test(cssNarrowest), 'css 520px must not force the move group onto its own line');
+  assert.ok(!/\.task-actions\s*\{[^}]*flex:\s*1 1 100%/.test(cssNarrowest), 'css 520px must not force the actions group onto its own line');
+  assert.ok(!/\.check-label\s*\{[^}]*flex:\s*1 1 calc\(100% - 52px\)/.test(cssNarrowest), 'css 520px must not narrow the label beside the handle');
 
   assertIncludes(indexHtml, 'class="view" data-view', 'index view wrapper');
   assertIncludes(indexHtml, 'data-view="projects"', 'index projects view');

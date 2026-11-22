@@ -686,6 +686,7 @@ input[type="number"] { max-width: 130px; }
 .task-edit-input:disabled { opacity: 0.55; cursor: not-allowed; }
 .task-actions { display: flex; gap: 4px; flex: 0 0 auto; }
 .task-move { display: flex; gap: 4px; flex: 0 0 auto; }
+.task-controls { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
 .move-button {
   border: 1px solid var(--border-soft);
   background: #111b2c;
@@ -800,6 +801,10 @@ body.plan-dragging .checklist { cursor: grabbing; }
   .settings-bar .button, .add-bar .button, .env-settings-actions .button { width: 100%; }
   .env-settings-fields { grid-template-columns: 1fr; }
   .env-settings-actions { justify-content: stretch; flex-direction: column; align-items: stretch; }
+  .check-item { flex-wrap: wrap; gap: 6px 4px; }
+  .check-label { flex: 1 1 100%; min-width: 0; }
+  .task-controls { flex: 1 1 100%; flex-wrap: wrap; justify-content: flex-start; gap: 4px; }
+  .task-controls .move-button, .task-controls .drag-handle, .task-controls .icon-button { width: 44px; height: 44px; }
 }
 
 @media (max-width: 640px) {
@@ -828,9 +833,6 @@ body.plan-dragging .checklist { cursor: grabbing; }
   .section-toggle { min-height: 44px; }
   .toggle-completed { min-height: 44px; }
   .check-item { flex-wrap: wrap; }
-  .check-label { flex: 1 1 calc(100% - 52px); }
-  .task-move { flex: 1 1 100%; flex-wrap: wrap; justify-content: flex-end; }
-  .task-actions { flex: 1 1 100%; justify-content: flex-end; }
   .task-actions .icon-button { width: 44px; height: 44px; }
   .task-edit-input { min-height: 44px; }
   .move-button, .drag-handle { width: 44px; height: 44px; }

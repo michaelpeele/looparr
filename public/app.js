@@ -1685,24 +1685,26 @@
         : '';
       return `
       <div class="check-item${task.checked ? ' checked' : ''}" data-task-index="${taskIndex}">
-        <button class="move-button drag-handle" type="button" data-action="drag" data-task-index="${taskIndex}" title="Drag to reorder task" aria-label="Drag to reorder task">☰</button>
         <div class="check-label">
           <input type="checkbox" data-index="${task.index}" ${task.checked ? 'checked' : ''}>
           <span class="check-index">${task.index + 1}</span>
           ${taskText}
           ${depsMarkup}
         </div>
-        <div class="task-move">
-          <button class="move-button" type="button" data-action="move-top" data-task-index="${taskIndex}" ${taskIndex === 0 ? 'disabled' : ''} aria-label="Move task to top">⇈</button>
-          <button class="move-button" type="button" data-action="move-up" data-task-index="${taskIndex}" ${taskIndex === 0 ? 'disabled' : ''} aria-label="Move task up">↑</button>
-          <button class="move-button" type="button" data-action="move-down" data-task-index="${taskIndex}" ${taskIndex === lastIndex ? 'disabled' : ''} aria-label="Move task down">↓</button>
-          <button class="move-button" type="button" data-action="move-bottom" data-task-index="${taskIndex}" ${taskIndex === lastIndex ? 'disabled' : ''} aria-label="Move task to bottom">⇊</button>
-        </div>
-        <div class="task-actions">
-          ${editing
-            ? `<button class="icon-button save-task-button" type="button" data-action="save-task" data-task-index="${taskIndex}" aria-label="Save task" title="Save task">💾</button>`
-            : `<button class="icon-button edit-task-button" type="button" data-action="edit-task" data-task-index="${taskIndex}" aria-label="Edit task" title="Edit task">✎</button>`}
-          <button class="icon-button remove-task-button" type="button" data-action="remove-task" data-task-index="${taskIndex}" aria-label="Delete task" title="Delete task">✕</button>
+        <div class="task-controls">
+          <button class="move-button drag-handle" type="button" data-action="drag" data-task-index="${taskIndex}" title="Drag to reorder task" aria-label="Drag to reorder task">☰</button>
+          <div class="task-move">
+            <button class="move-button" type="button" data-action="move-top" data-task-index="${taskIndex}" ${taskIndex === 0 ? 'disabled' : ''} aria-label="Move task to top">⇈</button>
+            <button class="move-button" type="button" data-action="move-up" data-task-index="${taskIndex}" ${taskIndex === 0 ? 'disabled' : ''} aria-label="Move task up">↑</button>
+            <button class="move-button" type="button" data-action="move-down" data-task-index="${taskIndex}" ${taskIndex === lastIndex ? 'disabled' : ''} aria-label="Move task down">↓</button>
+            <button class="move-button" type="button" data-action="move-bottom" data-task-index="${taskIndex}" ${taskIndex === lastIndex ? 'disabled' : ''} aria-label="Move task to bottom">⇊</button>
+          </div>
+          <div class="task-actions">
+            ${editing
+              ? `<button class="icon-button save-task-button" type="button" data-action="save-task" data-task-index="${taskIndex}" aria-label="Save task" title="Save task">💾</button>`
+              : `<button class="icon-button edit-task-button" type="button" data-action="edit-task" data-task-index="${taskIndex}" aria-label="Edit task" title="Edit task">✎</button>`}
+            <button class="icon-button remove-task-button" type="button" data-action="remove-task" data-task-index="${taskIndex}" aria-label="Delete task" title="Delete task">✕</button>
+          </div>
         </div>
       </div>`;
     }).join('');

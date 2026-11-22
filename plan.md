@@ -15,7 +15,7 @@ Stale production assets have shipped three times. For every batch that changes s
 - [x] The previously worked task "Hide completed should be the default task", appeared to launch another session when looparr prod was restarted, verify and correct.
 - [x] When a task finishes it is marking the plan completed too early and looparr shows the project current item as “idle press start" verbiage instead of task it is working on. It does show when it moves to the next task though, but not while it is wrapping up the previous since it was marked too early. Does the implement prompt need to be updated?
 - [x] Hide completed should be the default, last UI state of all settings should be remembered per project. Anything empty should be collapse like questions when there are none
-- [ ] Mobile view only shows four icons across per task should be all
+- [x] Mobile view only shows four icons across per task should be all
 - [ ] Seed prompts injecting entire plan markdown ballooning context. See if just filePath to plan is sufficient to pass context
 - [ ] Remove project count from top right of home page
 
@@ -157,3 +157,12 @@ Stale production assets have shipped three times. For every batch that changes s
 - [x] Send card Remove through `DELETE /api/projects/:id`, keep confirm text and start/pause/stop POST paths, add regression test, remove the two `.tmp-browser-fixture` temp projects, and verify production per lines 3-11. Handoff: `.project_documents/PROGRESS.md`.
 - [x] Plan task split prompt — see [PLAN-plan-task-split.md](.project_documents/PLAN-plan-task-split.md)
 - [x] Plan file modal — see [PLAN-plan-file-modal.md](.project_documents/PLAN-plan-file-modal.md)
+
+## Scriptable PNG icon batch
+
+Why: Scriptable on iOS uses native image decoding. It cannot decode SVG (`image/svg+xml`) from `GET /api/projects/:id/icon`, so the widget falls back to initials even though the browser renders the project's SVG favicon. Looparr discovery often selects SVG first. Keep the browser endpoint unchanged and add a PNG endpoint for native clients.
+
+- [x] Add `GET /api/projects/:id/icon.png` that returns real PNG bytes, preserves icon discovery versioning, and uses a `-png` ETag.
+- [x] Rasterize SVG and other supported source formats to PNG in the server; pass through or re-encode PNG without changing the source.
+- [x] Reuse the existing project/icon path containment checks before reading or rendering any icon.
+- [x] Update README and tests, then verify local and production per lines 3-11 before marking complete.
