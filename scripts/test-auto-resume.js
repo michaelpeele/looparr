@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
@@ -36,6 +37,7 @@ function assertEqual(actual, expected, label) {
 
 function createFixture() {
   const runnersPath = require.resolve(path.join(REPO_ROOT, 'src/runners/index.js'));
+  const childScript = 'require("fs").writeFileSync(".looparr/fake-child.pid", String(process.pid)); setInterval(() => {}, 1000);';
   const source = `'use strict';\n`
     + `const { registerRunner } = require(${JSON.stringify(runnersPath)});\n`
     + `registerRunner({\n`
@@ -43,7 +45,7 @@ function createFixture() {
     + `  label: 'test runner',\n`
     + `  description: 'keeps test projects active without invoking a real agent',\n`
     + `  ensureServer: async () => null,\n`
-    + `  buildCommand: () => ({ command: ${JSON.stringify(process.execPath)}, args: ['-e', 'setInterval(() => {}, 1000);'] }),\n`
+    + `  buildCommand: ({ cwd }) => ({ command: ${JSON.stringify(process.execPath)}, args: ['-e', ${JSON.stringify(childScript)}], options: { cwd } }),\n`
     + `  isRateLimit: () => false\n`
     + `});\n`;
   fs.writeFileSync(FIXTURE_PATH, source, 'utf8');
@@ -197,6 +199,16 @@ function auditFile(id) {
   return autoResume.logPath(projectById(id));
 }
 
+function assertPlannedIntentConsumed(id, label) {
+  const file = stateFile(id);
+  if (!fs.existsSync(file)) return;
+  const checked = autoResume.readIntent(projectById(id));
+  assert.ok(
+    checked.ok && checked.intent.reason === 'checkpoint',
+    `${label}: planned intent not consumed; found ${checked.ok ? checked.intent.reason : checked.reason}`
+  );
+}
+
 function writeIntentFor(id, overrides = {}) {
   const project = projectById(id);
   const intent = {
@@ -240,6 +252,35 @@ async function startAndWait(id) {
   throw new Error(`Project ${id} did not become active`);
 }
 
+async function waitForChildPid(project) {
+  const file = path.join(project.path, '.looparr', 'fake-child.pid');
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (fs.existsSync(file)) {
+      const pid = Number(fs.readFileSync(file, 'utf8').trim());
+      if (Number.isInteger(pid) && pid > 0) return pid;
+    }
+    await delay(50);
+  }
+  throw new Error(`Fake child pid missing for ${project.id}`);
+}
+
+async function waitForPidGone(pid) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error.code === 'ESRCH') return;
+      throw error;
+    }
+    await delay(50);
+  }
+  throw new Error(`Fake child ${pid} still alive`);
+}
+
+function countSeedLogs(projectState) {
+  return (projectState.logs || []).filter((entry) => String(entry.text).includes('▶ SEED')).length;
+}
+
 async function prepare(reason = 'planned-restart') {
   const response = await api('POST', '/api/auto-resume/prepare', { reason });
   assertEqual(response.status, 200, 'prepare status');
@@ -262,6 +303,22 @@ async function main() {
     settings: { maxConcurrent: 4, mode: 'serial', rateLimitPauseSeconds: 12 },
     projects: []
   }, null, 2));
+
+  const engine = require(path.join(REPO_ROOT, 'src/engine.js'));
+  const keyProject = { id: 'run-key-project', path: path.join(PROJECTS_ROOT, 'run-key-project') };
+  const keyTask = 'Task with spaces';
+  const expectedRunKey = crypto.createHash('sha256')
+    .update([keyProject.id, path.resolve(keyProject.path), 'seed', keyTask].join('\0'), 'utf8')
+    .digest('hex')
+    .slice(0, 32);
+  const runKey = engine.runKeyFor(keyProject, 'seed', keyTask);
+  assert.match(runKey, /^[0-9a-f]{32}$/, 'run key shape');
+  assertEqual(runKey, expectedRunKey, 'run key digest');
+  assertEqual(engine.runKeyFor({ ...keyProject }, 'seed', keyTask), runKey, 'run key deterministic');
+  assert.notEqual(engine.runKeyFor(keyProject, 'analyze', keyTask), runKey, 'run key phase changes');
+  assert.notEqual(engine.runKeyFor(keyProject, 'seed', 'Other task'), runKey, 'run key task changes');
+  assert.notEqual(engine.runKeyFor({ ...keyProject, path: path.join(PROJECTS_ROOT, 'run-key-other') }, 'seed', keyTask), runKey, 'run key path changes');
+  assert.notEqual(engine.runKeyFor({ ...keyProject, id: 'other-id' }, 'seed', keyTask), runKey, 'run key id changes');
 
   // 1. Config normalization.
   assertEqual(configStore.normalizeProject({ id: 'missing' }).autoResumeOnStart, false, 'missing flag normalizes false');
@@ -319,8 +376,12 @@ async function main() {
 
   // 5. Capture with gating override.
   server = await restartServer(server, true);
+  fs.rmSync(path.join(flagProject.path, '.looparr', 'fake-child.pid'), { force: true });
   await startAndWait(flagProject.id);
+  const childPid = await waitForChildPid(flagProject);
+  const seedLogsBefore = countSeedLogs(findProject(await getState(), flagProject.id));
   const captured = await prepare('planned-restart');
+  await waitForPidGone(childPid);
   assert.ok(captured.prepared.includes(flagProject.id), 'active opted-in project captured');
   const intentPath = stateFile(flagProject.id);
   assert.equal(fs.existsSync(intentPath), true, 'intent file exists');
@@ -342,11 +403,19 @@ async function main() {
   assert.ok(captureEntries.some((entry) => entry.event === 'about-to-resume'), 'about-to-resume audit present');
   for (const entry of captureEntries) {
     for (const key of Object.keys(entry)) {
-      assert.ok(['ts', 'event', 'projectId', 'projectName', 'phase', 'task', 'reason', 'pid', 'hostname'].includes(key), `audit key ${key} whitelisted`);
+      assert.ok(['ts', 'event', 'projectId', 'projectName', 'phase', 'task', 'reason', 'cause', 'pid', 'hostname'].includes(key), `audit key ${key} whitelisted`);
     }
   }
   const captureLog = fs.readFileSync(auditFile(flagProject.id), 'utf8');
   assertNoSecrets(captureLog, 'capture audit');
+  const pausedState = findProject(await getState(), flagProject.id);
+  assertEqual(pausedState.paused, true, 'prepared project paused');
+  assertEqual(pausedState.active, true, 'prepared project stays active');
+  assert.equal(fs.existsSync(intentPath), true, 'intent survives quiesce');
+  assert.ok(captureEntries.some((entry) => entry.event === 'resume-child-quiesced'), 'resume-child-quiesced audit present');
+  await delay(1200);
+  const afterQuiesceState = findProject(await getState(), flagProject.id);
+  assertEqual(countSeedLogs(afterQuiesceState), seedLogsBefore, 'no new step after quiesce');
 
   // 6. Stop cancels pending intent.
   const stopCaptured = await api('POST', `/api/projects/${flagProject.id}/stop`);
@@ -378,7 +447,7 @@ async function main() {
   assertEqual(resumedSeed.active, true, 'seed resume active');
   assert.ok(resumedSeed.logs.some((entry) => String(entry.text).includes('Auto-resume after restart (phase seed).')), 'visible seed resume log');
   assert.ok(countAudit(seedProject.id, 'resume-on-start') >= 1, 'seed resume-on-start audit');
-  assert.equal(fs.existsSync(stateFile(seedProject.id)), false, 'seed intent consumed');
+  assertPlannedIntentConsumed(seedProject.id, 'seed intent consumed');
 
   // 9. Analyze phase preservation with handoff.
   const analyzeProject = await createProjectViaApi('analyze-resume', true);
@@ -390,7 +459,7 @@ async function main() {
   assertEqual(resumedAnalyze.active, true, 'analyze resume active');
   assert.ok(resumedAnalyze.logs.some((entry) => String(entry.text).includes('Auto-resume after restart (phase analyze).')), 'visible analyze resume log');
   assert.ok(readAudit(analyzeProject.id).some((entry) => entry.event === 'resume-on-start' && entry.phase === 'analyze'), 'analyze audit phase');
-  assert.equal(fs.existsSync(stateFile(analyzeProject.id)), false, 'analyze intent consumed');
+  assertPlannedIntentConsumed(analyzeProject.id, 'analyze intent consumed');
 
   // 10. Degraded phase without handoff.
   const degradedProject = await createProjectViaApi('degraded-resume', true);
@@ -402,9 +471,37 @@ async function main() {
   assertEqual(resumedDegraded.active, true, 'degraded resume active');
   assert.ok(resumedDegraded.logs.some((entry) => String(entry.text).includes('Auto-resume after restart (phase seed).')), 'degraded log names seed');
   assert.ok(countAudit(degradedProject.id, 'resume-degraded') >= 1, 'resume-degraded audit present');
-  assert.equal(fs.existsSync(stateFile(degradedProject.id)), false, 'degraded intent consumed');
+  assertPlannedIntentConsumed(degradedProject.id, 'degraded intent consumed');
 
-  // 11. Stale intent and invalid version.
+  // 11. Empty or stale intent task resumes from current plan as seed.
+  const emptyTaskProject = await createProjectViaApi('empty-task-resume', true);
+  const staleTaskProject = await createProjectViaApi('stale-task-resume', true);
+  const emptyHandoff = path.join(emptyTaskProject.path, '.looparr', 'next_prompt.txt');
+  const staleHandoff = path.join(staleTaskProject.path, '.looparr', 'next_prompt.txt');
+  fs.writeFileSync(emptyHandoff, 'stale handoff', 'utf8');
+  fs.writeFileSync(staleHandoff, 'stale handoff', 'utf8');
+  writeIntentFor(emptyTaskProject.id, { currentTask: '' });
+  writeIntentFor(staleTaskProject.id, {
+    nextPhase: 'analyze',
+    status: 'analyze',
+    currentTask: 'Old completed task'
+  });
+  server = await restartServer(server, true);
+  state = await getState();
+  for (const project of [emptyTaskProject, staleTaskProject]) {
+    const resumed = findProject(state, project.id);
+    assertEqual(resumed.active, true, `${project.id} resumes with empty or stale task`);
+    assertEqual(resumed.currentTask, project.task, `${project.id} current task from plan`);
+    assertEqual(resumed.nextPhase, 'seed', `${project.id} resumes as seed`);
+    assert.ok(resumed.logs.some((entry) => String(entry.text).includes('Auto-resume after restart (phase seed).')), `${project.id} seed resume log`);
+    assert.ok(readAudit(project.id).some((entry) => entry.event === 'resume-degraded' && entry.cause === 'task-no-longer-next'), `${project.id} degraded audit`);
+    assertEqual(countAudit(project.id, 'stale-intent-ignored'), 0, `${project.id} not skipped as stale`);
+    assertPlannedIntentConsumed(project.id, `${project.id} intent consumed`);
+  }
+  assert.equal(fs.existsSync(emptyHandoff), false, 'empty-task stale handoff cleared');
+  assert.equal(fs.existsSync(staleHandoff), false, 'stale-task stale handoff cleared');
+
+  // 12. Stale intent and invalid version.
   const staleProject = await createProjectViaApi('stale-resume', true);
   const invalidProject = await createProjectViaApi('invalid-version', true);
   writeIntentFor(staleProject.id, {
@@ -502,6 +599,50 @@ async function main() {
   assert.ok(helper.stdout.includes(helperProject.id), 'helper prints prepared project id');
   assert.equal(fs.existsSync(DOCKER_MARKER), false, 'dry run did not call Docker');
   assertNoSecrets(`${helper.stdout}\n${helper.stderr}`, 'restart helper output');
+
+  // 16. Hard recreation resumes from checkpoint intent without graceful shutdown.
+  const hardProject = await createProjectViaApi('hard-recreation', true);
+  await startAndWait(hardProject.id);
+  const hardPid = await waitForChildPid(projectById(hardProject.id));
+  let checkpointIntent = null;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const checked = autoResume.readIntent(projectById(hardProject.id));
+    if (checked.ok && checked.intent.reason === 'checkpoint') {
+      checkpointIntent = checked.intent;
+      break;
+    }
+    await delay(50);
+  }
+  assert.ok(checkpointIntent, 'checkpoint intent written for active project');
+  assert.equal(checkpointIntent.currentTask, hardProject.task, 'checkpoint task matches active task');
+
+  server.kill('SIGKILL');
+  await once(server, 'exit');
+  try {
+    process.kill(hardPid, 'SIGTERM');
+  } catch {
+    /* child already gone */
+  }
+  await waitForPidGone(hardPid);
+  server = await spawnServer(true);
+
+  let hardResumeState = null;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const state = await getState();
+    const projectState = findProject(state, hardProject.id);
+    if (projectState.active && projectState.currentTask === hardProject.task) {
+      hardResumeState = projectState;
+      break;
+    }
+    await delay(50);
+  }
+  assert.ok(hardResumeState, 'hard recreation resumed active project');
+  assert.equal(hardResumeState.nextPhase, 'seed', 'hard recreation resumed as seed');
+  assert.ok(
+    hardResumeState.logs.some((entry) => entry.text.includes('Auto-resume after restart')),
+    'hard recreation logged auto-resume'
+  );
+  assert.equal(countAudit(hardProject.id, 'resume-on-start'), 1, 'hard recreation audited resume-on-start');
 
   await stopAllProjects();
   await killServer(server);

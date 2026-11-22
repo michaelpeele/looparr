@@ -58,6 +58,41 @@ function setChecked(content, index, checked) {
   return { ok: true, content: lines.join('\n') };
 }
 
+function taskEditTarget(content, index) {
+  const taskIndex = Number(index);
+  if (!Number.isInteger(taskIndex) || taskIndex < 0) return null;
+  const tasks = parseTasks(content);
+  const task = tasks[taskIndex];
+  if (!task) return null;
+  const lines = String(content).split('\n');
+  const raw = lines[task.line];
+  const lineEnding = raw.endsWith('\r') ? '\r' : '';
+  const match = raw.slice(0, raw.length - lineEnding.length).match(TASK_RE);
+  if (!match) return null;
+  return { lines, task, match, lineEnding };
+}
+
+function normalizeTaskText(text) {
+  if (text === undefined || text === null) return '';
+  return String(text).trim().replace(/\s+/g, ' ').trim();
+}
+
+function editTask(content, index, newText) {
+  const target = taskEditTarget(content, index);
+  if (!target) return { ok: false, error: `No checklist item at index ${index}` };
+  const text = normalizeTaskText(newText);
+  if (!text) return { ok: false, error: 'Task text is required' };
+  target.lines[target.task.line] = `${target.match[1]}${target.match[2]}${target.match[3]}${text}${target.lineEnding}`;
+  return { ok: true, content: target.lines.join('\n') };
+}
+
+function removeTask(content, index) {
+  const target = taskEditTarget(content, index);
+  if (!target) return { ok: false, error: `No checklist item at index ${index}` };
+  target.lines.splice(target.task.line, 1);
+  return { ok: true, content: target.lines.join('\n') };
+}
+
 function markTask(content, text, checked = true) {
   const tasks = parseTasks(content);
   const wanted = String(text).trim();
@@ -73,4 +108,4 @@ function writePlan(projectDir, content) {
   fs.renameSync(temp, planPath);
 }
 
-module.exports = { TASK_RE, parseTasks, firstUnchecked, nextUncheckedAfter, stats, readPlan, setChecked, markTask, writePlan };
+module.exports = { TASK_RE, parseTasks, firstUnchecked, nextUncheckedAfter, stats, readPlan, setChecked, editTask, removeTask, markTask, writePlan };

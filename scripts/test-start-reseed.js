@@ -66,7 +66,7 @@ async function main() {
   process.env.CONFIG_PATH = CONFIG_PATH;
   process.env.LOOPARR_PROJECTS_ROOT = PROJECTS_ROOT;
   process.env.HOSTNAME = 'test-host';
-  delete process.env.LOOPARR_ALLOW_RESUME_INTENT;
+  process.env.LOOPARR_ALLOW_RESUME_INTENT = '1';
 
   let engine = null;
   try {
@@ -166,6 +166,46 @@ async function main() {
     assert.ok(reseedIndex >= 0 && seedIndex > reseedIndex, 'reseed log must precede SEED');
     assert.strictEqual(recovered.logs.find((log) => log.text === RESEED_LOG).stream, 'system');
     assert.strictEqual(fs.readFileSync(handoffPath, 'utf8'), FRESH_HANDOFF);
+
+    const checkpoint = await waitFor(() => {
+      const checked = autoResume.readIntent(project);
+      return checked.ok && checked.intent.reason === 'checkpoint' ? checked.intent : null;
+    });
+    assert.strictEqual(checkpoint.currentTask, TASK);
+    assert.ok(autoResume.PHASES.has(checkpoint.nextPhase), 'checkpoint phase must be valid');
+    assert.strictEqual(engine.stop(project.id), true);
+    assert.strictEqual(fs.existsSync(autoResume.statePath(project)), false);
+
+    const externalTask = 'External plan edit clears stale handoff';
+    const externalDir = path.join(PROJECTS_ROOT, 'external-plan-project');
+    const externalPlan = path.join(externalDir, 'plan.md');
+    const externalHandoff = path.join(externalDir, '.looparr', 'next_prompt.txt');
+    fs.mkdirSync(path.dirname(externalPlan), { recursive: true });
+    fs.writeFileSync(externalPlan, `# Plan\n\n- [ ] ${externalTask}\n`);
+    const externalProject = engine.addProject({
+      name: 'External plan project',
+      path: externalDir,
+      runner: 'opencode',
+      autoResumeOnStart: true
+    });
+    assert.strictEqual(engine.start(externalProject.id), true);
+    await waitFor(() => {
+      const state = projectState(engine, externalProject.id);
+      return state && state.currentTask === externalTask ? state : null;
+    });
+    fs.writeFileSync(externalHandoff, 'stale handoff after external edit', 'utf8');
+    assert.strictEqual(engine.pause(externalProject.id), true);
+    fs.writeFileSync(externalPlan, `# Plan\n\n- [x] ${externalTask}\n`);
+
+    const reconciled = await waitFor(() => {
+      const state = projectState(engine, externalProject.id);
+      if (!state) return null;
+      if (state.currentTask !== '' || state.nextTask !== '' || state.nextPhase !== 'seed') return null;
+      if (fs.existsSync(externalHandoff) || fs.existsSync(autoResume.statePath(externalProject))) return null;
+      return state;
+    }, 10000);
+    assert.strictEqual(reconciled.active, true);
+    assert.strictEqual(reconciled.paused, true);
 
     console.log('test-start-reseed: ok');
   } finally {

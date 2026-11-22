@@ -73,7 +73,7 @@ const DEFAULT_IMPLEMENT_PROMPT_TEMPLATE = [
   '---',
   '',
   'After implementation, change the "- [ ]" marker for this task to "- [x]" in plan.md.',
-  'Do not touch .looparr/next_prompt.txt.'
+  'The engine clears .looparr/next_prompt.txt when this task completes; do not edit or delete it yourself.'
 ].join('\n');
 
 const MODEL_PHASE_FIELDS = ['seedModel', 'analyzeModel', 'implementModel'];

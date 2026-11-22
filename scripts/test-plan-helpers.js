@@ -25,8 +25,60 @@ function nextText(tasks, fromIndex) {
   return next ? next.text : null;
 }
 
+function testTaskEdits() {
+  for (const name of ['editTask', 'removeTask']) {
+    assertIncludes(Object.keys(planLib).join(','), name, 'plan exports');
+  }
+
+  const crlf = [
+    '# Plan',
+    '',
+    '- [x] done',
+    '  * [ ] indented',
+    'note between lines',
+    '+ [X] Upper',
+    ''
+  ].join('\r\n');
+  const editedCrlf = planLib.editTask(crlf, 1, '  New   text  ');
+  assertEqual(editedCrlf.ok, true, 'edit CRLF task ok');
+  assertEqual(
+    editedCrlf.content,
+    crlf.replace('  * [ ] indented', '  * [ ] New text'),
+    'edit preserves CRLF, indent, marker and check state'
+  );
+  const removedCrlf = planLib.removeTask(crlf, 1);
+  assertEqual(removedCrlf.ok, true, 'remove CRLF task ok');
+  assertEqual(
+    removedCrlf.content,
+    crlf.replace('  * [ ] indented\r\n', ''),
+    'remove only target line and keep surrounding lines'
+  );
+
+  const lf = '- [ ] one\n- [x] two\n';
+  assertEqual(planLib.editTask(lf, 0, 'alpha').content, '- [ ] alpha\n- [x] two\n', 'edit LF task');
+  assertEqual(planLib.removeTask(lf, 1).content, '- [ ] one\n', 'remove LF task');
+
+  const bullets = '* [ ] star\n+ [X] plus\n- [x] dash\n';
+  assertEqual(planLib.editTask(bullets, 0, 'a').content, '* [ ] a\n+ [X] plus\n- [x] dash\n', 'star bullet edit');
+  assertEqual(planLib.editTask(bullets, 1, 'b').content, '* [ ] star\n+ [X] b\n- [x] dash\n', 'plus bullet and X state edit');
+  assertEqual(planLib.editTask(bullets, 2, 'c').content, '* [ ] star\n+ [X] plus\n- [x] c\n', 'dash bullet and x state edit');
+
+  for (const index of [-1, 1.5, 99]) {
+    assertEqual(planLib.editTask(lf, index, 'x').ok, false, `edit invalid index ${index}`);
+    assertEqual(planLib.removeTask(lf, index).ok, false, `remove invalid index ${index}`);
+  }
+  const blank = planLib.editTask(lf, 0, '  \n ');
+  assertEqual(blank.ok, false, 'blank edit rejected');
+  assertEqual(blank.error, 'Task text is required', 'blank edit error');
+  assertEqual(lf, '- [ ] one\n- [x] two\n', 'failed edit leaves source unchanged');
+
+  const duplicate = '- [ ] same\n- [ ] same\n- [ ] other\n';
+  assertEqual(planLib.removeTask(duplicate, 1).content, '- [ ] same\n- [ ] other\n', 'remove only target duplicate');
+}
+
 async function main() {
   assertIncludes(Object.keys(planLib).join(','), 'nextUncheckedAfter', 'plan exports');
+  testTaskEdits();
 
   const run = tasksFrom([
     '- [x] zero',

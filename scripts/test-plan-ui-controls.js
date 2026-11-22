@@ -94,6 +94,30 @@ function loadReorderFunctions() {
   return factory();
 }
 
+function loadTaskActionFunctions() {
+  const source = fs.readFileSync(path.join(REPO_ROOT, 'public/app.js'), 'utf8');
+  const lineRegex = source.match(/^\s*const TASK_LINE_RE = .*;$/m);
+  const editRegex = source.match(/^\s*const TASK_EDIT_RE = .*;$/m);
+  assert.ok(lineRegex, 'Missing TASK_LINE_RE');
+  assert.ok(editRegex, 'Missing TASK_EDIT_RE');
+  const indexes = extractFunction(source, 'function planTaskLineIndexes(content)');
+  const target = extractFunction(source, 'function taskEditTarget(content, taskIndex)');
+  const normalize = extractFunction(source, 'function normalizeTaskEditText(text)');
+  const edit = extractFunction(source, 'function editPlanTaskContent(content, taskIndex, newText)');
+  const remove = extractFunction(source, 'function removePlanTaskContent(content, taskIndex)');
+  const factory = new Function([
+    lineRegex[0],
+    editRegex[0],
+    indexes,
+    target,
+    normalize,
+    edit,
+    remove,
+    'return { editPlanTaskContent, removePlanTaskContent };'
+  ].join('\n'));
+  return factory();
+}
+
 function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(indexHtml, 'id="toggle-completed-tasks"', 'index toggle id');
   assertIncludes(indexHtml, 'data-action="toggle-completed"', 'index toggle action');
@@ -128,6 +152,29 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(appSource, 'drag-after', 'app insertion indicator after');
   assertIncludes(appSource, "if (action === 'drag') return;", 'app drag click guard');
   assertIncludes(appSource, 'refreshState()', 'app state refresh after save');
+  assertIncludes(appSource, 'editingTaskIndex', 'app edit mode state');
+  assertIncludes(appSource, 'editPlanTaskContent', 'app edit content helper');
+  assertIncludes(appSource, 'removePlanTaskContent', 'app remove content helper');
+  assertIncludes(appSource, 'data-action="edit-task"', 'app edit task action');
+  assertIncludes(appSource, 'data-action="save-task"', 'app save task action');
+  assertIncludes(appSource, 'data-action="remove-task"', 'app remove task action');
+  assertIncludes(appSource, 'class="task-actions"', 'app task action group');
+  assertIncludes(appSource, 'save-task-button', 'app save task button class');
+  assertIncludes(appSource, 'remove-task-button', 'app remove task button class');
+  assertIncludes(appSource, 'task-edit-input', 'app edit input class');
+  assertIncludes(appSource, '✎', 'app edit pencil icon');
+  assertIncludes(appSource, '💾', 'app save floppy icon');
+  assertIncludes(appSource, '✕', 'app delete x icon');
+  assertIncludes(appSource, 'aria-label="Delete task"', 'app delete aria label');
+  assertIncludes(appSource, 'title="Edit task"', 'app edit title');
+  assertIncludes(appSource, 'title="Save task"', 'app save title');
+  assertIncludes(appSource, 'title="Delete task"', 'app delete title');
+  assertIncludes(appSource, 'window.confirm', 'app delete confirmation');
+  assertIncludes(appSource, "'Delete task '+(taskIndex+1)+': \"'", 'app confirm copy prefix');
+  assertIncludes(appSource, 'This removes the checklist line from plan.md and cannot be undone.', 'app confirm copy');
+  assertIncludes(appSource, 'change === undefined ? { content } : { content, change }', 'app optional change payload');
+  assertIncludes(appSource, "type: 'edit'", 'app edit change type');
+  assertIncludes(appSource, "type: 'remove'", 'app remove change type');
 
   const toggleSource = extractFunction(appSource, 'function toggleCompleted()');
   assert.ok(!toggleSource.includes('api('), 'toggleCompleted must not call the API');
@@ -142,6 +189,12 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(cssSource, '.drag-after', 'css indicator after');
   assertIncludes(cssSource, 'body.plan-dragging', 'css dragging body');
   assertIncludes(cssSource, '44px', 'css touch target size');
+  assertIncludes(cssSource, '.task-actions', 'css task actions');
+  assertIncludes(cssSource, '.edit-task-button', 'css edit button');
+  assertIncludes(cssSource, '.save-task-button', 'css save button');
+  assertIncludes(cssSource, '.remove-task-button', 'css remove button');
+  assertIncludes(cssSource, '.task-edit-input', 'css edit input');
+  assertIncludes(cssSource, ':focus-visible', 'css focus outline');
 
   assertIncludes(indexHtml, 'class="view" data-view', 'index view wrapper');
   assertIncludes(indexHtml, 'data-view="projects"', 'index projects view');
@@ -199,6 +252,53 @@ async function testReorderPureFunctions() {
   assertEqual(reorderPlanTask(raw, 0, 4), null, 'invalid target index');
 }
 
+async function testTaskActionPureFunctions() {
+  const { editPlanTaskContent, removePlanTaskContent } = loadTaskActionFunctions();
+  const crlf = [
+    '# Plan',
+    '',
+    '- [x] done',
+    '  * [ ] indented',
+    'note between lines',
+    '+ [X] Upper',
+    ''
+  ].join('\r\n');
+  const edited = editPlanTaskContent(crlf, 1, '  New   text  ');
+  assertEqual(edited.ok, true, 'served edit helper ok');
+  assertEqual(
+    edited.content,
+    crlf.replace('  * [ ] indented', '  * [ ] New text'),
+    'served edit helper preserves CRLF, indent, marker and check state'
+  );
+  const removed = removePlanTaskContent(crlf, 1);
+  assertEqual(removed.ok, true, 'served remove helper ok');
+  assertEqual(
+    removed.content,
+    crlf.replace('  * [ ] indented\r\n', ''),
+    'served remove helper removes only target line'
+  );
+
+  const lf = '- [ ] one\n- [x] two\n';
+  assertEqual(editPlanTaskContent(lf, 0, 'alpha').content, '- [ ] alpha\n- [x] two\n', 'served edit helper LF');
+  assertEqual(removePlanTaskContent(lf, 1).content, '- [ ] one\n', 'served remove helper LF');
+
+  const bullets = '* [ ] star\n+ [X] plus\n- [x] dash\n';
+  assertEqual(editPlanTaskContent(bullets, 0, 'a').content, '* [ ] a\n+ [X] plus\n- [x] dash\n', 'served star bullet edit');
+  assertEqual(editPlanTaskContent(bullets, 1, 'b').content, '* [ ] star\n+ [X] b\n- [x] dash\n', 'served plus bullet and X edit');
+  assertEqual(editPlanTaskContent(bullets, 2, 'c').content, '* [ ] star\n+ [X] plus\n- [x] c\n', 'served dash bullet and x edit');
+
+  for (const index of [-1, 1.5, 99]) {
+    assertEqual(editPlanTaskContent(lf, index, 'x').ok, false, `served edit invalid index ${index}`);
+    assertEqual(removePlanTaskContent(lf, index).ok, false, `served remove invalid index ${index}`);
+  }
+  const blank = editPlanTaskContent(lf, 0, '  \n ');
+  assertEqual(blank.ok, false, 'served blank edit rejected');
+  assertEqual(blank.error, 'Task text is required', 'served blank edit error');
+
+  const duplicate = '- [ ] same\n- [ ] same\n- [ ] other\n';
+  assertEqual(removePlanTaskContent(duplicate, 1).content, '- [ ] same\n- [ ] other\n', 'served remove only target duplicate');
+}
+
 async function main() {
   fs.rmSync(TEMP_DIR, { recursive: true, force: true });
   fs.mkdirSync(DEMO_DIR, { recursive: true });
@@ -239,6 +339,7 @@ async function main() {
     assertServedAssets(indexHtml, appSource, cssSource);
 
     await testReorderPureFunctions();
+    await testTaskActionPureFunctions();
 
     const created = await api('POST', '/api/projects', {
       name: 'demo',
@@ -281,6 +382,35 @@ async function main() {
     assertEqual(afterSave.body.content, reordered, 'PUT plan preserves reordered raw lines');
     assertEqual(afterSave.body.tasks[3].text, 'indented', 'reordered task moves to final position');
 
+    const editedContent = editPlanTaskContentForTest(reordered, 2, 'Edited note');
+    const editSaved = await api('PUT', route, {
+      content: editedContent,
+      change: { type: 'edit', index: 2, oldText: afterSave.body.tasks[2].text, newText: 'Edited note' }
+    });
+    assertEqual(editSaved.status, 200, 'PUT plan with edit change status');
+    const afterEdit = await api('GET', route);
+    assertEqual(afterEdit.body.content, editedContent, 'PUT with edit change returns edited content');
+    assertEqual(afterEdit.body.tasks[2].text, 'Edited note', 'GET returns edited task text');
+
+    const malformedSaved = await api('PUT', route, {
+      content: editedContent,
+      change: { type: 'unknown', index: -1 }
+    });
+    assertEqual(malformedSaved.status, 200, 'PUT ignores malformed change');
+    const afterMalformed = await api('GET', route);
+    assertEqual(afterMalformed.body.content, editedContent, 'malformed change leaves content intact');
+
+    const removedContent = removePlanTaskContentForTest(editedContent, 2);
+    const removeSaved = await api('PUT', route, {
+      content: removedContent,
+      change: { type: 'remove', index: 2, oldText: 'Edited note' }
+    });
+    assertEqual(removeSaved.status, 200, 'PUT plan with remove change status');
+    const afterRemove = await api('GET', route);
+    assertEqual(afterRemove.body.content, removedContent, 'PUT with remove change returns removed content');
+    assertEqual(afterRemove.body.tasks.length, 3, 'GET reflects removed task count');
+    assertEqual(afterRemove.body.tasks[2].text, 'indented', 'GET returns remaining task after removal');
+
     const patchBlock = await api('PATCH', `/api/projects/${encodeURIComponent(projectId)}`, {
       blockThreshold: 5,
       temporaryLiftScope: 'src/engine.js',
@@ -319,6 +449,20 @@ function reorderPlanTaskForTest(content, fromTaskIndex, toTaskIndex) {
   const result = reorderPlanTask(content, fromTaskIndex, toTaskIndex);
   assert.ok(result !== null, 'reorder result must not be null');
   return result;
+}
+
+function editPlanTaskContentForTest(content, taskIndex, newText) {
+  const { editPlanTaskContent } = loadTaskActionFunctions();
+  const result = editPlanTaskContent(content, taskIndex, newText);
+  assertEqual(result.ok, true, 'edit helper result must be ok');
+  return result.content;
+}
+
+function removePlanTaskContentForTest(content, taskIndex) {
+  const { removePlanTaskContent } = loadTaskActionFunctions();
+  const result = removePlanTaskContent(content, taskIndex);
+  assertEqual(result.ok, true, 'remove helper result must be ok');
+  return result.content;
 }
 
 function finish(code) {

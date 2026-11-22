@@ -9,9 +9,11 @@ const { execFileSync, spawn } = require('child_process');
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DEFAULT_PROJECTS_ROOT = '/home/michaelpeele/ai-projects';
 const DEFAULT_OPENCODE_BIN = '/home/michaelpeele/.opencode/bin/opencode';
-const SERVER_PORT = 4096;
-const PROBE_URL = 'http://127.0.0.1:4096/';
+const DEFAULT_OPENCODE_SERVER_PORT = 4096;
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
+const MAX_RUN_KEY_LENGTH = 128;
+const RUN_KEY_PATTERN = /^[A-Za-z0-9._:-]+$/;
+const CHILD_TERMINATE_TIMEOUT_MS = 3000;
 
 function loadDotEnv(file) {
   if (!fs.existsSync(file)) return;
@@ -43,10 +45,17 @@ if (token.length < 16 || token.includes('REPLACE')) {
   fail('LOOPARR_EXECUTOR_TOKEN must be set to a random value of at least 16 characters');
 }
 
-const port = Number(process.env.LOOPARR_EXECUTOR_PORT || 4187);
-if (!Number.isInteger(port) || port < 1 || port > 65535) {
-  fail('LOOPARR_EXECUTOR_PORT must be an integer from 1 to 65535');
+const portRaw = process.env.LOOPARR_EXECUTOR_PORT;
+const port = portRaw === undefined || portRaw === '' ? 4187 : Number(portRaw);
+if (!Number.isInteger(port) || port < 0 || port > 65535) {
+  fail('LOOPARR_EXECUTOR_PORT must be an integer from 0 to 65535');
 }
+
+const opencodeServerPort = Number(process.env.LOOPARR_EXECUTOR_OPENCODE_PORT || DEFAULT_OPENCODE_SERVER_PORT);
+if (!Number.isInteger(opencodeServerPort) || opencodeServerPort < 1 || opencodeServerPort > 65535) {
+  fail('LOOPARR_EXECUTOR_OPENCODE_PORT must be an integer from 1 to 65535');
+}
+const PROBE_URL = `http://127.0.0.1:${opencodeServerPort}/`;
 
 function discoverBind() {
   const explicit = process.env.LOOPARR_EXECUTOR_BIND;
@@ -81,7 +90,8 @@ try {
   fail(`Projects root not found: ${process.env.LOOPARR_PROJECTS_ROOT || DEFAULT_PROJECTS_ROOT}`);
 }
 
-const activeChildren = new Set();
+const activeRuns = new Map();
+const replacingRuns = new Map();
 let attachFlag = null;
 let serverPromise = null;
 let managedServer = null;
@@ -185,7 +195,7 @@ async function ensureServer() {
   if (await probeServer()) return PROBE_URL;
   if (serverPromise) return serverPromise;
   serverPromise = (async () => {
-    managedServer = spawn(opencodeBin, ['serve', '--port', String(SERVER_PORT)], {
+    managedServer = spawn(opencodeBin, ['serve', '--port', String(opencodeServerPort)], {
       cwd: REPO_ROOT,
       env: process.env,
       shell: false,
@@ -214,11 +224,16 @@ async function ensureServer() {
 }
 
 function frame(res, value) {
+  if (res.destroyed || res.writableEnded) return;
   res.write(`${JSON.stringify(value)}\n`);
 }
 
 function validateRun(payload) {
   if (!payload || typeof payload !== 'object') throw new Error('payload must be an object');
+  if (typeof payload.runKey !== 'string' || !payload.runKey) throw new Error('runKey is required');
+  if (payload.runKey.length > MAX_RUN_KEY_LENGTH || !RUN_KEY_PATTERN.test(payload.runKey)) {
+    throw new Error('runKey is invalid');
+  }
   if (typeof payload.prompt !== 'string' || !payload.prompt.trim()) throw new Error('prompt is required');
 
   const cwd = fs.realpathSync(path.resolve(payload.cwd || ''));
@@ -235,7 +250,65 @@ function validateRun(payload) {
   });
 
   const model = normalizeModel(payload.model);
-  return { prompt: payload.prompt, cwd, files: checkedFiles, model };
+  const projectId = typeof payload.projectId === 'string' && payload.projectId.trim()
+    ? payload.projectId.trim().slice(0, 128)
+    : '';
+  return { prompt: payload.prompt, cwd, files: checkedFiles, model, runKey: payload.runKey, projectId };
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function terminateEntry(entry) {
+  const child = entry.child;
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const closed = new Promise((resolve) => child.once('close', resolve));
+  child.kill('SIGTERM');
+  const exited = await Promise.race([
+    closed.then(() => true),
+    wait(CHILD_TERMINATE_TIMEOUT_MS).then(() => false)
+  ]);
+  if (!exited && child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGKILL');
+    await closed;
+  }
+}
+
+async function replaceActiveRun(runKey, res) {
+  for (;;) {
+    const pending = replacingRuns.get(runKey);
+    if (pending) {
+      await pending.promise;
+      continue;
+    }
+
+    let release = null;
+    let released = false;
+    const record = { promise: null, release: null };
+    record.promise = new Promise((resolve) => {
+      release = () => {
+        if (released) return;
+        released = true;
+        if (replacingRuns.get(runKey) === record) replacingRuns.delete(runKey);
+        resolve();
+      };
+    });
+    record.release = release;
+    replacingRuns.set(runKey, record);
+
+    const previous = activeRuns.get(runKey);
+    if (!previous) return release;
+    try {
+      frame(res, { stream: 'err', text: '[host-executor] previous run for this key is being replaced\n' });
+      previous.finish(137);
+      await terminateEntry(previous);
+      return release;
+    } catch (error) {
+      release();
+      throw error;
+    }
+  }
 }
 
 async function handleRun(req, res) {
@@ -268,59 +341,136 @@ async function handleRun(req, res) {
   });
   res.flushHeaders?.();
 
-  const child = spawn(opencodeBin, args, {
-    cwd: payload.cwd,
-    env: process.env,
-    shell: false,
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
-  activeChildren.add(child);
+  const releaseReplacement = await replaceActiveRun(payload.runKey, res);
+
+  let child;
+  try {
+    child = spawn(opencodeBin, args, {
+      cwd: payload.cwd,
+      env: process.env,
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+  } catch (error) {
+    releaseReplacement();
+    frame(res, { stream: 'err', text: `[host-executor] ${error.message}\n` });
+    frame(res, { exit: 1 });
+    if (!res.destroyed && !res.writableEnded) res.end();
+    return;
+  }
 
   let finished = false;
-  const finish = (code) => {
+  const entry = {
+    child,
+    runKey: payload.runKey,
+    projectId: payload.projectId,
+    cwd: payload.cwd,
+    startedAt: new Date().toISOString(),
+    finish: null
+  };
+  entry.finish = (code) => {
     if (finished) return;
     finished = true;
-    activeChildren.delete(child);
+    if (activeRuns.get(payload.runKey) === entry) activeRuns.delete(payload.runKey);
+    if (res.destroyed || res.writableEnded) return;
     frame(res, { exit: code });
     res.end();
   };
+  activeRuns.set(payload.runKey, entry);
+  releaseReplacement();
 
   child.stdout.on('data', (chunk) => frame(res, { stream: 'out', text: chunk.toString() }));
   child.stderr.on('data', (chunk) => frame(res, { stream: 'err', text: chunk.toString() }));
   child.on('error', (error) => {
     frame(res, { stream: 'err', text: `[host-executor] ${error.message}\n` });
-    finish(1);
+    entry.finish(1);
   });
   child.on('close', (code, signal) => {
     if (finished) return;
     if (signal && code === null) {
       frame(res, { stream: 'err', text: `[host-executor] opencode run terminated by ${signal}\n` });
     }
-    finish(Number.isInteger(code) ? code : 1);
+    entry.finish(Number.isInteger(code) ? code : 1);
   });
   req.on('aborted', () => {
     if (!finished) child.kill('SIGTERM');
   });
 }
 
+async function handleCancel(req, res) {
+  if (!authorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
+  let payload;
+  try {
+    payload = await readJson(req);
+  } catch (error) {
+    return sendJson(res, 400, { error: error.message });
+  }
+  if (!payload || typeof payload !== 'object') {
+    return sendJson(res, 400, { error: 'payload must be an object' });
+  }
+
+  const runKey = typeof payload.runKey === 'string' && payload.runKey ? payload.runKey : '';
+  const keepRunKey = typeof payload.keepRunKey === 'string' && payload.keepRunKey ? payload.keepRunKey : '';
+  const projectId = typeof payload.projectId === 'string' && payload.projectId ? payload.projectId : '';
+  const cwd = typeof payload.cwd === 'string' && payload.cwd ? path.resolve(payload.cwd) : '';
+  if (!runKey && !projectId && !cwd) {
+    return sendJson(res, 400, { error: 'one of projectId, cwd, or runKey is required' });
+  }
+
+  const matches = [];
+  for (const entry of activeRuns.values()) {
+    if (keepRunKey && entry.runKey === keepRunKey) continue;
+    const cwdMatch = Boolean(cwd && path.resolve(entry.cwd || '') === cwd);
+    const matched = Boolean(
+      (runKey && entry.runKey === runKey)
+      || (projectId && entry.projectId === projectId)
+      || cwdMatch
+    );
+    if (matched) matches.push(entry);
+  }
+
+  const cancelled = [];
+  for (const entry of matches) {
+    cancelled.push({ runKey: entry.runKey, projectId: entry.projectId || '' });
+    entry.finish(137);
+    await terminateEntry(entry);
+  }
+  return sendJson(res, 200, { ok: true, cancelled });
+}
+
 const server = http.createServer((req, res) => {
   if (req.url === '/health' && req.method === 'GET') {
     return sendJson(res, 200, { ok: true, projectsRoot, opencodeBin });
   }
+  if (req.url === '/active' && req.method === 'GET') {
+    if (!authorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
+    const active = Array.from(activeRuns.values(), (entry) => ({
+      runKey: entry.runKey,
+      projectId: entry.projectId || '',
+      cwd: entry.cwd || '',
+      startedAt: entry.startedAt
+    }));
+    return sendJson(res, 200, active);
+  }
   if (req.url === '/run' && req.method === 'POST') {
     return handleRun(req, res);
+  }
+  if (req.url === '/cancel' && req.method === 'POST') {
+    return handleCancel(req, res);
   }
   return sendJson(res, 404, { error: 'not found' });
 });
 
 server.listen(port, bind, () => {
-  process.stdout.write(`[host-executor] listening on http://${bind}:${port}\n`);
+  const address = server.address();
+  const listeningPort = address && typeof address === 'object' ? address.port : port;
+  process.stdout.write(`[host-executor] listening on http://${bind}:${listeningPort}\n`);
 });
 
 server.on('error', (error) => fail(`server error: ${error.message}`));
 
 function shutdown() {
-  for (const child of activeChildren) child.kill('SIGTERM');
+  for (const entry of activeRuns.values()) entry.child.kill('SIGTERM');
   if (managedServer) managedServer.kill('SIGTERM');
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 3000).unref();

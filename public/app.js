@@ -74,6 +74,7 @@
     drawerBackdrop: $('drawer-backdrop'),
     drawer: $('drawer'),
     drawerClose: $('drawer-close'),
+    drawerVisual: $('drawerProjectVisual'),
     drawerTitle: $('drawer-title'),
     drawerPath: $('drawer-path'),
     drawerStatus: $('drawer-status'),
@@ -133,6 +134,7 @@
 
   const STARTER_PLAN = '# Build plan\n\n- [ ] First task\n- [ ] Second task\n';
   const TASK_LINE_RE = /^\s*[-*+]\s+\[[ xX]\]\s*/;
+  const TASK_EDIT_RE = /^(\s*[-*+]\s+\[)([ xX])(\]\s*)(.*)$/;
   // Mirrors `opencode models` output (CLI registry). Keep in sync manually:
 // the server/container has no opencode binary, so this list cannot be
 // populated dynamically at runtime. See plan.md model-picker items.
@@ -185,6 +187,7 @@ const MODEL_OPTIONS = [
   let planSavePending = 0;
   let planDrag = null;
   let suppressPlanClick = false;
+  let editingTaskIndex = -1;
 
   function esc(value) {
     return String(value ?? '').replace(/[&<>"']/g, (ch) => ESC[ch]);
@@ -264,35 +267,43 @@ const MODEL_OPTIONS = [
   }
 
   function updatePlanControls() {
-    if (!app.drawerId) {
-      updateStarterPlanButton();
-      if (dom.toggleCompletedTasks) dom.toggleCompletedTasks.disabled = true;
-      if (dom.savePlan) dom.savePlan.disabled = true;
-      return;
-    }
-    const saving = app.savingPlan;
-    const reorderLocked = saving || app.planDirty;
+    const noDrawer = !app.drawerId;
+    const locked = noDrawer || app.savingPlan || app.planDirty;
     const taskCount = app.planTaskCount || 0;
     dom.checklist.querySelectorAll('button[data-action]').forEach((button) => {
       const action = button.dataset.action;
       if (action === 'toggle-completed') {
-        button.disabled = saving;
+        button.disabled = noDrawer || app.savingPlan;
         return;
       }
       const taskIndex = Number(button.dataset.taskIndex);
-      let disabled = reorderLocked || !Number.isInteger(taskIndex);
+      let disabled = locked || !Number.isInteger(taskIndex);
+      if (!disabled && taskIndex === editingTaskIndex && action !== 'save-task') disabled = true;
+      if (!disabled && action === 'save-task') {
+        const input = dom.checklist.querySelector(`.task-edit-input[data-task-index="${taskIndex}"]`);
+        disabled = locked || taskIndex !== editingTaskIndex || !input || !cleanTaskText(input.value);
+      }
       if (!disabled && (action === 'move-up' || action === 'move-top')) disabled = taskIndex === 0;
       if (!disabled && (action === 'move-down' || action === 'move-bottom')) disabled = taskIndex === taskCount - 1;
       button.disabled = disabled;
     });
-    dom.checklist.querySelectorAll('.drag-handle').forEach((handle) => {
-      handle.disabled = reorderLocked;
-      handle.setAttribute('aria-disabled', String(reorderLocked));
+    dom.checklist.querySelectorAll('input[data-index]').forEach((input) => {
+      const row = input.closest('.check-item');
+      const taskIndex = row ? Number(row.dataset.taskIndex) : -1;
+      input.disabled = locked || taskIndex === editingTaskIndex;
     });
-    if (dom.toggleCompletedTasks) dom.toggleCompletedTasks.disabled = saving;
-    if (dom.savePlan) dom.savePlan.disabled = saving;
+    dom.checklist.querySelectorAll('.drag-handle').forEach((handle) => {
+      const disabled = locked || Number(handle.dataset.taskIndex) === editingTaskIndex;
+      handle.disabled = disabled;
+      handle.setAttribute('aria-disabled', String(disabled));
+    });
+    dom.checklist.querySelectorAll('.task-edit-input').forEach((input) => {
+      input.disabled = locked;
+    });
+    if (dom.toggleCompletedTasks) dom.toggleCompletedTasks.disabled = noDrawer || app.savingPlan;
+    if (dom.savePlan) dom.savePlan.disabled = noDrawer || app.savingPlan;
     updateStarterPlanButton();
-    if (!saving && app.planDirty) dom.taskStatus.textContent = 'Save plan.md first';
+    if (!noDrawer && !app.savingPlan && app.planDirty) dom.taskStatus.textContent = 'Save plan.md first';
   }
 
   function updatePlanGuide(plan) {
@@ -430,11 +441,11 @@ const MODEL_OPTIONS = [
     return card;
   }
 
-  function setCardVisual(card, project) {
-    const holder = card.querySelector('.project-visual');
-    const iconKey = project.icon || '';
-    if (card.dataset.iconKey === iconKey && holder.firstChild) return;
-    card.dataset.iconKey = iconKey;
+  function visualIconKey(project) {
+    return project.iconVersion || project.icon || '';
+  }
+
+  function renderProjectVisual(holder, project, iconKey) {
     holder.innerHTML = '';
 
     if (!iconKey) {
@@ -456,6 +467,29 @@ const MODEL_OPTIONS = [
       img.replaceWith(badge);
     });
     holder.appendChild(img);
+  }
+
+  function setCardVisual(card, project) {
+    const holder = card.querySelector('.project-visual');
+    const iconKey = visualIconKey(project);
+    if (card.dataset.iconKey === iconKey && holder.firstChild) return;
+    card.dataset.iconKey = iconKey;
+    renderProjectVisual(holder, project, iconKey);
+  }
+
+  function setDrawerVisual(project) {
+    const holder = dom.drawerVisual;
+    if (!holder) return;
+    if (!project) {
+      holder.dataset.iconKey = '';
+      holder.innerHTML = '';
+      return;
+    }
+    const iconKey = visualIconKey(project);
+    const cacheKey = `${project.id}:${iconKey}`;
+    if (holder.dataset.iconKey === cacheKey && holder.firstChild) return;
+    holder.dataset.iconKey = cacheKey;
+    renderProjectVisual(holder, project, iconKey);
   }
 
   function taskFallback(project) {
@@ -774,6 +808,7 @@ const MODEL_OPTIONS = [
 
   function updateDrawerHeader(project) {
     const info = statusInfo(project);
+    setDrawerVisual(project);
     dom.drawerTitle.textContent = project.name;
     dom.drawerPath.textContent = project.path;
     dom.drawerStatus.className = `badge ${info.cls}${project.active && !project.paused ? ' active' : ''}`;
@@ -795,6 +830,7 @@ const MODEL_OPTIONS = [
     setSidebarOpen(false);
     app.drawerId = id;
     app.planDirty = false;
+    editingTaskIndex = -1;
     app.showCompleted = true;
     app.currentPlan = null;
     app.planTaskCount = 0;
@@ -827,7 +863,9 @@ const MODEL_OPTIONS = [
     dom.drawerBackdrop.hidden = true;
     document.body.style.overflow = '';
     app.drawerId = null;
+    setDrawerVisual(null);
     app.planDirty = false;
+    editingTaskIndex = -1;
     app.showCompleted = true;
     app.currentPlan = null;
     app.planTaskCount = 0;
@@ -870,6 +908,40 @@ const MODEL_OPTIONS = [
     return next.join('\n');
   }
 
+  function taskEditTarget(content, taskIndex) {
+    const index = Number(taskIndex);
+    if (!Number.isInteger(index) || index < 0) return null;
+    const lines = String(content || '').split('\n');
+    const line = planTaskLineIndexes(lines.join('\n'))[index];
+    if (line === undefined) return null;
+    const raw = lines[line];
+    const lineEnding = raw.endsWith('\r') ? '\r' : '';
+    const match = raw.slice(0, raw.length - lineEnding.length).match(TASK_EDIT_RE);
+    if (!match) return null;
+    return { lines, line, match, lineEnding };
+  }
+
+  function normalizeTaskEditText(text) {
+    if (text === undefined || text === null) return '';
+    return String(text).trim().replace(/\s+/g, ' ').trim();
+  }
+
+  function editPlanTaskContent(content, taskIndex, newText) {
+    const target = taskEditTarget(content, taskIndex);
+    if (!target) return { ok: false, error: `No checklist item at index ${taskIndex}` };
+    const text = normalizeTaskEditText(newText);
+    if (!text) return { ok: false, error: 'Task text is required' };
+    target.lines[target.line] = `${target.match[1]}${target.match[2]}${target.match[3]}${text}${target.lineEnding}`;
+    return { ok: true, content: target.lines.join('\n') };
+  }
+
+  function removePlanTaskContent(content, taskIndex) {
+    const target = taskEditTarget(content, taskIndex);
+    if (!target) return { ok: false, error: `No checklist item at index ${taskIndex}` };
+    target.lines.splice(target.line, 1);
+    return { ok: true, content: target.lines.join('\n') };
+  }
+
   function appendTask(content, text) {
     const clean = cleanTaskText(text);
     if (!clean) return null;
@@ -892,7 +964,9 @@ const MODEL_OPTIONS = [
 
   function restoreChecklistFocus(action, taskIndex) {
     if (!action || taskIndex === null || taskIndex === undefined) return;
-    const control = dom.checklist.querySelector(`[data-action="${action}"][data-task-index="${taskIndex}"]`);
+    const control = dom.checklist.querySelector(
+      `button[data-action="${action}"][data-task-index="${taskIndex}"], input[data-action="${action}"][data-task-index="${taskIndex}"]`
+    );
     if (control && !control.disabled && typeof control.focus === 'function') control.focus();
   }
 
@@ -906,7 +980,7 @@ const MODEL_OPTIONS = [
     app.planTaskCount = plan.tasks?.length || 0;
     updateToggleCompletedButton();
     const visible = (plan.tasks || [])
-      .map((task, taskIndex) => ({ task, taskIndex }))
+      .map((task) => ({ task, taskIndex: task.index }))
       .filter(({ task }) => app.showCompleted || !task.checked);
     if (!visible.length) {
       const message = !app.showCompleted && app.planTaskCount
@@ -918,13 +992,18 @@ const MODEL_OPTIONS = [
       return;
     }
     const lastIndex = app.planTaskCount - 1;
-    dom.checklist.innerHTML = visible.map(({ task, taskIndex }) => `
+    dom.checklist.innerHTML = visible.map(({ task, taskIndex }) => {
+      const editing = editingTaskIndex === taskIndex;
+      const taskText = editing
+        ? `<input class="task-edit-input" data-action="edit-input" data-task-index="${taskIndex}" value="${esc(task.text || '')}">`
+        : `<span class="task-text">${esc(task.text || '(empty task)')}</span>`;
+      return `
       <div class="check-item${task.checked ? ' checked' : ''}" data-task-index="${taskIndex}">
         <button class="move-button drag-handle" type="button" data-action="drag" data-task-index="${taskIndex}" title="Drag to reorder task" aria-label="Drag to reorder task">☰</button>
         <div class="check-label">
           <input type="checkbox" data-index="${task.index}" ${task.checked ? 'checked' : ''}>
           <span class="check-index">${task.index + 1}</span>
-          <span class="task-text">${esc(task.text || '(empty task)')}</span>
+          ${taskText}
         </div>
         <div class="task-move">
           <button class="move-button" type="button" data-action="move-top" data-task-index="${taskIndex}" ${taskIndex === 0 ? 'disabled' : ''} aria-label="Move task to top">⇈</button>
@@ -932,13 +1011,28 @@ const MODEL_OPTIONS = [
           <button class="move-button" type="button" data-action="move-down" data-task-index="${taskIndex}" ${taskIndex === lastIndex ? 'disabled' : ''} aria-label="Move task down">↓</button>
           <button class="move-button" type="button" data-action="move-bottom" data-task-index="${taskIndex}" ${taskIndex === lastIndex ? 'disabled' : ''} aria-label="Move task to bottom">⇊</button>
         </div>
-      </div>`).join('');
+        <div class="task-actions">
+          ${editing
+            ? `<button class="icon-button save-task-button" type="button" data-action="save-task" data-task-index="${taskIndex}" aria-label="Save task" title="Save task">💾</button>`
+            : `<button class="icon-button edit-task-button" type="button" data-action="edit-task" data-task-index="${taskIndex}" aria-label="Edit task" title="Edit task">✎</button>`}
+          <button class="icon-button remove-task-button" type="button" data-action="remove-task" data-task-index="${taskIndex}" aria-label="Delete task" title="Delete task">✕</button>
+        </div>
+      </div>`;
+    }).join('');
     updatePlanControls();
     restoreChecklistFocus(focusAction, focusTaskIndex);
+    if (editingTaskIndex >= 0) {
+      const input = dom.checklist.querySelector(`.task-edit-input[data-task-index="${editingTaskIndex}"]`);
+      if (input && !input.disabled) {
+        input.focus();
+        input.select();
+      }
+    }
   }
 
   function toggleCompleted() {
     if (!app.drawerId || app.savingPlan) return;
+    if (editingTaskIndex !== -1) cancelTaskEdit();
     app.showCompleted = !app.showCompleted;
     updateToggleCompletedButton();
     if (app.currentPlan) renderChecklist(app.currentPlan);
@@ -1016,6 +1110,7 @@ const MODEL_OPTIONS = [
     try {
       const plan = await api(`/api/projects/${encodeURIComponent(id)}/plan`);
       if (app.drawerId !== id || app.planDirty) return;
+      editingTaskIndex = -1;
       renderChecklist(plan);
       updatePlanGuide(plan);
       dom.planEditor.value = plan.content || '';
@@ -1036,7 +1131,7 @@ const MODEL_OPTIONS = [
     }
   }
 
-  async function savePlanContent(content, message) {
+  async function savePlanContent(content, message, change) {
     const id = app.drawerId;
     if (!id || app.savingPlan) return false;
     app.savingPlan = true;
@@ -1046,7 +1141,7 @@ const MODEL_OPTIONS = [
       try {
         await api(`/api/projects/${encodeURIComponent(id)}/plan`, {
           method: 'PUT',
-          body: JSON.stringify({ content })
+          body: JSON.stringify(change === undefined ? { content } : { content, change })
         });
         if (app.drawerId === id) {
           const editorChanged = dom.planEditor.value !== content;
@@ -1105,7 +1200,7 @@ const MODEL_OPTIONS = [
 
   async function reorderChecklistTask(fromTaskIndex, toTaskIndex) {
     const id = app.drawerId;
-    if (!id || app.savingPlan || app.planDirty) return;
+    if (!id || app.savingPlan || app.planDirty || editingTaskIndex !== -1) return;
     if (!Number.isInteger(fromTaskIndex) || !Number.isInteger(toTaskIndex)) return;
     if (fromTaskIndex < 0 || toTaskIndex < 0) return;
     if (fromTaskIndex >= app.planTaskCount || toTaskIndex >= app.planTaskCount) return;
@@ -1125,6 +1220,7 @@ const MODEL_OPTIONS = [
       const saved = await savePlanContent(next, 'Task moved');
       if (app.drawerId !== id) return;
       if (saved) {
+        editingTaskIndex = -1;
         dom.taskStatus.textContent = 'Task moved';
         focusTaskControl(toTaskIndex);
         return;
@@ -1132,6 +1228,7 @@ const MODEL_OPTIONS = [
       dom.planEditor.value = previousEditor;
       app.planDirty = false;
       dom.planStatus.textContent = previousStatus;
+      editingTaskIndex = -1;
       updatePlanControls();
       await loadPlan(id);
       dom.taskStatus.textContent = 'Could not move task.';
@@ -1140,7 +1237,165 @@ const MODEL_OPTIONS = [
         dom.planEditor.value = previousEditor;
         app.planDirty = false;
         dom.planStatus.textContent = previousStatus;
+        editingTaskIndex = -1;
         updatePlanControls();
+        await loadPlan(id);
+        dom.taskStatus.textContent = error.message;
+      }
+    }
+  }
+
+  function taskByIndex(taskIndex) {
+    return (app.currentPlan?.tasks || []).find((task) => task.index === taskIndex) || null;
+  }
+
+  function focusEditButton(taskIndex) {
+    const button = dom.checklist.querySelector(`.edit-task-button[data-task-index="${taskIndex}"]`);
+    if (button && !button.disabled) button.focus();
+    else dom.addTask.focus();
+  }
+
+  function focusNearestEditButton(taskIndex) {
+    const buttons = [...dom.checklist.querySelectorAll('.edit-task-button:not(:disabled)')];
+    if (!buttons.length) {
+      dom.addTask.focus();
+      return;
+    }
+    const nearest = buttons.reduce((best, button) => {
+      const distance = Math.abs(Number(button.dataset.taskIndex) - taskIndex);
+      const bestDistance = Math.abs(Number(best.dataset.taskIndex) - taskIndex);
+      return distance < bestDistance ? button : best;
+    });
+    nearest.focus();
+  }
+
+  function startTaskEdit(taskIndex) {
+    if (!app.drawerId || app.savingPlan || app.planDirty || editingTaskIndex !== -1) return;
+    const task = taskByIndex(taskIndex);
+    if (!task) return;
+    editingTaskIndex = taskIndex;
+    dom.taskStatus.textContent = '';
+    if (app.currentPlan) renderChecklist(app.currentPlan);
+  }
+
+  function cancelTaskEdit() {
+    if (editingTaskIndex < 0) return;
+    const previous = editingTaskIndex;
+    editingTaskIndex = -1;
+    if (app.currentPlan) renderChecklist(app.currentPlan);
+    else updatePlanControls();
+    focusEditButton(previous);
+  }
+
+  async function saveTaskEdit(taskIndex) {
+    const id = app.drawerId;
+    if (!id || app.savingPlan || app.planDirty || editingTaskIndex !== taskIndex) return;
+    if (!Number.isInteger(taskIndex) || taskIndex < 0) return;
+    const task = taskByIndex(taskIndex);
+    if (!task) return;
+    const input = dom.checklist.querySelector(`.task-edit-input[data-task-index="${taskIndex}"]`);
+    if (!input || input.disabled) return;
+    const newText = cleanTaskText(input.value);
+    if (!newText) {
+      dom.taskStatus.textContent = 'Enter task text.';
+      return;
+    }
+    const oldText = task.text;
+    const previousEditor = dom.planEditor.value;
+    const previousStatus = dom.planStatus.textContent;
+    try {
+      const content = await ensurePlanContent();
+      const result = editPlanTaskContent(content, taskIndex, newText);
+      if (!result.ok) {
+        if (app.drawerId === id) dom.taskStatus.textContent = result.error;
+        return;
+      }
+      editingTaskIndex = -1;
+      dom.planEditor.value = result.content;
+      markPlanDirty();
+      dom.taskStatus.textContent = 'Saving task…';
+      const saved = await savePlanContent(result.content, 'Task updated', {
+        type: 'edit',
+        index: taskIndex,
+        oldText,
+        newText,
+      });
+      if (app.drawerId !== id) return;
+      if (saved) {
+        editingTaskIndex = -1;
+        dom.taskStatus.textContent = 'Task updated';
+        focusEditButton(taskIndex);
+        return;
+      }
+      dom.planEditor.value = previousEditor;
+      app.planDirty = false;
+      dom.planStatus.textContent = previousStatus;
+      editingTaskIndex = -1;
+      updatePlanControls();
+      await loadPlan(id);
+      dom.taskStatus.textContent = 'Could not update task.';
+    } catch (error) {
+      if (app.drawerId === id) {
+        dom.planEditor.value = previousEditor;
+        app.planDirty = false;
+        dom.planStatus.textContent = previousStatus;
+        editingTaskIndex = -1;
+        updatePlanControls();
+        await loadPlan(id);
+        dom.taskStatus.textContent = error.message;
+      }
+    }
+  }
+
+  async function deleteTask(taskIndex) {
+    const id = app.drawerId;
+    if (!id || app.savingPlan || app.planDirty) return;
+    if (!Number.isInteger(taskIndex) || taskIndex < 0) return;
+    const task = taskByIndex(taskIndex);
+    if (!task) return;
+    const oldText = task.text;
+    const confirmed = window.confirm('Delete task '+(taskIndex+1)+': "'+oldText+'"? This removes the checklist line from plan.md and cannot be undone.');
+    if (!confirmed) return;
+    const previousEditor = dom.planEditor.value;
+    const previousStatus = dom.planStatus.textContent;
+    try {
+      const content = await ensurePlanContent();
+      const result = removePlanTaskContent(content, taskIndex);
+      if (!result.ok) {
+        if (app.drawerId === id) dom.taskStatus.textContent = result.error;
+        return;
+      }
+      editingTaskIndex = -1;
+      dom.planEditor.value = result.content;
+      markPlanDirty();
+      dom.taskStatus.textContent = 'Deleting task…';
+      const saved = await savePlanContent(result.content, 'Task deleted', {
+        type: 'remove',
+        index: taskIndex,
+        oldText
+      });
+      if (app.drawerId !== id) return;
+      if (saved) {
+        editingTaskIndex = -1;
+        dom.taskStatus.textContent = 'Task deleted';
+        focusNearestEditButton(taskIndex);
+        return;
+      }
+      dom.planEditor.value = previousEditor;
+      app.planDirty = false;
+      dom.planStatus.textContent = previousStatus;
+      editingTaskIndex = -1;
+      updatePlanControls();
+      await loadPlan(id);
+      dom.taskStatus.textContent = 'Could not delete task.';
+    } catch (error) {
+      if (app.drawerId === id) {
+        dom.planEditor.value = previousEditor;
+        app.planDirty = false;
+        dom.planStatus.textContent = previousStatus;
+        editingTaskIndex = -1;
+        updatePlanControls();
+        await loadPlan(id);
         dom.taskStatus.textContent = error.message;
       }
     }
@@ -1848,7 +2103,7 @@ const MODEL_OPTIONS = [
 
   dom.checklist.addEventListener('change', async (event) => {
     const checkbox = event.target;
-    if (!(checkbox instanceof HTMLInputElement) || checkbox.type !== 'checkbox') return;
+    if (!(checkbox instanceof HTMLInputElement) || checkbox.type !== 'checkbox' || checkbox.disabled) return;
     const id = app.drawerId;
     if (!id) return;
     checkbox.disabled = true;
@@ -1864,6 +2119,11 @@ const MODEL_OPTIONS = [
     } finally {
       checkbox.disabled = false;
     }
+  });
+
+  dom.checklist.addEventListener('input', (event) => {
+    const input = event.target instanceof Element ? event.target.closest('.task-edit-input') : null;
+    if (input) updatePlanControls();
   });
 
   dom.addTask.addEventListener('click', addChecklistTask);
@@ -1885,6 +2145,18 @@ const MODEL_OPTIONS = [
     }
     const taskIndex = Number(button.dataset.taskIndex);
     if (!Number.isInteger(taskIndex)) return;
+    if (action === 'edit-task') {
+      startTaskEdit(taskIndex);
+      return;
+    }
+    if (action === 'save-task') {
+      void saveTaskEdit(taskIndex);
+      return;
+    }
+    if (action === 'remove-task') {
+      void deleteTask(taskIndex);
+      return;
+    }
     const lastIndex = app.planTaskCount - 1;
     let toTaskIndex;
     if (action === 'move-top') toTaskIndex = 0;
@@ -1909,6 +2181,19 @@ const MODEL_OPTIONS = [
   dom.checklist.addEventListener('pointercancel', (event) => { finishPlanDrag(event, false); });
   dom.checklist.addEventListener('lostpointercapture', (event) => { finishPlanDrag(event, false); });
   dom.checklist.addEventListener('keydown', (event) => {
+    const input = event.target instanceof Element ? event.target.closest('.task-edit-input') : null;
+    if (input) {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        event.stopPropagation();
+        void saveTaskEdit(Number(input.dataset.taskIndex));
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        cancelTaskEdit();
+      }
+      return;
+    }
     if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
     const target = event.target instanceof Element ? event.target : null;
     const handle = target?.closest('.drag-handle[data-action="drag"]');

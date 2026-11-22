@@ -1,6 +1,7 @@
 'use strict';
 
 const http = require('http');
+const https = require('https');
 const path = require('path');
 const { spawn, execFileSync } = require('child_process');
 
@@ -83,8 +84,11 @@ async function ensureServer() {
   return serverPromise;
 }
 
-function buildCommand({ prompt, cwd, url = SERVER_URL, files = [], model = '' }) {
+function buildCommand({ prompt, cwd, url = SERVER_URL, files = [], model = '', runKey, projectId, phase, task }) {
   if (EXECUTOR_URL) {
+    if (typeof runKey !== 'string' || !runKey.trim()) {
+      throw new Error('runKey is required in bridge mode');
+    }
     return {
       command: process.execPath,
       args: [BRIDGE_CLIENT],
@@ -94,7 +98,7 @@ function buildCommand({ prompt, cwd, url = SERVER_URL, files = [], model = '' })
           ...process.env,
           LOOPARR_EXECUTOR_URL: EXECUTOR_URL,
           LOOPARR_EXECUTOR_TOKEN: EXECUTOR_TOKEN,
-          LOOPARR_TASK_PAYLOAD: JSON.stringify({ prompt, cwd, files, url, model })
+          LOOPARR_TASK_PAYLOAD: JSON.stringify({ prompt, cwd, files, url, model, runKey, projectId, phase, task })
         },
         shell: false
       }
@@ -119,6 +123,54 @@ function isRateLimit(text) {
   return RATE_LIMIT_PATTERN.test(String(text));
 }
 
+function requestExecutor(pathname, payload) {
+  const target = new URL(`${EXECUTOR_URL}${pathname}`);
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+    throw new Error(`unsupported executor URL protocol: ${target.protocol}`);
+  }
+  const transport = target.protocol === 'https:' ? https : http;
+  const body = JSON.stringify(payload);
+  return new Promise((resolve, reject) => {
+    const request = transport.request({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port || undefined,
+      path: `${target.pathname}${target.search}`,
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(body),
+        authorization: `Bearer ${EXECUTOR_TOKEN}`
+      }
+    }, (response) => {
+      let text = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => {
+        if (text.length < 1000) text += chunk;
+      });
+      response.on('end', () => {
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+          if (!text.trim()) return resolve({ ok: true });
+          try {
+            return resolve(JSON.parse(text));
+          } catch {
+            return resolve({ ok: true });
+          }
+        }
+        reject(new Error(`executor returned HTTP ${response.statusCode}: ${text.slice(0, 500)}`));
+      });
+    });
+    request.on('error', reject);
+    request.end(body);
+  });
+}
+
+async function cancelStaleRuns({ projectId, cwd, keepRunKey } = {}) {
+  if (!EXECUTOR_URL) return { ok: true, cancelled: [] };
+  if (!projectId && !cwd) return { ok: true, cancelled: [] };
+  return requestExecutor('/cancel', { projectId, cwd, keepRunKey });
+}
+
 function shutdown() {
   if (managedServer && !managedServer.killed) {
     try { managedServer.kill('SIGTERM'); } catch { /* ignore */ }
@@ -135,5 +187,6 @@ module.exports = {
   ensureServer,
   buildCommand,
   isRateLimit,
+  cancelStaleRuns,
   shutdown
 };

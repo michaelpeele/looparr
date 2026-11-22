@@ -10,7 +10,7 @@ const TASK_MAX_CHARS = 240;
 const STATE_TASK_MAX_CHARS = 2000;
 const INTENT_TTL_MS = 24 * 60 * 60 * 1000;
 const PHASES = new Set(['seed', 'analyze', 'implement']);
-const REASONS = new Set(['planned-restart', 'container-shutdown']);
+const REASONS = new Set(['planned-restart', 'container-shutdown', 'checkpoint']);
 
 function shouldCaptureResumeIntent() {
   return process.env.HOSTNAME === 'looparr' || process.env.LOOPARR_ALLOW_RESUME_INTENT === '1';
@@ -46,6 +46,7 @@ function auditEntry(project, event, fields = {}) {
     phase: PHASES.has(fields.phase) ? fields.phase : undefined,
     task: redactText(fields.task ?? '', TASK_MAX_CHARS) || undefined,
     reason: REASONS.has(fields.reason) ? fields.reason : undefined,
+    cause: redactText(fields.cause ?? '', 120) || undefined,
     pid: Number.isInteger(fields.pid) ? fields.pid : process.pid,
     hostname: redactText(fields.hostname ?? process.env.HOSTNAME ?? '', 60) || undefined
   };

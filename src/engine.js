@@ -17,12 +17,34 @@ const config = configStore.loadConfig();
 const runtime = new Map();
 const watchers = new Map();
 const LOG_LIMIT = 400;
+const CHECKPOINT_INTERVAL_MS = 30_000;
 let logSeq = 0;
 let tickTimer = null;
 let roundRobinCursor = 0;
+let lastCheckpointAt = 0;
 
 function newId() {
   return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function iconVersionFor(icon) {
+  if (!icon || !icon.absolutePath) return null;
+  try {
+    const bytes = fs.readFileSync(icon.absolutePath);
+    return crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 12);
+  } catch {
+    try {
+      const stat = fs.statSync(icon.absolutePath);
+      return `mtime-${stat.mtimeMs}-${stat.size}`;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function applyRuntimeIcon(rt, found) {
+  rt.icon = found ? { ...found, version: iconVersionFor(found) } : null;
+  rt.iconVersion = rt.icon ? rt.icon.version : null;
 }
 
 function ensureRuntime(project) {
@@ -44,10 +66,11 @@ function ensureRuntime(project) {
       token: 0,
       stepTask: null,
       stepOutput: '',
-      icon: null
+      icon: null,
+      iconVersion: null
     };
     runtime.set(project.id, rt);
-    rt.icon = iconLib.findIcon(project.path);
+    applyRuntimeIcon(rt, iconLib.findIcon(project.path));
   }
   return rt;
 }
@@ -99,10 +122,11 @@ function getState() {
       const status = plan.ok ? rt.status : 'error';
       let currentIndex = -1;
       if (rt.stepTask && typeof rt.stepTask.index === 'number') {
-        currentIndex = rt.stepTask.index;
+        const active = plan.tasks.find((task) => task.index === rt.stepTask.index);
+        if (active && !active.checked) currentIndex = rt.stepTask.index;
       } else if (rt.currentTask) {
-        const active = plan.tasks.find((task) => task.text === rt.currentTask);
-        currentIndex = active ? active.index : -1;
+        const active = plan.tasks.find((task) => task.text === rt.currentTask && !task.checked);
+        if (active) currentIndex = active.index;
       }
       const nextTask =
         currentIndex >= 0
@@ -133,6 +157,7 @@ function getState() {
         nextTask,
         progress: plan.stats,
         icon: rt.icon ? rt.icon.relativePath : null,
+        iconVersion: rt.iconVersion || null,
         resumeAt: rt.resumeAt,
         autoResumeOnStart: project.autoResumeOnStart === true,
         autoResumePending: fs.existsSync(autoResume.statePath(project)),
@@ -158,20 +183,35 @@ function watchProject(project) {
   watcher.on('all', (event, filePath) => {
     const relative = path.relative(project.path, filePath).split(path.sep).join('/');
     if (relative === 'plan.md') {
+      reconcileExternalPlan(project);
       emitState();
       return;
     }
-    const rt = ensureRuntime(project);
-    const found = iconLib.findIcon(project.path);
-    const before = rt.icon ? rt.icon.relativePath : null;
-    const after = found ? found.relativePath : null;
-    if (before !== after) {
-      rt.icon = found;
-      appendLog(project.id, 'system', `Icon detected: ${after}`);
-      emitState();
-    }
+    refreshIcon(project.id);
   });
   watchers.set(project.id, watcher);
+}
+
+function refreshIcon(id) {
+  const project = findProject(id);
+  if (!project) return false;
+  const rt = ensureRuntime(project);
+  const beforePath = rt.icon ? rt.icon.relativePath : null;
+  const beforeVersion = rt.iconVersion || null;
+  applyRuntimeIcon(rt, iconLib.findIcon(project.path));
+  const afterPath = rt.icon ? rt.icon.relativePath : null;
+  const afterVersion = rt.iconVersion || null;
+  if (beforePath !== afterPath) {
+    appendLog(id, 'system', `Icon detected: ${afterPath}`);
+    emitState();
+    return true;
+  }
+  if (beforeVersion !== afterVersion) {
+    appendLog(id, 'system', `Icon updated: ${afterPath}`);
+    emitState();
+    return true;
+  }
+  return false;
 }
 
 function save() {
@@ -237,10 +277,59 @@ function getPlan(id) {
   return planLib.readPlan(project.path);
 }
 
-function writePlan(id, content) {
+function normalizedPlanChangeText(value) {
+  return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').trim() : '';
+}
+
+function normalizePlanChange(change) {
+  if (!change || typeof change !== 'object' || Array.isArray(change)) return null;
+  const index = Number(change.index);
+  if (!Number.isInteger(index) || index < 0) return null;
+  if (typeof change.oldText !== 'string') return null;
+  const oldText = normalizedPlanChangeText(change.oldText);
+  if (change.type === 'edit') {
+    if (typeof change.newText !== 'string') return null;
+    const newText = normalizedPlanChangeText(change.newText);
+    if (!newText) return null;
+    return { type: 'edit', index, oldText, newText };
+  }
+  if (change.type === 'remove') return { type: 'remove', index, oldText };
+  return null;
+}
+
+function reconcilePlanChange(project, change) {
+  const valid = normalizePlanChange(change);
+  if (!valid) return;
+  const rt = ensureRuntime(project);
+  const plan = planLib.readPlan(project.path);
+  if (!plan.ok) return;
+  if (valid.type === 'edit') {
+    const task = plan.tasks[valid.index];
+    if (!task) return;
+    if (rt.stepTask && Number(rt.stepTask.index) === valid.index) rt.stepTask.text = valid.newText;
+    if (valid.oldText && (rt.currentTask === valid.oldText || normalizedPlanChangeText(rt.currentTask) === valid.oldText)) rt.currentTask = task.text;
+    return;
+  }
+  if (rt.stepTask && Number(rt.stepTask.index) === valid.index) {
+    rt.stepTask = null;
+    rt.currentTask = '';
+    rt.nextPhase = 'seed';
+  } else if (rt.stepTask && Number(rt.stepTask.index) > valid.index) {
+    rt.stepTask.index -= 1;
+  }
+  if (!rt.currentTask || !plan.tasks.some((task) => task.text === rt.currentTask)) {
+    rt.currentTask = '';
+    if (!rt.stepTask) rt.nextPhase = 'seed';
+  }
+}
+
+function writePlan(id, content, change) {
   const project = findProject(id);
   if (!project) return false;
+  let planChange = null;
+  try { planChange = normalizePlanChange(change); } catch { /* ignore malformed change */ }
   planLib.writePlan(project.path, content);
+  try { reconcilePlanChange(project, planChange); } catch { /* ignore reconciliation failures */ }
   emitState();
   return true;
 }
@@ -265,6 +354,54 @@ function getIcon(id) {
 
 function answerPath(project) {
   return path.join(project.path, '.looparr', 'next_prompt.txt');
+}
+
+function clearHandoff(project) {
+  try {
+    fs.unlinkSync(answerPath(project));
+    return true;
+  } catch (error) {
+    return error && error.code === 'ENOENT';
+  }
+}
+
+function clearCheckpointIntent(project) {
+  const checked = autoResume.readIntent(project);
+  if (!checked.ok || checked.intent.reason !== 'checkpoint') return false;
+  return autoResume.clearIntent(project);
+}
+
+function writeCheckpointIntent(project, rt) {
+  if (project.autoResumeOnStart !== true) return false;
+  if (!autoResume.shouldCaptureResumeIntent()) return false;
+  if (!rt || !rt.active || rt.paused || !rt.currentTask) return false;
+  if (rt.status === 'done' || rt.status === 'error') return false;
+  if (autoResume.hasIntent(project)) return false;
+  const written = autoResume.writeIntent(project, {
+    reason: 'checkpoint',
+    nextPhase: autoResume.PHASES.has(rt.nextPhase) ? rt.nextPhase : 'seed',
+    status: rt.status,
+    currentTask: rt.currentTask,
+    resumeAt: rt.resumeAt,
+    pid: process.pid,
+    hostname: process.env.HOSTNAME || ''
+  });
+  return written.ok;
+}
+
+function reconcileExternalPlan(project) {
+  const rt = ensureRuntime(project);
+  const plan = planLib.readPlan(project.path);
+  if (!plan.ok) return;
+  const stillCurrent = Boolean(
+    rt.currentTask && plan.tasks.some((task) => !task.checked && task.text === rt.currentTask)
+  );
+  if (stillCurrent) return;
+  rt.currentTask = '';
+  rt.stepTask = null;
+  rt.nextPhase = 'seed';
+  clearCheckpointIntent(project);
+  clearHandoff(project);
 }
 
 function hasHandoff(project) {
@@ -484,6 +621,8 @@ function handleClose(project, rt, code, task, phase, runner) {
       if (!current.ok) throw new Error(`plan.md disappeared: ${current.error}`);
       const updated = planLib.markTask(current.content, task.text, true);
       if (updated.ok && updated.changed) planLib.writePlan(project.path, updated.content);
+      clearCheckpointIntent(project);
+      clearHandoff(project);
       appendLog(project.id, 'system', `✓ Done: ${task.text}`);
       rt.nextPhase = 'seed';
     }
@@ -520,11 +659,13 @@ async function startStep(project) {
       rt.status = 'done';
       rt.active = false;
       rt.currentTask = '';
+      clearCheckpointIntent(project);
       appendLog(project.id, 'system', 'All tasks complete.');
       emitState();
       return;
     }
     const phase = rt.nextPhase || 'seed';
+    const runKey = runKeyFor(project, phase, task.text);
     runner = getRunner(project.runner) || getRunner(config.settings.globalRunner) || getRunner('opencode');
     if (!runner) throw new Error(`Runner "${project.runner || config.settings.globalRunner}" is not registered`);
 
@@ -568,6 +709,7 @@ async function startStep(project) {
     rt.stepTask = task;
     rt.stepOutput = '';
     rt.resumeAt = null;
+    writeCheckpointIntent(project, rt);
     appendLog(project.id, 'system', `▶ ${phase.toUpperCase()} — ${task.text}`);
     emitState();
 
@@ -579,8 +721,17 @@ async function startStep(project) {
       cwd: project.path,
       url,
       files,
-      model
+      model,
+      runKey,
+      projectId: project.id,
+      phase,
+      task
     });
+    try {
+      await runner.cancelStaleRuns?.({ projectId: project.id, cwd: project.path, keepRunKey: runKey });
+    } catch (error) {
+      appendLog(project.id, 'system', `Stale run cancellation failed: ${error.message}`);
+    }
     const child = spawn(built.command, built.args, built.options);
     rt.child = child;
     rt.token += 1;
@@ -652,6 +803,11 @@ function tick() {
       emitState();
     }
   }
+  const now = Date.now();
+  if (now - lastCheckpointAt >= CHECKPOINT_INTERVAL_MS) {
+    lastCheckpointAt = now;
+    for (const project of config.projects) writeCheckpointIntent(project, ensureRuntime(project));
+  }
   if (running >= limit) return;
   const eligible = eligibleProjects();
   if (!eligible.length) return;
@@ -682,7 +838,38 @@ function auditStaleIntent(project, intent) {
   });
 }
 
-function prepareShutdownResume(reason) {
+function runKeyFor(project, phase, taskText) {
+  const id = String(project?.id ?? '');
+  const projectPath = path.resolve(String(project?.path ?? ''));
+  const material = [id, projectPath, String(phase ?? ''), String(taskText ?? '')].join('\0');
+  return crypto.createHash('sha256').update(material, 'utf8').digest('hex').slice(0, 32);
+}
+
+function quiesceChild(rt) {
+  const child = rt.child;
+  rt.token += 1;
+  if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        try { child.kill('SIGKILL'); } catch { /* ignore */ }
+      }
+      finish();
+    }, 3000);
+    child.once('close', finish);
+    child.once('error', finish);
+    try { child.kill('SIGTERM'); } catch { finish(); }
+  });
+}
+
+async function prepareShutdownResume(reason) {
   const captureReason = autoResume.REASONS.has(reason) ? reason : 'planned-restart';
   const result = { gated: autoResume.shouldCaptureResumeIntent(), prepared: [], skipped: [] };
   if (!result.gated) {
@@ -707,7 +894,7 @@ function prepareShutdownResume(reason) {
       result.skipped.push({ id: project.id, reason: rt.status === 'done' ? 'completed' : 'failed' });
       continue;
     }
-    if (autoResume.hasIntent(project)) {
+    if (autoResume.hasIntent(project, captureReason)) {
       result.skipped.push({ id: project.id, reason: 'already-pending' });
       continue;
     }
@@ -726,6 +913,16 @@ function prepareShutdownResume(reason) {
       continue;
     }
     autoResume.appendAudit(project, 'about-to-resume', {
+      phase,
+      task: rt.currentTask || '',
+      reason: captureReason
+    });
+    await quiesceChild(rt);
+    rt.child = null;
+    rt.starting = false;
+    rt.paused = true;
+    emitState();
+    autoResume.appendAudit(project, 'resume-child-quiesced', {
       phase,
       task: rt.currentTask || '',
       reason: captureReason
@@ -793,10 +990,10 @@ function resumeOnStart() {
       }
       if (intent.currentTask !== taskText) {
         autoResume.appendAudit(project, 'resume-degraded', {
-          phase, task: taskText, reason: intent.reason, skipped: 'task-no-longer-next'
+          phase, task: taskText, reason: intent.reason, cause: 'task-no-longer-next'
         });
-        auditStaleIntent(project, intent);
-        continue;
+        phase = 'seed';
+        clearHandoff(project);
       }
       const rt = ensureRuntime(project);
       rt.active = true;
@@ -874,7 +1071,10 @@ module.exports = {
   pause,
   stop,
   prepareShutdownResume,
+  runKeyFor,
   resumeOnStart,
   promptPreamble,
-  isMetaPromptHandoff
+  isMetaPromptHandoff,
+  iconVersionFor,
+  refreshIcon
 };

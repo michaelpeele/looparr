@@ -480,7 +480,7 @@ app.put('/api/projects/:id/plan', (req, res) => {
   if (!findProject(req.params.id)) return fail(res, 404, 'Project not found');
   if (typeof req.body?.content !== 'string') return fail(res, 400, 'content must be a string');
   try {
-    engine.writePlan(req.params.id, req.body.content);
+    engine.writePlan(req.params.id, req.body.content, req.body.change);
     return res.json({ ok: true });
   } catch (error) {
     return fail(res, 500, error.message);
@@ -518,8 +518,30 @@ app.get('/api/projects/:id/icon', (req, res) => {
   const icon = engine.getIcon(req.params.id);
   if (!icon) return fail(res, 404, 'No icon found');
   if (!iconLib.isInside(project.path, icon.absolutePath)) return fail(res, 400, 'Invalid icon path');
+
+  let projectReal;
+  let iconReal;
+  try {
+    projectReal = fs.realpathSync(project.path);
+    iconReal = fs.realpathSync(icon.absolutePath);
+  } catch {
+    return fail(res, 404, 'Icon unavailable');
+  }
+  if (!iconLib.isInside(projectReal, iconReal)) return fail(res, 400, 'Invalid icon path');
+
+  const contentType = icon.mime || 'application/octet-stream';
+  const headers = { 'Content-Type': contentType, 'X-Content-Type-Options': 'nosniff' };
+  if (contentType === 'image/svg+xml') {
+    headers['Content-Security-Policy'] = "default-src 'none'; sandbox";
+  }
+  if (icon.version) headers.ETag = `"${icon.version}"`;
   res.set('Cache-Control', 'no-cache');
-  return res.sendFile(icon.absolutePath, { headers: { 'Content-Type': icon.mime || 'application/octet-stream' } });
+  res.set(headers);
+  return res.sendFile(iconReal, { headers }, (error) => {
+    if (!error) return;
+    if (!res.headersSent) return fail(res, 404, 'Icon unavailable');
+    if (!res.writableEnded) res.end();
+  });
 });
 
 app.get('/api/runners', (req, res) => {
@@ -544,13 +566,17 @@ app.patch('/api/env-settings', (req, res) => {
   return res.json({ ok: true, updated: result.updated, entries: result.entries });
 });
 
-app.post('/api/auto-resume/prepare', (req, res) => {
+app.post('/api/auto-resume/prepare', async (req, res, next) => {
   const reason = req.body?.reason === undefined ? 'planned-restart' : req.body.reason;
   if (reason !== 'planned-restart' && reason !== 'container-shutdown') {
     return fail(res, 400, 'Unknown auto-resume reason');
   }
-  const result = engine.prepareShutdownResume(reason);
-  return res.json({ ok: true, ...result });
+  try {
+    const result = await engine.prepareShutdownResume(reason);
+    return res.json({ ok: true, ...result });
+  } catch (error) {
+    return next(error);
+  }
 });
 
 app.use((req, res) => {
@@ -572,11 +598,15 @@ const server = app.listen(PORT, HOST, () => {
 
 let shuttingDown = false;
 
-function shutdown() {
+async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log('[looparr] Shutting down');
-  engine.prepareShutdownResume('container-shutdown');
+  try {
+    await engine.prepareShutdownResume('container-shutdown');
+  } catch (error) {
+    console.error('[looparr] prepare shutdown resume failed:', error.message);
+  }
   engine.shutdown();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 3000).unref();

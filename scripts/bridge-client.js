@@ -3,6 +3,16 @@
 const http = require('http');
 const https = require('https');
 
+const MAX_RUN_KEY_LENGTH = 128;
+const RUN_KEY_PATTERN = /^[A-Za-z0-9._:-]+$/;
+
+function validateRunKey(value) {
+  if (typeof value !== 'string' || !value || value.length > MAX_RUN_KEY_LENGTH || !RUN_KEY_PATTERN.test(value)) {
+    throw new Error('runKey is missing or invalid');
+  }
+  return value;
+}
+
 function requestRun(executorUrl, token, payload) {
   const target = new URL(`${executorUrl.replace(/\/+$/, '')}/run`);
   if (target.protocol !== 'http:' && target.protocol !== 'https:') {
@@ -47,7 +57,8 @@ async function main() {
     throw new Error('LOOPARR_TASK_PAYLOAD is missing or invalid');
   }
 
-  const response = await requestRun(executorUrl, token, payload);
+  const runKey = validateRunKey(payload.runKey);
+  const response = await requestRun(executorUrl, token, { ...payload, runKey });
   response.setEncoding('utf8');
 
   let buffer = '';

@@ -97,11 +97,13 @@ async function testRunnerForwarding() {
     cwd: DEMO_DIR,
     url: BASE_URL,
     files: ['one.txt'],
-    model: 'opencode/tidepool-alpha-free'
+    model: 'opencode/tidepool-alpha-free',
+    runKey: 'test-run-key'
   });
   const payload = JSON.parse(bridgeCommand.options.env.LOOPARR_TASK_PAYLOAD);
   assertEqual(payload.model, 'opencode/tidepool-alpha-free', 'bridge model value');
   assert.deepEqual(payload.files, ['one.txt'], 'bridge files');
+  assertEqual(payload.runKey, 'test-run-key', 'bridge run key');
 
   const autoCommand = local.buildCommand({
     prompt: 'do work',
