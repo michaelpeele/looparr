@@ -165,7 +165,7 @@ const MODEL_OPTIONS = [
     drawerId: null,
     logFollow: true,
     planDirty: false,
-    showCompleted: true,
+    showCompleted: false,
     savingPlan: false,
     currentPlan: null,
     planTaskCount: 0,
@@ -198,6 +198,10 @@ const MODEL_OPTIONS = [
   let expansionMemory = null;
   let expansionStorageAvailable = true;
   let taskTextCounter = 0;
+
+  const SHOW_COMPLETED_KEY = 'looparr.showCompleted.v1';
+  let showCompletedMemory = null;
+  let showCompletedStorageAvailable = true;
 
   function normalizeExpansionState(raw) {
     const result = {};
@@ -246,6 +250,55 @@ const MODEL_OPTIONS = [
     if (!state[String(projectId)]) state[String(projectId)] = { current: false, next: false };
     state[String(projectId)][field] = Boolean(expanded);
     saveExpansionState(state);
+  }
+
+  function normalizeShowCompletedState(raw) {
+    const result = {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return result;
+    Object.keys(raw).forEach((projectId) => {
+      result[String(projectId)] = raw[projectId] === true;
+    });
+    return result;
+  }
+
+  function loadShowCompletedState() {
+    if (showCompletedMemory !== null) return normalizeShowCompletedState(showCompletedMemory);
+    try {
+      const raw = localStorage.getItem(SHOW_COMPLETED_KEY);
+      showCompletedMemory = normalizeShowCompletedState(raw ? JSON.parse(raw) : null);
+      return normalizeShowCompletedState(showCompletedMemory);
+    } catch {
+      showCompletedStorageAvailable = false;
+      showCompletedMemory = normalizeShowCompletedState(showCompletedMemory);
+      return normalizeShowCompletedState(showCompletedMemory);
+    }
+  }
+
+  function saveShowCompletedState(state) {
+    showCompletedMemory = normalizeShowCompletedState(state);
+    if (!showCompletedStorageAvailable) return;
+    try {
+      localStorage.setItem(SHOW_COMPLETED_KEY, JSON.stringify(showCompletedMemory));
+    } catch {
+      showCompletedStorageAvailable = false;
+    }
+  }
+
+  function isShowCompleted(projectId) {
+    if (!projectId) return false;
+    return loadShowCompletedState()[String(projectId)] === true;
+  }
+
+  function setShowCompleted(projectId, show) {
+    if (!projectId) return;
+    const state = loadShowCompletedState();
+    state[String(projectId)] = show === true;
+    saveShowCompletedState(state);
+  }
+
+  function restoreShowCompletedForProject(id) {
+    app.showCompleted = isShowCompleted(id);
+    updateToggleCompletedButton();
   }
 
   function hasTaskOverflow(textEl) {
@@ -970,7 +1023,7 @@ const MODEL_OPTIONS = [
     app.drawerId = id;
     app.planDirty = false;
     editingTaskIndex = -1;
-    app.showCompleted = true;
+    restoreShowCompletedForProject(id);
     app.currentPlan = null;
     app.planTaskCount = 0;
     clearDragIndicators();
@@ -1010,7 +1063,6 @@ const MODEL_OPTIONS = [
     setDrawerVisual(null);
     app.planDirty = false;
     editingTaskIndex = -1;
-    app.showCompleted = true;
     app.currentPlan = null;
     app.planTaskCount = 0;
     clearDragIndicators();
@@ -1177,7 +1229,9 @@ const MODEL_OPTIONS = [
   function toggleCompleted() {
     if (!app.drawerId || app.savingPlan) return;
     if (editingTaskIndex !== -1) cancelTaskEdit();
-    app.showCompleted = !app.showCompleted;
+    const show = !app.showCompleted;
+    setShowCompleted(app.drawerId, show);
+    app.showCompleted = isShowCompleted(app.drawerId);
     updateToggleCompletedButton();
     if (app.currentPlan) renderChecklist(app.currentPlan);
   }

@@ -445,3 +445,22 @@ Confirmed decisions:
 - At 390x844 the drawer toggle measured 44x44 and did not overlap `#drawer-close`, `#drawer-controls`, `.drawer-toolbar`, or `.drawer-header`. Real iOS Safari was not emulated; this was a viewport and tap-target approximation.
 - `<img src=x onerror="window.__xss=1"> She said "hi" & bye` rendered as literal text in card and drawer, with zero `img` elements and no `window.__xss` value.
 - Only the marker on `plan.md` line 119 was changed for this task. No other plan item, `.looparr/next_prompt.txt`, or commit was touched.
+
+## Per-project hide/show completed persistence final verification batch (2026-11-22)
+
+- Implemented per-project checklist hide/show completed persistence in browser localStorage under key `looparr.showCompleted.v1`.
+- Stored value is a JSON object mapping `String(projectId)` to boolean. Only boolean `true` means shown. Missing, invalid, and corrupted values default to hidden.
+- Default state is hidden: `app.showCompleted === false`; static button uses `aria-pressed="false"`, `⊞ Show completed`, and `Show completed tasks in the checklist` for aria-label and title.
+- `openDrawer(id)` restores the saved value for `id` after setting `app.drawerId` and before `loadPlan(id)` or first checklist render. `closeDrawer()` preserves saved values.
+- `toggleCompleted()` writes immediately via `setShowCompleted(app.drawerId, show)`, flips state, updates button label/icon/aria/title, and re-renders `app.currentPlan`. It contains no API call.
+- Added storage helper tests with fake storage for unknown id hidden, stored `true` restore, invalid id/value ignored, two-project isolation, immediate write, and storage failure fallback.
+- `npm test` passed, including `plan-ui-controls smoke tests passed`.
+- Standalone `node scripts/test-plan-ui-controls.js` passed.
+- Ran `docker compose build looparr && docker compose up -d looparr` for the source change.
+- `docker compose ps -a` showed `looparr` running on newly built image `looparr:latest`; `ts-looparr` published `0.0.0.0:4188->3000/tcp`.
+- `docker inspect -f '{{.State.Health.Status}} {{.Config.Image}} {{.Image}}' looparr` returned `healthy looparr:latest sha256:e750e1f6d3d6180dd19f7273f97f7cb5d150c5fe252eff7cdd2c1c29fc5e075c`.
+- Served `http://127.0.0.1:4188/` assets contained the change: `/` had hidden-default button markup, `/app.js` had `const SHOW_COMPLETED_KEY = 'looparr.showCompleted.v1';`, `/styles.css` served unchanged expected toggle styling.
+- Local and container `/app` copies of `public/app.js`, `public/index.html`, `public/styles.css`, and `scripts/test-plan-ui-controls.js` matched by SHA-256 and mtime.
+- Browser check with fixture projects A and B passed: unknown A defaulted hidden; toggle A showed completed and wrote only `{"cece3a42-d798-4378-a219-c3a79ad41fb9":true}`; B stayed hidden; switching back to A stayed shown; reload and new page in the same browser context kept A shown and B hidden.
+- Toggle made zero API requests. Fixture plan files and the main `plan.md` had unchanged mtime and size after the browser check.
+- Commit status: tracked task files staged and committed with a conventional commit message. Untracked `.tmp-browser-fixture/`, `.tmp-browser-sticky/`, and `looparr-a-open.yml`, plus `.env` and secrets, were excluded.

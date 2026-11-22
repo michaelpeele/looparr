@@ -142,15 +142,62 @@ function loadExpansionFunctions() {
   return helpers;
 }
 
+function loadShowCompletedFunctions(options = {}) {
+  const source = fs.readFileSync(path.join(REPO_ROOT, 'public/app.js'), 'utf8');
+  const key = source.match(/^\s*const SHOW_COMPLETED_KEY = .*;$/m);
+  assert.ok(key, 'Missing SHOW_COMPLETED_KEY');
+  const keyNameMatch = key[0].match(/'([^']+)'/);
+  assert.ok(keyNameMatch, 'Missing SHOW_COMPLETED_KEY value');
+  const keyName = keyNameMatch[1];
+  const normalize = extractFunction(source, 'function normalizeShowCompletedState(raw)');
+  const load = extractFunction(source, 'function loadShowCompletedState()');
+  const save = extractFunction(source, 'function saveShowCompletedState(state)');
+  const isShown = extractFunction(source, 'function isShowCompleted(projectId)');
+  const setShown = extractFunction(source, 'function setShowCompleted(projectId, show)');
+  const entries = options.initial || {};
+  const storageMap = new Map(Object.keys(entries).map((name) => [name, entries[name]]));
+  const storage = {
+    getItem(name) {
+      if (options.failReads) throw new Error('storage read failed');
+      return storageMap.has(name) ? storageMap.get(name) : null;
+    },
+    setItem(name, value) {
+      if (options.failWrites) throw new Error('storage write failed');
+      storageMap.set(name, value);
+    }
+  };
+  const factory = new Function('localStorage', [
+    key[0],
+    'let showCompletedMemory = null;',
+    'let showCompletedStorageAvailable = true;',
+    normalize,
+    load,
+    save,
+    isShown,
+    setShown,
+    'return { normalizeShowCompletedState, loadShowCompletedState, saveShowCompletedState, isShowCompleted, setShowCompleted };'
+  ].join('\n'));
+  const helpers = factory(storage);
+  helpers.getStored = () => storageMap.get(keyName);
+  helpers.getStoredState = () => {
+    const raw = helpers.getStored();
+    return raw ? JSON.parse(raw) : null;
+  };
+  return helpers;
+}
+
 function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(indexHtml, 'id="toggle-completed-tasks"', 'index toggle id');
   assertIncludes(indexHtml, 'data-action="toggle-completed"', 'index toggle action');
   assertIncludes(indexHtml, 'type="button"', 'index toggle type');
-  assertIncludes(indexHtml, 'Hide completed', 'index toggle label');
-  assertIncludes(indexHtml, '⊟', 'index toggle icon');
+  assertIncludes(indexHtml, 'aria-pressed="false"', 'index toggle hidden default');
+  assertIncludes(indexHtml, 'aria-label="Show completed tasks in the checklist"', 'index toggle hidden aria label');
+  assertIncludes(indexHtml, 'title="Show completed tasks in the checklist"', 'index toggle hidden title');
+  assertIncludes(indexHtml, '⊞', 'index toggle hidden icon');
+  assertIncludes(indexHtml, 'Show completed</button>', 'index toggle hidden label');
 
   assertIncludes(appSource, 'toggleCompletedTasks: $(\'toggle-completed-tasks\')', 'app toggle dom binding');
-  assertIncludes(appSource, 'showCompleted: true', 'app showCompleted state');
+  assertIncludes(appSource, 'showCompleted: false', 'app showCompleted hidden default');
   assertIncludes(appSource, 'data-task-index="${taskIndex}"', 'app full task index');
   assertIncludes(appSource, 'data-index="${task.index}"', 'app API checkbox index');
   assertIncludes(appSource, 'data-action="drag"', 'app drag action');
@@ -201,6 +248,7 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(appSource, "type: 'remove'", 'app remove change type');
 
   const toggleSource = extractFunction(appSource, 'function toggleCompleted()');
+  assertIncludes(toggleSource, 'setShowCompleted(app.drawerId, show)', 'toggleCompleted persists before state flip');
   assert.ok(!toggleSource.includes('api('), 'toggleCompleted must not call the API');
   assert.ok(!toggleSource.includes('PUT'), 'toggleCompleted must not write plan.md');
 
@@ -270,6 +318,29 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(appSource, 'state[String(projectId)][field] = Boolean(expanded)', 'app immediate expansion write');
   assertIncludes(appSource, 'if (expansionMemory !== null) return normalizeExpansionState(expansionMemory);', 'app memory state authoritative');
   assertIncludes(appSource, 'if (!expansionStorageAvailable) return;', 'app storage failure fallback');
+  assertIncludes(appSource, "const SHOW_COMPLETED_KEY = 'looparr.showCompleted.v1'", 'app show completed storage key');
+  assertIncludes(appSource, 'function normalizeShowCompletedState(raw)', 'app show completed normalizer');
+  assertIncludes(appSource, 'function loadShowCompletedState()', 'app show completed loader');
+  assertIncludes(appSource, 'function saveShowCompletedState(state)', 'app show completed writer');
+  assertIncludes(appSource, 'function isShowCompleted(projectId)', 'app show completed reader');
+  assertIncludes(appSource, 'function setShowCompleted(projectId, show)', 'app show completed setter');
+  assertIncludes(appSource, 'function restoreShowCompletedForProject(id)', 'app show completed restore helper');
+  assertIncludes(appSource, 'result[String(projectId)] = raw[projectId] === true', 'app show completed default hidden');
+  assertIncludes(appSource, 'state[String(projectId)] = show === true', 'app show completed immediate write');
+  assertIncludes(appSource, 'if (showCompletedMemory !== null) return normalizeShowCompletedState(showCompletedMemory);', 'app show completed memory authoritative');
+  assertIncludes(appSource, 'if (!showCompletedStorageAvailable) return;', 'app show completed storage failure fallback');
+
+  const openDrawerSource = extractFunction(appSource, 'function openDrawer(id)');
+  const closeDrawerSource = extractFunction(appSource, 'function closeDrawer()');
+  assertIncludes(openDrawerSource, 'restoreShowCompletedForProject(id)', 'app drawer restores saved state');
+  assertIncludes(openDrawerSource, 'loadPlan(id)', 'app drawer loads plan');
+  assert.ok(
+    openDrawerSource.indexOf('restoreShowCompletedForProject(id)') < openDrawerSource.indexOf('loadPlan(id)'),
+    'app drawer restores saved state before first checklist render'
+  );
+  assert.ok(!openDrawerSource.includes('app.showCompleted = true'), 'openDrawer must not force shown');
+  assert.ok(!closeDrawerSource.includes('app.showCompleted = true'), 'closeDrawer must not force shown');
+
   assertIncludes(appSource, 'scrollHeight > textEl.clientHeight + 1', 'app overflow tolerance');
   assertIncludes(appSource, "wrapper.dataset.fallback === 'true'", 'app fallback skip');
   assertIncludes(appSource, "text !== '—'", 'app dash skip');
@@ -415,6 +486,46 @@ async function testExpansionPureFunctions() {
   assertEqual(helpers.getState()[''], undefined, 'empty project id ignored');
 }
 
+async function testShowCompletedPureFunctions() {
+  const helpers = loadShowCompletedFunctions();
+  assert.deepEqual(helpers.normalizeShowCompletedState(null), {}, 'show completed default state');
+  assert.deepEqual(helpers.normalizeShowCompletedState([]), {}, 'array show completed state ignored');
+  assert.deepEqual(
+    helpers.normalizeShowCompletedState({ demo: true, bad: 'yes', off: false, num: 1 }),
+    { demo: true, bad: false, off: false, num: false },
+    'show completed state keeps only true booleans'
+  );
+  assertEqual(helpers.isShowCompleted('unknown'), false, 'unknown project defaults to hidden');
+  assertEqual(helpers.isShowCompleted(''), false, 'empty project id defaults to hidden');
+  helpers.setShowCompleted('', true);
+  assertEqual(helpers.getStored(), undefined, 'empty project id write ignored');
+  helpers.setShowCompleted('A', true);
+  assertEqual(helpers.getStoredState().A, true, 'show completed write persists immediately');
+  helpers.setShowCompleted('B', false);
+  assertEqual(helpers.getStoredState().A, true, 'project A setting survives project B write');
+  assertEqual(helpers.getStoredState().B, false, 'project B hidden setting stored');
+  assertEqual(helpers.isShowCompleted('A'), true, 'project A restored as shown');
+  assertEqual(helpers.isShowCompleted('B'), false, 'project B restored as hidden');
+  helpers.setShowCompleted('bad', 'yes');
+  assertEqual(helpers.getStoredState().bad, false, 'invalid value stored as hidden');
+  helpers.setShowCompleted('A', false);
+  assertEqual(helpers.isShowCompleted('A'), false, 'toggle back to hidden persists');
+
+  const stored = loadShowCompletedFunctions({
+    initial: {
+      'looparr.showCompleted.v1': JSON.stringify({ demo: true, bad: 'yes', off: false })
+    }
+  });
+  assertEqual(stored.isShowCompleted('demo'), true, 'stored true restores shown');
+  assertEqual(stored.isShowCompleted('bad'), false, 'stored invalid value defaults hidden');
+  assertEqual(stored.isShowCompleted('off'), false, 'stored false defaults hidden');
+
+  const offline = loadShowCompletedFunctions({ failReads: true, failWrites: true });
+  offline.setShowCompleted('offline', true);
+  assertEqual(offline.isShowCompleted('offline'), true, 'memory fallback keeps shown state');
+  assertEqual(offline.getStored(), undefined, 'storage failure writes nothing');
+}
+
 async function main() {
   fs.rmSync(TEMP_DIR, { recursive: true, force: true });
   fs.mkdirSync(DEMO_DIR, { recursive: true });
@@ -457,6 +568,7 @@ async function main() {
     await testReorderPureFunctions();
     await testTaskActionPureFunctions();
     await testExpansionPureFunctions();
+    await testShowCompletedPureFunctions();
 
     const created = await api('POST', '/api/projects', {
       name: 'demo',
