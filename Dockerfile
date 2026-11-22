@@ -17,7 +17,7 @@ COPY scripts ./scripts
 
 RUN mkdir -p /app/data
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:3000/api/state').then(r => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"
+HEALTHCHECK --interval=30s --timeout=15s --start-period=10s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:3000/api/state').then(async r => { if (!r.ok) process.exit(1); await r.text(); process.exit(0); }).catch(() => process.exit(1))"
 
 CMD ["node", "server.js"]
