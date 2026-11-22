@@ -1,9 +1,13 @@
 'use strict';
 
-const { execSync } = require('child_process');
+const { execSync, spawnSync } = require('child_process');
 const path = require('path');
 
+const autoResume = require('../src/auto-resume');
+const planLib = require('../src/plan');
+
 const REPO_ROOT = path.resolve(__dirname, '..');
+const LOCK_WRAPPER = path.join(__dirname, 'restart-lock.sh');
 const DRY_RUN = process.argv.includes('--dry-run');
 const BASE_URL = (
   process.env.LOOPARR_BASE_URL ||
@@ -11,6 +15,20 @@ const BASE_URL = (
 ).replace(/\/$/, '');
 
 const DOCKER_COMMAND = 'docker compose build looparr && docker compose up -d looparr';
+const CLEAN_RESTART_COMMAND = 'docker compose restart looparr';
+
+if (process.env.LOOPARR_RESTART_LOCK_HELD !== '1') {
+  const wrapped = spawnSync(
+    'bash',
+    [LOCK_WRAPPER, process.execPath, __filename, ...process.argv.slice(2)],
+    { cwd: REPO_ROOT, stdio: 'inherit' }
+  );
+  if (wrapped.error) {
+    console.error(`[looparr] Lock wrapper failed: ${wrapped.error.message}`);
+    process.exit(1);
+  }
+  process.exit(wrapped.status ?? 1);
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -30,6 +48,34 @@ async function prepare() {
   });
   if (!res.ok) throw new Error(`POST /api/auto-resume/prepare failed (${res.status})`);
   return res.json();
+}
+
+function planNextTask(project) {
+  const plan = planLib.readPlan(project.path);
+  return plan.ok && plan.next ? plan.next.text : null;
+}
+
+function collectStaleIntents(projects) {
+  const stale = [];
+  for (const project of Array.isArray(projects) ? projects : []) {
+    if (!project.autoResumePending || !project.id || !project.path) continue;
+    const checked = autoResume.readIntent({ id: project.id, path: project.path });
+    if (!checked.ok) continue;
+    const nextTask = planNextTask(project);
+    if (nextTask && checked.intent.currentTask !== nextTask) {
+      stale.push({ project, intent: checked.intent, nextTask });
+    }
+  }
+  return stale;
+}
+
+function clearStaleIntents(stale) {
+  if (stale.length === 0) return false;
+  for (const item of stale) {
+    console.log(`[looparr] Stale resume intent for ${item.project.id}; clearing it.`);
+    autoResume.clearIntent(item.project);
+  }
+  return true;
 }
 
 function dockerStatus() {
@@ -102,6 +148,18 @@ async function main() {
   console.log(`[looparr] Prepared intent for: ${prepared.join(', ') || '(none)'}`);
   console.log(`[looparr] Skipped: ${skipped.map((item) => item.id).join(', ') || '(none)'}`);
 
+  try {
+    const state = await getState();
+    if (clearStaleIntents(collectStaleIntents(state.projects))) {
+      console.log('[looparr] Cleared stale intents before restart.');
+    }
+  } catch (error) {
+    console.error(`[looparr] Stale intent check failed: ${error.message}`);
+    console.error('[looparr] No rebuild started.');
+    process.exitCode = 1;
+    return;
+  }
+
   console.log(`[looparr] Docker command: ${DOCKER_COMMAND}`);
   if (DRY_RUN) {
     console.log('[looparr] Dry run: Docker was not called.');
@@ -124,6 +182,35 @@ async function main() {
     return;
   }
   console.log('[looparr] API and container health check passed.');
+
+  let staleAfterRestart = [];
+  try {
+    const state = await getState();
+    staleAfterRestart = collectStaleIntents(state.projects);
+  } catch (error) {
+    console.error(`[looparr] Post-restart intent check failed: ${error.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (clearStaleIntents(staleAfterRestart)) {
+    console.log('[looparr] Stale intent found after restart; running one clean restart.');
+    try {
+      execSync(CLEAN_RESTART_COMMAND, { cwd: REPO_ROOT, stdio: 'inherit' });
+    } catch (error) {
+      console.error(`[looparr] Clean restart failed (${error.status ?? 'unknown'}).`);
+      process.exitCode = 1;
+      return;
+    }
+    const cleanReady = await waitForRestart('clean-restart');
+    if (!cleanReady) {
+      console.error('[looparr] Clean restart check timed out. Check the container manually.');
+      process.exitCode = 1;
+      return;
+    }
+    console.log('[looparr] Clean restart check passed.');
+  }
+
   console.log('[looparr] Complete the served-asset and container-content checks from plan.md.');
 }
 

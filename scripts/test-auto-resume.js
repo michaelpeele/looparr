@@ -585,6 +585,8 @@ async function main() {
   const helperEnv = {
     ...process.env,
     LOOPARR_BASE_URL: BASE_URL,
+    LOOPARR_RESTART_LOCK_PATH: path.join(TEMP_DIR, 'restart.lock'),
+    LOOPARR_PROMOTIONS_LOG: path.join(TEMP_DIR, 'promotions.log'),
     PATH: `${BIN_DIR}:${process.env.PATH || ''}`
   };
   delete helperEnv.LOOPARR_ALLOW_RESUME_INTENT;
@@ -600,7 +602,48 @@ async function main() {
   assert.equal(fs.existsSync(DOCKER_MARKER), false, 'dry run did not call Docker');
   assertNoSecrets(`${helper.stdout}\n${helper.stderr}`, 'restart helper output');
 
-  // 16. Hard recreation resumes from checkpoint intent without graceful shutdown.
+  // 16. Restart helper clears stale planned intent before restarting.
+  const helperStaleProject = await createProjectViaApi('helper-stale-intent', true);
+  await startAndWait(helperStaleProject.id);
+  await prepare();
+  const followUpTask = `${helperStaleProject.task} follow-up`;
+  planLib.writePlan(
+    helperStaleProject.path,
+    `# Plan\n\n- [x] ${helperStaleProject.task}\n- [ ] ${followUpTask}\n`
+  );
+  assertEqual(planTask(helperStaleProject.id), followUpTask, 'stale helper plan advanced');
+  assert.equal(
+    autoResume.readIntent(projectById(helperStaleProject.id)).intent.currentTask,
+    helperStaleProject.task,
+    'stale helper intent still points at old task'
+  );
+
+  const staleHelper = spawnSync(process.execPath, ['scripts/restart-looparr.js', '--dry-run'], {
+    cwd: REPO_ROOT,
+    env: helperEnv,
+    encoding: 'utf8'
+  });
+  assertEqual(staleHelper.status, 0, `stale helper status\n${staleHelper.stdout}\n${staleHelper.stderr}`);
+  assert.ok(
+    staleHelper.stdout.includes(`Stale resume intent for ${helperStaleProject.id}; clearing it.`),
+    'helper reports stale intent clearing'
+  );
+  assert.ok(
+    staleHelper.stdout.includes('Cleared stale intents before restart.'),
+    'helper clears stale intent before restart'
+  );
+  assert.equal(fs.existsSync(stateFile(helperStaleProject.id)), false, 'stale intent removed');
+  assert.equal(
+    readAudit(helperStaleProject.id).some(
+      (entry) => entry.event === 'resume-degraded' && entry.cause === 'task-no-longer-next'
+    ),
+    false,
+    'stale helper did not leave task-no-longer-next degradation'
+  );
+  assert.equal(fs.existsSync(DOCKER_MARKER), false, 'stale helper dry run did not call Docker');
+  assertNoSecrets(`${staleHelper.stdout}\n${staleHelper.stderr}`, 'stale restart helper output');
+
+  // 17. Hard recreation resumes from checkpoint intent without graceful shutdown.
   const hardProject = await createProjectViaApi('hard-recreation', true);
   await startAndWait(hardProject.id);
   const hardPid = await waitForChildPid(projectById(hardProject.id));

@@ -4,6 +4,10 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+if [[ ${LOOPARR_RESTART_LOCK_HELD:-0} != 1 ]]; then
+  exec bash "$ROOT/scripts/restart-lock.sh" bash "$ROOT/scripts/promote.sh" "$@"
+fi
+
 LOG_DIR="$ROOT/logs"
 LOG_FILE="$LOG_DIR/promotions.log"
 MODE="full"
