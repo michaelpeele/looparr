@@ -121,7 +121,14 @@
     drawerBlockThreshold: $('drawer-block-threshold'),
     drawerTemporaryLiftScope: $('drawer-temporary-lift-scope'),
     drawerPermanentLift: $('drawer-permanent-lift'),
-    saveBlockPolicy: $('save-block-policy')
+    saveBlockPolicy: $('save-block-policy'),
+    planFileModal: $('plan-file-modal'),
+    planFileTitle: $('plan-file-title'),
+    planFileContent: $('plan-file-content'),
+    planFileStatus: $('plan-file-status'),
+    planFileSave: $('plan-file-save'),
+    planFileCancel: $('plan-file-cancel'),
+    planFileClose: $('plan-file-close')
   };
 
   const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -320,6 +327,232 @@
     updateToggleCompletedButton();
   }
 
+  const UI_STATE_KEY = 'looparr.uiState.v1';
+  const UI_SECTION_KEYS = ['constraint', 'runner', 'startup', 'questions', 'plan', 'logs'];
+  let uiStateMemory = null;
+  let uiStateStorageAvailable = true;
+
+  function normalizeUiProjectId(projectId) {
+    if (projectId === null || projectId === undefined) return null;
+    if (typeof projectId === 'object') return null;
+    const key = String(projectId);
+    return key.trim() ? key : null;
+  }
+
+  function normalizeUiState(raw) {
+    const result = {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return result;
+    Object.keys(raw).forEach((rawId) => {
+      const key = normalizeUiProjectId(rawId);
+      if (!key) return;
+      const entry = raw[rawId];
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return;
+      const normalized = {};
+      if (entry.sections && typeof entry.sections === 'object' && !Array.isArray(entry.sections)) {
+        const sections = {};
+        UI_SECTION_KEYS.forEach((sectionKey) => {
+          if (typeof entry.sections[sectionKey] === 'boolean') sections[sectionKey] = entry.sections[sectionKey];
+        });
+        if (Object.keys(sections).length) normalized.sections = sections;
+      }
+      if (entry.planGuide && typeof entry.planGuide === 'object' && !Array.isArray(entry.planGuide)) {
+        const planGuide = {};
+        if (typeof entry.planGuide.open === 'boolean') planGuide.open = entry.planGuide.open;
+        if (typeof entry.planGuide.touched === 'boolean') planGuide.touched = entry.planGuide.touched;
+        if (Object.keys(planGuide).length) normalized.planGuide = planGuide;
+      }
+      if (typeof entry.logFollow === 'boolean') normalized.logFollow = entry.logFollow;
+      if (Object.keys(normalized).length) result[key] = normalized;
+    });
+    return result;
+  }
+
+  function loadUiState() {
+    if (uiStateMemory !== null) return normalizeUiState(uiStateMemory);
+    try {
+      const raw = localStorage.getItem(UI_STATE_KEY);
+      uiStateMemory = normalizeUiState(raw ? JSON.parse(raw) : null);
+      return normalizeUiState(uiStateMemory);
+    } catch {
+      uiStateStorageAvailable = false;
+      uiStateMemory = normalizeUiState(uiStateMemory);
+      return normalizeUiState(uiStateMemory);
+    }
+  }
+
+  function saveUiState(state) {
+    uiStateMemory = normalizeUiState(state);
+    if (!uiStateStorageAvailable) return;
+    try {
+      localStorage.setItem(UI_STATE_KEY, JSON.stringify(uiStateMemory));
+    } catch {
+      uiStateStorageAvailable = false;
+    }
+  }
+
+  function getProjectUiState(id) {
+    const key = normalizeUiProjectId(id);
+    if (!key) return null;
+    return loadUiState()[key] || null;
+  }
+
+  function setProjectUiState(id, patch) {
+    const key = normalizeUiProjectId(id);
+    if (!key || !patch || typeof patch !== 'object' || Array.isArray(patch)) return;
+    const normalizedPatch = normalizeUiState({ [key]: patch })[key];
+    if (!normalizedPatch) return;
+    const state = loadUiState();
+    const current = state[key] || {};
+    const next = Object.assign({}, current);
+    if (normalizedPatch.sections) {
+      next.sections = Object.assign({}, current.sections || {}, normalizedPatch.sections);
+    }
+    if (normalizedPatch.planGuide) {
+      next.planGuide = Object.assign({}, current.planGuide || {}, normalizedPatch.planGuide);
+    }
+    if (typeof normalizedPatch.logFollow === 'boolean') next.logFollow = normalizedPatch.logFollow;
+    state[key] = next;
+    saveUiState(state);
+  }
+
+  function isSectionOpen(id, sectionKey) {
+    const key = normalizeUiProjectId(id);
+    if (!key || !UI_SECTION_KEYS.includes(sectionKey)) return null;
+    const value = loadUiState()[key]?.sections?.[sectionKey];
+    return typeof value === 'boolean' ? value : null;
+  }
+
+  function setSectionOpen(id, sectionKey, open) {
+    const key = normalizeUiProjectId(id);
+    if (!key || !UI_SECTION_KEYS.includes(sectionKey)) return;
+    setProjectUiState(key, { sections: { [sectionKey]: open === true } });
+  }
+
+  function getPlanGuideState(id) {
+    const entry = getProjectUiState(id);
+    return {
+      open: entry?.planGuide?.open === true,
+      touched: entry?.planGuide?.touched === true,
+    };
+  }
+
+  function setPlanGuideState(id, open, touched) {
+    const key = normalizeUiProjectId(id);
+    if (!key) return;
+    setProjectUiState(key, { planGuide: { open: open === true, touched: touched === true } });
+  }
+
+  function getLogFollow(id) {
+    const entry = getProjectUiState(id);
+    return typeof entry?.logFollow === 'boolean' ? entry.logFollow : true;
+  }
+
+  function setLogFollow(id, value) {
+    const key = normalizeUiProjectId(id);
+    if (!key) return;
+    setProjectUiState(key, { logFollow: value === true });
+  }
+
+  function setSectionDomOpen(sectionKey, open) {
+    const section = document.querySelector(`[data-section="${sectionKey}"]`);
+    if (!section) return;
+    const toggle = section.querySelector('[data-action="toggle-section"]');
+    if (!toggle) return;
+    const bodyId = toggle.getAttribute('aria-controls');
+    const body = bodyId ? document.getElementById(bodyId) : null;
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (body) body.hidden = !open;
+  }
+
+  function syncSectionStates(id) {
+    const key = normalizeUiProjectId(id);
+    if (!key) return;
+    UI_SECTION_KEYS.forEach((sectionKey) => {
+      const open = isSectionOpen(key, sectionKey);
+      if (typeof open === 'boolean') setSectionDomOpen(sectionKey, open);
+    });
+  }
+
+  function applyAutoEmptySections(id) {
+    const key = normalizeUiProjectId(id);
+    if (!key || app.drawerId !== key) return;
+    const sections = getProjectUiState(key)?.sections || {};
+    ['questions', 'logs'].forEach((sectionKey) => {
+      if (Object.prototype.hasOwnProperty.call(sections, sectionKey)) return;
+      const empty = sectionKey === 'questions'
+        ? dom.answerEditor.value.trim() === ''
+        : (app.logs.get(key)?.entries.length || 0) === 0;
+      setSectionDomOpen(sectionKey, !empty);
+    });
+  }
+
+  function restoreUiStateForProject(id) {
+    const key = normalizeUiProjectId(id);
+    if (!key) return;
+    const guide = getPlanGuideState(key);
+    app.planGuideTouched = guide.touched === true;
+    if (app.planGuideTouched) dom.planGuide.open = guide.open === true;
+    app.logFollow = getLogFollow(key);
+    syncSectionStates(key);
+  }
+
+  const GLOBAL_SETTINGS_UI_STATE_KEY = 'looparr.settingsUiState.v1';
+  const SETTINGS_UI_KEYS = ['promptTemplates', 'promptOptions', 'blockPolicy', 'envSettings'];
+  let settingsUiMemory = null;
+  let settingsUiStorageAvailable = true;
+
+  function normalizeSettingsUiState(raw) {
+    const result = {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return result;
+    SETTINGS_UI_KEYS.forEach((key) => {
+      if (typeof raw[key] === 'boolean') result[key] = raw[key];
+    });
+    return result;
+  }
+
+  function loadSettingsUiState() {
+    if (settingsUiMemory !== null) return normalizeSettingsUiState(settingsUiMemory);
+    try {
+      const raw = localStorage.getItem(GLOBAL_SETTINGS_UI_STATE_KEY);
+      settingsUiMemory = normalizeSettingsUiState(raw ? JSON.parse(raw) : null);
+      return normalizeSettingsUiState(settingsUiMemory);
+    } catch {
+      settingsUiStorageAvailable = false;
+      settingsUiMemory = normalizeSettingsUiState(settingsUiMemory);
+      return normalizeSettingsUiState(settingsUiMemory);
+    }
+  }
+
+  function saveSettingsUiState(state) {
+    settingsUiMemory = normalizeSettingsUiState(state);
+    if (!settingsUiStorageAvailable) return;
+    try {
+      localStorage.setItem(GLOBAL_SETTINGS_UI_STATE_KEY, JSON.stringify(settingsUiMemory));
+    } catch {
+      settingsUiStorageAvailable = false;
+    }
+  }
+
+  function getSettingsUiState() {
+    return loadSettingsUiState();
+  }
+
+  function setSettingsUiState(key, open) {
+    if (!SETTINGS_UI_KEYS.includes(key)) return;
+    const state = loadSettingsUiState();
+    state[key] = open === true;
+    saveSettingsUiState(state);
+  }
+
+  function syncSettingsUiState() {
+    const state = getSettingsUiState();
+    SETTINGS_UI_KEYS.forEach((key) => {
+      if (typeof state[key] !== 'boolean') return;
+      const details = document.querySelector(`[data-settings-section="${key}"]`);
+      if (details) details.open = state[key];
+    });
+  }
+
   function hasTaskOverflow(textEl) {
     if (!textEl) return false;
     return textEl.scrollHeight > textEl.clientHeight + 1;
@@ -397,6 +630,150 @@
       if (!res.ok) throw new Error(body?.error || `Request failed (${res.status})`);
       return body;
     });
+  }
+
+  function planFileBaseName(relativePath) {
+    const value = String(relativePath ?? '');
+    return value.slice(value.lastIndexOf('/') + 1);
+  }
+
+  function normalizePlanFilePath(target) {
+    if (typeof target !== 'string') return null;
+    const trimmed = target.trim();
+    if (!trimmed) return null;
+    let relative = trimmed;
+    if (relative.startsWith('./')) relative = relative.slice(2);
+    const prefix = '.project_documents/';
+    const hasPrefix = relative.startsWith(prefix);
+    const basename = hasPrefix ? relative.slice(prefix.length) : relative;
+    if (!/^(PLAN|plan)-[^/\\]+\.md$/.test(basename)) return null;
+    return hasPrefix ? `${prefix}${basename}` : basename;
+  }
+
+  function createPlanFileButton(label, projectId, relativePath) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'plan-file-ref';
+    button.dataset.projectId = String(projectId ?? '');
+    button.dataset.planFile = relativePath;
+    button.title = 'click to open';
+    button.setAttribute('aria-label', 'click to open');
+    button.dataset.tooltip = 'click to open';
+    button.textContent = label;
+    return button;
+  }
+
+  function linkPlanReferences(element, projectId) {
+    if (!element || element.closest?.('a, button, script, style, textarea')) return;
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (node.parentElement?.closest('a, button, script, style, textarea')) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    const textNodes = [];
+    while (walker.nextNode()) textNodes.push(walker.currentNode);
+    const pattern = /\[([^\]]+)\]\(([^)]+)\)|((?:\.\/|\.project_documents\/)?(?:PLAN|plan)-[^/\s\\]+\.md)/g;
+    textNodes.forEach((node) => {
+      const text = String(node.nodeValue ?? '');
+      pattern.lastIndex = 0;
+      let match;
+      let lastIndex = 0;
+      let fragment = null;
+      while ((match = pattern.exec(text)) !== null) {
+        let label;
+        let rawTarget;
+        if (match[1] !== undefined) {
+          label = match[1];
+          rawTarget = match[2];
+        } else {
+          rawTarget = match[3];
+          const before = match.index > 0 ? text[match.index - 1] : '';
+          if (before && /[\w/\\.-]/.test(before)) continue;
+          label = planFileBaseName(rawTarget);
+        }
+        const relativePath = normalizePlanFilePath(rawTarget);
+        if (!relativePath) continue;
+        if (!fragment) fragment = document.createDocumentFragment();
+        fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+        fragment.appendChild(createPlanFileButton(label, projectId, relativePath));
+        lastIndex = match.index + match[0].length;
+      }
+      if (fragment) {
+        fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+        node.parentNode?.replaceChild(fragment, node);
+      }
+    });
+  }
+
+  function setPlanFileStatus(message, isError = false) {
+    if (!dom.planFileStatus) return;
+    dom.planFileStatus.setAttribute('aria-live', 'polite');
+    dom.planFileStatus.textContent = message;
+    dom.planFileStatus.classList.toggle('error', Boolean(isError));
+    dom.planFileStatus.classList.toggle('ok', Boolean(message) && !isError);
+  }
+
+  function isPlanFileModalOpen() {
+    return Boolean(dom.planFileModal && (dom.planFileModal.open || dom.planFileModal.hasAttribute?.('open')));
+  }
+
+  function closePlanFileModal() {
+    if (!dom.planFileModal) return;
+    if (typeof dom.planFileModal.close === 'function') dom.planFileModal.close();
+    else dom.planFileModal.removeAttribute('open');
+    if (dom.planFileContent) {
+      dom.planFileContent.value = '';
+      delete dom.planFileContent.dataset.projectId;
+      delete dom.planFileContent.dataset.planFile;
+    }
+    setPlanFileStatus('');
+  }
+
+  function planFileUrl(projectId, relativePath) {
+    return `/api/projects/${encodeURIComponent(projectId)}/plan-file?path=${encodeURIComponent(relativePath)}`;
+  }
+
+  async function openPlanFileModal(projectId, relativePath) {
+    if (!dom.planFileModal || !dom.planFileContent || !relativePath) return;
+    if (dom.planFileTitle) dom.planFileTitle.textContent = planFileBaseName(relativePath);
+    dom.planFileContent.value = '';
+    dom.planFileContent.dataset.projectId = String(projectId ?? '');
+    dom.planFileContent.dataset.planFile = relativePath;
+    setPlanFileStatus('');
+    if (!dom.planFileModal.open) {
+      if (typeof dom.planFileModal.showModal === 'function') dom.planFileModal.showModal();
+      else dom.planFileModal.setAttribute('open', '');
+    }
+    dom.planFileContent.focus();
+    try {
+      const data = await api(planFileUrl(projectId, relativePath));
+      if (dom.planFileContent.dataset.projectId !== String(projectId ?? '') || dom.planFileContent.dataset.planFile !== relativePath) return;
+      dom.planFileContent.value = typeof data?.content === 'string' ? data.content : '';
+      setPlanFileStatus('');
+    } catch (error) {
+      setPlanFileStatus(error.message, true);
+    }
+  }
+
+  async function savePlanFile() {
+    if (!dom.planFileContent) return;
+    const projectId = dom.planFileContent.dataset.projectId;
+    const relativePath = dom.planFileContent.dataset.planFile;
+    if (!projectId || !relativePath) return;
+    setPlanFileStatus('saving…');
+    if (dom.planFileSave) dom.planFileSave.disabled = true;
+    try {
+      await api(planFileUrl(projectId, relativePath), {
+        method: 'PUT',
+        body: JSON.stringify({ content: dom.planFileContent.value })
+      });
+      setPlanFileStatus('Saved.');
+    } catch (error) {
+      setPlanFileStatus(error.message, true);
+    } finally {
+      if (dom.planFileSave) dom.planFileSave.disabled = false;
+    }
   }
 
   function setConnection(kind, text) {
@@ -503,6 +880,7 @@
   function updatePlanGuide(plan) {
     if (app.planGuideTouched) return;
     dom.planGuide.open = !plan.ok || !plan.stats?.total;
+    setPlanGuideState(app.drawerId, dom.planGuide.open, false);
   }
 
   function statusInfo(project) {
@@ -791,6 +1169,7 @@
     currentWrapper.dataset.projectId = String(project.id);
     currentWrapper.dataset.fallback = project.currentTask ? 'false' : 'true';
     currentText.textContent = project.currentTask || taskFallback(project);
+    linkPlanReferences(currentText, project.id);
     currentWrapper.classList.toggle('empty', !project.currentTask);
 
     const upWrapper = card.querySelector('.card-up');
@@ -798,6 +1177,7 @@
     upWrapper.dataset.projectId = String(project.id);
     upWrapper.dataset.fallback = project.nextTask ? 'false' : 'true';
     upText.textContent = project.nextTask || '—';
+    linkPlanReferences(upText, project.id);
     syncTaskExpansion(project.id, 'current');
     syncTaskExpansion(project.id, 'next');
 
@@ -917,6 +1297,7 @@
 
   function toggleFollowButton() {
     dom.logFollow.hidden = app.logFollow;
+    setLogFollow(app.drawerId, app.logFollow);
   }
 
   function updateLogStatus() {
@@ -941,6 +1322,7 @@
     dom.logList.appendChild(makeLogLine(entry));
     scrollLogs();
     updateLogStatus();
+    applyAutoEmptySections(app.drawerId);
   }
 
   function addLogEntries(id, entries) {
@@ -967,6 +1349,7 @@
       dom.logList.appendChild(empty);
       updateLogStatus();
       toggleFollowButton();
+      applyAutoEmptySections(id);
       return;
     }
     const fragment = document.createDocumentFragment();
@@ -974,6 +1357,7 @@
     dom.logList.appendChild(fragment);
     scrollLogs(true);
     updateLogStatus();
+    applyAutoEmptySections(id);
   }
 
   /* ---------- drawer ---------- */
@@ -1082,8 +1466,10 @@
     dom.drawerStatus.className = `badge ${info.cls}${project.active && !project.paused ? ' active' : ''}`;
     dom.drawerStatus.textContent = info.label;
     dom.drawerTask.textContent = project.currentTask || taskFallback(project);
+    linkPlanReferences(dom.drawerTask, project.id);
     dom.drawerTask.classList.toggle('empty', !project.currentTask);
     dom.drawerNext.textContent = project.nextTask || '—';
+    linkPlanReferences(dom.drawerNext, project.id);
     const currentWrapper = dom.drawerTask.closest('.task-detail-wrap');
     currentWrapper.dataset.projectId = String(project.id);
     currentWrapper.dataset.fallback = project.currentTask ? 'false' : 'true';
@@ -1116,6 +1502,7 @@
     app.planDirty = false;
     editingTaskIndex = -1;
     restoreShowCompletedForProject(id);
+    restoreUiStateForProject(id);
     app.currentPlan = null;
     app.planTaskCount = 0;
     clearDragIndicators();
@@ -1123,8 +1510,6 @@
     app.autoResumeDirty = false;
     dom.autoResumeStatus.textContent = '';
     app.lastPlanKey = '';
-    app.planGuideTouched = false;
-    app.logFollow = true;
     dom.planEditor.value = '';
     dom.answerEditor.value = '';
     dom.answerStatus.textContent = 'No handoff loaded';
@@ -1141,6 +1526,8 @@
       syncTaskExpansion(id, 'current');
       syncTaskExpansion(id, 'next');
     });
+    syncSectionStates(id);
+    applyAutoEmptySections(id);
     renderLogs(id);
     loadPlan(id);
     loadAnswer(id);
@@ -1319,6 +1706,7 @@
         </div>
       </div>`;
     }).join('');
+    dom.checklist.querySelectorAll('.task-text').forEach((span) => linkPlanReferences(span, app.drawerId));
     updatePlanControls();
     restoreChecklistFocus(focusAction, focusTaskIndex);
     if (editingTaskIndex >= 0) {
@@ -1429,6 +1817,7 @@
       const dependencyError = plan.dependencyStatus?.error || '';
       if (dependencyError) statusText += ` · ⚠ ${dependencyError}`;
       dom.planStatus.textContent = statusText;
+      applyAutoEmptySections(id);
     } catch (error) {
       if (app.drawerId === id) {
         dom.planStatus.textContent = error.message;
@@ -1717,6 +2106,7 @@
       dom.answerStatus.textContent = answer.exists
         ? (answer.content ? 'handoff ready' : 'handoff empty')
         : 'no handoff yet';
+      applyAutoEmptySections(id);
     } catch (error) {
       if (app.drawerId === id) dom.answerStatus.textContent = error.message;
     }
@@ -1800,6 +2190,7 @@
         body: JSON.stringify({ content: dom.answerEditor.value })
       });
       dom.answerStatus.textContent = 'saved';
+      applyAutoEmptySections(id);
     } catch (error) {
       dom.answerStatus.textContent = error.message;
     } finally {
@@ -1865,6 +2256,7 @@
         }
       }
     }
+    if (app.drawerId) applyAutoEmptySections(app.drawerId);
   }
 
   /* ---------- forms ---------- */
@@ -2336,6 +2728,17 @@
   });
   dom.browseFolders.addEventListener('click', openFolderBrowser);
   dom.folderBrowserClose.addEventListener('click', closeFolderBrowser);
+  dom.planFileSave?.addEventListener('click', () => { void savePlanFile(); });
+  dom.planFileCancel?.addEventListener('click', closePlanFileModal);
+  dom.planFileClose?.addEventListener('click', closePlanFileModal);
+  document.addEventListener('click', (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const button = target?.closest('.plan-file-ref');
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void openPlanFileModal(button.dataset.projectId, button.dataset.planFile);
+  }, true);
   dom.folderUp.addEventListener('click', () => loadFolderBrowser(app.browser.parent ?? ''));
   dom.folderRoot.addEventListener('click', () => loadFolderBrowser(''));
   dom.folderBrowserList.addEventListener('click', async (event) => {
@@ -2397,6 +2800,31 @@
       dom.drawerControlStatus.hidden = false;
     }
   });
+  function handleSectionToggle(event) {
+    const button = event.target?.closest('[data-action="toggle-section"]');
+    if (!button) return;
+    const section = button.closest('[data-section]');
+    const sectionKey = section?.dataset.section;
+    if (!sectionKey || !UI_SECTION_KEYS.includes(sectionKey)) return;
+    const bodyId = button.getAttribute('aria-controls');
+    const body = bodyId ? document.getElementById(bodyId) : null;
+    if (!body) return;
+    const open = button.getAttribute('aria-expanded') !== 'true';
+    button.setAttribute('aria-expanded', String(open));
+    body.hidden = !open;
+    setSectionOpen(app.drawerId, sectionKey, open);
+  }
+  document.addEventListener('click', handleSectionToggle);
+
+  for (const details of document.querySelectorAll('[data-settings-section]')) {
+    const settingsKey = details.dataset.settingsSection;
+    if (!SETTINGS_UI_KEYS.includes(settingsKey)) continue;
+    details.addEventListener('toggle', () => {
+      setSettingsUiState(settingsKey, details.open);
+    });
+  }
+  syncSettingsUiState();
+
   dom.logList.addEventListener('scroll', () => {
     app.logFollow = isNearBottom();
     toggleFollowButton();
@@ -2405,9 +2833,28 @@
     app.logFollow = true;
     scrollLogs(true);
   });
-  dom.planGuideSummary.addEventListener('click', () => { app.planGuideTouched = true; });
+  dom.planGuideSummary.addEventListener('click', () => {
+    app.planGuideTouched = true;
+    setPlanGuideState(app.drawerId, dom.planGuide.open, true);
+    requestAnimationFrame(() => {
+      if (app.planGuideTouched) {
+        setPlanGuideState(app.drawerId, dom.planGuide.open, true);
+      }
+    });
+  });
+  dom.planGuide.addEventListener('toggle', () => {
+    if (app.planGuideTouched) {
+      setPlanGuideState(app.drawerId, dom.planGuide.open, true);
+    }
+  });
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
+    if (isPlanFileModalOpen()) {
+      event.preventDefault();
+      event.stopPropagation();
+      closePlanFileModal();
+      return;
+    }
     if (dom.folderBrowser.open && typeof dom.folderBrowser.close !== 'function') closeFolderBrowser();
     if (document.body.classList.contains('sidebar-open')) setSidebarOpen(false);
     if (app.drawerId) closeDrawer();

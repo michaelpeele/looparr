@@ -156,7 +156,7 @@ The archive is manual. Looparr does not create or rotate these files automatical
 - **Temporary lift scope**: blank by default. Enter comma- or newline-separated file or path fragments temporarily lifted for the current session.
 - **Permanent lift**: blank by default. Uses the same path-fragment format for paths lifted permanently.
 
-All three global values live in `config.json` under `settings`. A project override wins over the global value. Blank project fields inherit the global default.
+All three global values live in `config.json` under `settings`. A project override wins over the global value. Blank project fields inherit the global default. Settings-page `<details>` open state is remembered in the browser only. That state is global and is not stored in `config.json` or per project.
 
 These fields record agent and user guidance. Looparr stores and displays them, but it does not enforce blocks or exempt files from edits.
 
@@ -166,6 +166,7 @@ These fields record agent and user guidance. Looparr stores and displays them, b
 - Cards and the project detail drawer show the detected app icon, current phase, exact current task, Up Next preview, and `completed / total` progress. Icons are discovered from conventional `favicon.*` paths, HTML-declared `<link rel="icon">`, `apple-touch-icon`, manifest icons, and the existing `public/`, `src/app/`, `app/`, and `assets/` filename and directory scan. Remote, escaping, unreadable, or broken icons are ignored; the UI falls back to initials. Icon asset URLs are versioned so same-path content changes refresh without a manual cache clear.
 - **Start** begins or resumes a project. **Pause** finishes the current step, then holds. **Stop** ends the active step and resets. **Remove** deletes the project from `config.json` only, never from disk.
 - Clicking a card opens a drawer with a live checklist, add-task input, up/down reorder buttons, the effective block policy and its source, **Question handoff**, an editable `plan.md` textarea, and streaming stdout/stderr.
+- Drawer sections collapse and expand from their headings. The open state of the drawer, plan guide, and log follow is remembered per project in the browser. Empty Question handoff and Logs start collapsed and expand when content arrives, unless you manually override them.
 - Each drawer has a **Startup** section with an `Auto-resume on container start` checkbox, a `Save startup` button, and this helper text: "Resume this project after a planned Looparr container restart. User Stop always wins." The toggle is per project and off by default. The status shows `Pending intent` when a resume is staged. **Stop** clears that pending intent.
 
 ### Auto-resume on start

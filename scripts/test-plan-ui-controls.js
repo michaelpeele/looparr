@@ -186,6 +186,116 @@ function loadShowCompletedFunctions(options = {}) {
   return helpers;
 }
 
+function makeStorageMock(options = {}) {
+  const entries = options.initial || {};
+  const storageMap = new Map(Object.keys(entries).map((name) => [name, entries[name]]));
+  return {
+    storageMap,
+    storage: {
+      getItem(name) {
+        if (options.failReads) throw new Error('storage read failed');
+        return storageMap.has(name) ? storageMap.get(name) : null;
+      },
+      setItem(name, value) {
+        if (options.failWrites) throw new Error('storage write failed');
+        storageMap.set(name, value);
+      }
+    }
+  };
+}
+
+function loadUiStateFunctions(options = {}) {
+  const source = fs.readFileSync(path.join(REPO_ROOT, 'public/app.js'), 'utf8');
+  const key = source.match(/^\s*const UI_STATE_KEY = .*;$/m);
+  const sectionKeys = source.match(/^\s*const UI_SECTION_KEYS = .*;$/m);
+  assert.ok(key, 'Missing UI_STATE_KEY');
+  assert.ok(sectionKeys, 'Missing UI_SECTION_KEYS');
+  const keyNameMatch = key[0].match(/'([^']+)'/);
+  assert.ok(keyNameMatch, 'Missing UI_STATE_KEY value');
+  const keyName = keyNameMatch[1];
+  const names = [
+    'normalizeUiProjectId',
+    'normalizeUiState',
+    'loadUiState',
+    'saveUiState',
+    'getProjectUiState',
+    'setProjectUiState',
+    'isSectionOpen',
+    'setSectionOpen',
+    'getPlanGuideState',
+    'setPlanGuideState',
+    'getLogFollow',
+    'setLogFollow'
+  ];
+  const functions = names.map((name) => {
+    const signature = name === 'normalizeUiState' ? 'function normalizeUiState(raw)'
+      : name === 'loadUiState' ? 'function loadUiState()'
+      : name === 'saveUiState' ? 'function saveUiState(state)'
+      : name === 'getProjectUiState' ? 'function getProjectUiState(id)'
+      : name === 'setProjectUiState' ? 'function setProjectUiState(id, patch)'
+      : name === 'isSectionOpen' ? 'function isSectionOpen(id, sectionKey)'
+      : name === 'setSectionOpen' ? 'function setSectionOpen(id, sectionKey, open)'
+      : name === 'getPlanGuideState' ? 'function getPlanGuideState(id)'
+      : name === 'setPlanGuideState' ? 'function setPlanGuideState(id, open, touched)'
+      : name === 'getLogFollow' ? 'function getLogFollow(id)'
+      : name === 'setLogFollow' ? 'function setLogFollow(id, value)'
+      : `function ${name}(projectId)`;
+    return extractFunction(source, signature);
+  });
+  const { storageMap, storage } = makeStorageMock(options);
+  const factory = new Function('localStorage', [
+    key[0],
+    sectionKeys[0],
+    'let uiStateMemory = null;',
+    'let uiStateStorageAvailable = true;',
+    ...functions,
+    `return { ${names.join(', ')} };`
+  ].join('\n'));
+  const helpers = factory(storage);
+  helpers.getStored = () => storageMap.get(keyName);
+  helpers.getStoredState = () => {
+    const raw = helpers.getStored();
+    return raw ? JSON.parse(raw) : null;
+  };
+  return helpers;
+}
+
+function loadSettingsUiStateFunctions(options = {}) {
+  const source = fs.readFileSync(path.join(REPO_ROOT, 'public/app.js'), 'utf8');
+  const key = source.match(/^\s*const GLOBAL_SETTINGS_UI_STATE_KEY = .*;$/m);
+  const settingsKeys = source.match(/^\s*const SETTINGS_UI_KEYS = .*;$/m);
+  assert.ok(key, 'Missing GLOBAL_SETTINGS_UI_STATE_KEY');
+  assert.ok(settingsKeys, 'Missing SETTINGS_UI_KEYS');
+  const keyNameMatch = key[0].match(/'([^']+)'/);
+  assert.ok(keyNameMatch, 'Missing GLOBAL_SETTINGS_UI_STATE_KEY value');
+  const keyName = keyNameMatch[1];
+  const normalize = extractFunction(source, 'function normalizeSettingsUiState(raw)');
+  const load = extractFunction(source, 'function loadSettingsUiState()');
+  const save = extractFunction(source, 'function saveSettingsUiState(state)');
+  const get = extractFunction(source, 'function getSettingsUiState()');
+  const set = extractFunction(source, 'function setSettingsUiState(key, open)');
+  const { storageMap, storage } = makeStorageMock(options);
+  const factory = new Function('localStorage', [
+    key[0],
+    settingsKeys[0],
+    'let settingsUiMemory = null;',
+    'let settingsUiStorageAvailable = true;',
+    normalize,
+    load,
+    save,
+    get,
+    set,
+    'return { normalizeSettingsUiState, loadSettingsUiState, saveSettingsUiState, getSettingsUiState, setSettingsUiState };'
+  ].join('\n'));
+  const helpers = factory(storage);
+  helpers.getStored = () => storageMap.get(keyName);
+  helpers.getStoredState = () => {
+    const raw = helpers.getStored();
+    return raw ? JSON.parse(raw) : null;
+  };
+  return helpers;
+}
+
 function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(indexHtml, 'id="toggle-completed-tasks"', 'index toggle id');
   assertIncludes(indexHtml, 'data-action="toggle-completed"', 'index toggle action');
@@ -380,6 +490,48 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(appSource, 'dependencyStatus', 'dependency state display retained');
   assertIncludes(cssSource, '.task-deps.warn', 'dependency warning style retained');
   assertIncludes(indexHtml, '(depends: 1, 2)', 'dependency syntax guide retained');
+
+  assertIncludes(appSource, "const UI_STATE_KEY = 'looparr.uiState.v1';", 'ui state key');
+  assertIncludes(appSource, "const GLOBAL_SETTINGS_UI_STATE_KEY = 'looparr.settingsUiState.v1';", 'settings ui state key');
+  assertIncludes(appSource, "const UI_SECTION_KEYS = ['constraint', 'runner', 'startup', 'questions', 'plan', 'logs'];", 'ui section keys');
+  for (const sectionKey of ['constraint', 'runner', 'startup', 'questions', 'plan', 'logs']) {
+    assertIncludes(indexHtml, `data-section="${sectionKey}"`, `drawer section ${sectionKey}`);
+    assertIncludes(indexHtml, `aria-controls="section-${sectionKey}-body"`, `section controls ${sectionKey}`);
+    assertIncludes(indexHtml, `id="section-${sectionKey}-body"`, `section body ${sectionKey}`);
+  }
+  assertIncludes(indexHtml, 'data-action="toggle-section"', 'section toggle action');
+  assertIncludes(indexHtml, 'section-heading-text', 'section heading text');
+  assertIncludes(indexHtml, 'section-chevron', 'section chevron');
+  for (const settingsKey of ['promptTemplates', 'promptOptions', 'blockPolicy', 'envSettings']) {
+    assertIncludes(indexHtml, `data-settings-section="${settingsKey}"`, `settings section ${settingsKey}`);
+  }
+  for (const helper of [
+    'normalizeUiState', 'loadUiState', 'saveUiState', 'getProjectUiState', 'setProjectUiState',
+    'isSectionOpen', 'setSectionOpen', 'getPlanGuideState', 'setPlanGuideState', 'getLogFollow',
+    'setLogFollow', 'restoreUiStateForProject', 'applyAutoEmptySections', 'syncSectionStates',
+    'normalizeSettingsUiState', 'loadSettingsUiState', 'saveSettingsUiState', 'getSettingsUiState',
+    'setSettingsUiState', 'syncSettingsUiState'
+  ]) {
+    assertIncludes(appSource, helper, `ui helper ${helper}`);
+  }
+  assertIncludes(appSource, 'restoreUiStateForProject(id);', 'openDrawer restores ui state');
+  assertIncludes(appSource, 'syncSectionStates(id);', 'openDrawer syncs sections');
+  assertIncludes(appSource, 'applyAutoEmptySections(id);', 'auto empty sections applied');
+  assertIncludes(appSource, 'setPlanGuideState(app.drawerId, dom.planGuide.open, false);', 'plan guide auto state saved');
+  assertIncludes(appSource, 'setLogFollow(app.drawerId, app.logFollow);', 'log follow state saved');
+  assertIncludes(appSource, 'setSectionOpen(app.drawerId, sectionKey, open);', 'section state saved');
+  assertIncludes(appSource, 'setSettingsUiState(settingsKey, details.open);', 'settings ui state saved');
+  const toggleSectionHandler = extractFunction(appSource, 'function handleSectionToggle(event)');
+  assert.ok(toggleSectionHandler, 'section toggle handler extracted');
+  assertIncludes(toggleSectionHandler, "closest('[data-section]')", 'section toggle finds section');
+  assertIncludes(toggleSectionHandler, "button.getAttribute('aria-controls')", 'section toggle finds body');
+  assert.ok(!toggleSectionHandler.includes('fetch('), 'section toggle makes no api call');
+  assert.ok(!toggleSectionHandler.includes('savePlan('), 'section toggle writes no plan');
+  assertIncludes(cssSource, '.section-toggle', 'css section toggle');
+  assertIncludes(cssSource, '.section-body[hidden]', 'css hidden section body');
+  assertIncludes(cssSource, '[aria-expanded="false"] .section-chevron', 'css collapsed chevron');
+  assertIncludes(cssSource, '.section-toggle:focus-visible', 'css section toggle focus');
+  assertIncludes(cssSource, 'min-height: 44px', 'css 44px touch target retained');
 }
 
 async function testReorderPureFunctions() {
@@ -530,6 +682,103 @@ async function testShowCompletedPureFunctions() {
   assertEqual(offline.getStored(), undefined, 'storage failure writes nothing');
 }
 
+async function testUiStatePureFunctions() {
+  const helpers = loadUiStateFunctions();
+  assert.deepEqual(helpers.normalizeUiState(null), {}, 'ui state default');
+  assert.deepEqual(helpers.normalizeUiState([]), {}, 'array ui state ignored');
+  assert.deepEqual(helpers.normalizeUiState('bad'), {}, 'string ui state ignored');
+  assert.deepEqual(
+    helpers.normalizeUiState({
+      A: {
+        sections: { questions: true, logs: false, plan: 'yes', unknown: true },
+        planGuide: { open: true, touched: 'yes' },
+        logFollow: false
+      },
+      B: null,
+      C: [],
+      '': { logFollow: true },
+      '   ': { logFollow: true }
+    }),
+    {
+      A: {
+        sections: { questions: true, logs: false },
+        planGuide: { open: true },
+        logFollow: false
+      }
+    },
+    'ui state keeps only booleans and ignores invalid project ids'
+  );
+
+  assertEqual(helpers.isSectionOpen('A', 'questions'), null, 'section choice absent before write');
+  helpers.setSectionOpen('A', 'questions', false);
+  assertEqual(helpers.isSectionOpen('A', 'questions'), false, 'explicit collapsed choice stored');
+  helpers.setSectionOpen('A', 'runner', true);
+  assertEqual(helpers.isSectionOpen('A', 'runner'), true, 'explicit expanded choice stored');
+  assertEqual(helpers.isSectionOpen('A', 'logs'), null, 'other sections have no choice');
+  assertEqual(helpers.isSectionOpen('', 'questions'), null, 'empty project id ignored on read');
+  helpers.setSectionOpen('', 'questions', true);
+  assertEqual(helpers.getStoredState()[''], undefined, 'empty project id ignored on write');
+  helpers.setSectionOpen('A', 'unknown', true);
+  assertEqual(helpers.getStoredState().A.sections.unknown, undefined, 'unknown section ignored');
+
+  assertEqual(helpers.getLogFollow('A'), true, 'log follow defaults to true');
+  helpers.setLogFollow('A', false);
+  assertEqual(helpers.getLogFollow('A'), false, 'log follow choice stored');
+  assertEqual(helpers.getLogFollow('B'), true, 'log follow choice does not leak');
+  helpers.setLogFollow('B', false);
+  assertEqual(helpers.getLogFollow('A'), false, 'log follow survives another project write');
+
+  helpers.setPlanGuideState('A', true, true);
+  assert.deepEqual(helpers.getPlanGuideState('A'), { open: true, touched: true }, 'manual plan guide choice wins');
+  assert.deepEqual(helpers.getPlanGuideState('B'), { open: false, touched: false }, 'plan guide choice does not leak');
+
+  const stored = loadUiStateFunctions({
+    initial: {
+      'looparr.uiState.v1': JSON.stringify({
+        demo: {
+          sections: { questions: false },
+          planGuide: { open: true, touched: true },
+          logFollow: false
+        }
+      })
+    }
+  });
+  assertEqual(stored.isSectionOpen('demo', 'questions'), false, 'stored section choice restored');
+  assertEqual(stored.getLogFollow('demo'), false, 'stored log follow restored');
+  assert.deepEqual(stored.getPlanGuideState('demo'), { open: true, touched: true }, 'stored plan guide restored');
+
+  const corrupt = loadUiStateFunctions({ initial: { 'looparr.uiState.v1': '{not json' } });
+  assert.deepEqual(corrupt.loadUiState(), {}, 'corrupt ui state defaults to empty');
+
+  const offline = loadUiStateFunctions({ failReads: true, failWrites: true });
+  offline.setSectionOpen('offline', 'logs', false);
+  assertEqual(offline.isSectionOpen('offline', 'logs'), false, 'ui state memory fallback works');
+  assertEqual(offline.getStored(), undefined, 'ui state storage failure writes nothing');
+
+  const settings = loadSettingsUiStateFunctions();
+  settings.setSettingsUiState('envSettings', true);
+  assert.deepEqual(settings.getSettingsUiState(), { envSettings: true }, 'settings details state stored');
+  settings.setSettingsUiState('unknown', true);
+  assert.deepEqual(settings.getSettingsUiState(), { envSettings: true }, 'unknown settings key ignored');
+  assertEqual(helpers.getStoredState().envSettings, undefined, 'settings key isolated from ui key');
+
+  const settingsStored = loadSettingsUiStateFunctions({
+    initial: {
+      'looparr.settingsUiState.v1': JSON.stringify({ envSettings: true, bad: 'yes' })
+    }
+  });
+  assert.deepEqual(settingsStored.getSettingsUiState(), { envSettings: true }, 'settings details state restored');
+
+  const settingsOffline = loadSettingsUiStateFunctions({ failReads: true, failWrites: true });
+  settingsOffline.setSettingsUiState('blockPolicy', false);
+  assert.deepEqual(
+    settingsOffline.getSettingsUiState(),
+    { blockPolicy: false },
+    'settings details memory fallback works'
+  );
+  assertEqual(settingsOffline.getStored(), undefined, 'settings storage failure writes nothing');
+}
+
 async function main() {
   fs.rmSync(TEMP_DIR, { recursive: true, force: true });
   fs.mkdirSync(DEMO_DIR, { recursive: true });
@@ -573,6 +822,7 @@ async function main() {
     await testTaskActionPureFunctions();
     await testExpansionPureFunctions();
     await testShowCompletedPureFunctions();
+    await testUiStatePureFunctions();
 
     const created = await api('POST', '/api/projects', {
       name: 'demo',
