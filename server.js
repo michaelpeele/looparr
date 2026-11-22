@@ -450,6 +450,12 @@ app.patch('/api/settings', (req, res) => {
     }
     patch.promptCliToolsNote = body.promptCliToolsNote;
   }
+  if (body.stickyAddTaskRow !== undefined) {
+    if (typeof body.stickyAddTaskRow !== 'boolean') {
+      return fail(res, 400, 'stickyAddTaskRow must be a boolean');
+    }
+    patch.stickyAddTaskRow = body.stickyAddTaskRow;
+  }
   for (const { field, label, placeholders } of PROMPT_TEMPLATE_FIELDS) {
     if (body[field] === undefined) continue;
     if (typeof body[field] !== 'string') return fail(res, 400, `${label} must be a string`);

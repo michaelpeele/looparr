@@ -26,6 +26,7 @@
     analyzePromptTemplate: $('analyze-prompt-template'),
     implementPromptTemplate: $('implement-prompt-template'),
     promptCliToolsNote: $('prompt-cli-tools-note'),
+    stickyAddTaskRow: $('sticky-add-task-row'),
     settingsStatus: $('settings-status'),
     envSettingsForm: $('env-settings-form'),
     envSettingsFields: $('env-settings-fields'),
@@ -79,7 +80,9 @@
     drawerPath: $('drawer-path'),
     drawerStatus: $('drawer-status'),
     drawerTask: $('drawer-task'),
+    drawerTaskToggle: $('drawer-task-toggle'),
     drawerNext: $('drawer-next'),
+    drawerNextToggle: $('drawer-next-toggle'),
     drawerControls: $('drawer-controls'),
     drawerControlStatus: $('drawer-control-status'),
     drawerBlockPolicy: $('drawer-block-policy'),
@@ -101,6 +104,7 @@
     taskInput: $('task-input'),
     addTask: $('add-task'),
     taskStatus: $('task-status'),
+    taskAddRow: document.querySelector('.task-add-row'),
     toggleCompletedTasks: $('toggle-completed-tasks'),
     planStatus: $('plan-status'),
     checklist: $('checklist'),
@@ -188,6 +192,124 @@ const MODEL_OPTIONS = [
   let planDrag = null;
   let suppressPlanClick = false;
   let editingTaskIndex = -1;
+
+  const TASK_EXPANSION_KEY = 'looparr.taskExpansion.v1';
+  const TASK_FIELDS = ['current', 'next'];
+  let expansionMemory = null;
+  let expansionStorageAvailable = true;
+  let taskTextCounter = 0;
+
+  function normalizeExpansionState(raw) {
+    const result = {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return result;
+    Object.keys(raw).forEach((projectId) => {
+      const entry = raw[projectId];
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return;
+      const normalized = {};
+      TASK_FIELDS.forEach((field) => { normalized[field] = entry[field] === true; });
+      result[String(projectId)] = normalized;
+    });
+    return result;
+  }
+
+  function loadExpansionState() {
+    if (expansionMemory !== null) return normalizeExpansionState(expansionMemory);
+    try {
+      const raw = localStorage.getItem(TASK_EXPANSION_KEY);
+      expansionMemory = normalizeExpansionState(raw ? JSON.parse(raw) : null);
+      return normalizeExpansionState(expansionMemory);
+    } catch {
+      expansionStorageAvailable = false;
+      expansionMemory = normalizeExpansionState(expansionMemory);
+      return normalizeExpansionState(expansionMemory);
+    }
+  }
+
+  function saveExpansionState(state) {
+    expansionMemory = normalizeExpansionState(state);
+    if (!expansionStorageAvailable) return;
+    try {
+      localStorage.setItem(TASK_EXPANSION_KEY, JSON.stringify(expansionMemory));
+    } catch {
+      expansionStorageAvailable = false;
+    }
+  }
+
+  function isTaskExpanded(projectId, field) {
+    if (!projectId || !TASK_FIELDS.includes(field)) return false;
+    return loadExpansionState()[String(projectId)]?.[field] === true;
+  }
+
+  function setTaskExpansion(projectId, field, expanded) {
+    if (!projectId || !TASK_FIELDS.includes(field)) return;
+    const state = loadExpansionState();
+    if (!state[String(projectId)]) state[String(projectId)] = { current: false, next: false };
+    state[String(projectId)][field] = Boolean(expanded);
+    saveExpansionState(state);
+  }
+
+  function hasTaskOverflow(textEl) {
+    if (!textEl) return false;
+    return textEl.scrollHeight > textEl.clientHeight + 1;
+  }
+
+  function syncTaskExpansion(projectId, field) {
+    if (!TASK_FIELDS.includes(field)) return;
+    const targetId = String(projectId ?? '');
+    document.querySelectorAll(`[data-project-id][data-task-field="${field}"]`).forEach((wrapper) => {
+      if (wrapper.dataset.projectId !== targetId) return;
+      const textEl = wrapper.querySelector('.task-detail-text');
+      const toggle = wrapper.querySelector('.task-expand-toggle');
+      if (!textEl || !toggle) return;
+      const text = (textEl.textContent || '').trim();
+      const isFallback = wrapper.dataset.fallback === 'true';
+      textEl.classList.remove('task-detail-expanded');
+      textEl.classList.add('task-detail-clamped');
+      const overflow = hasTaskOverflow(textEl);
+      const canToggle = Boolean(text) && text !== '—' && !isFallback && overflow;
+      const visuallyExpanded = canToggle && isTaskExpanded(projectId, field);
+      toggle.hidden = !canToggle;
+      textEl.classList.toggle('task-detail-clamped', !visuallyExpanded);
+      textEl.classList.toggle('task-detail-expanded', visuallyExpanded);
+      const verb = visuallyExpanded ? 'Collapse' : 'Expand';
+      const label = field === 'current' ? 'current task' : 'up next';
+      toggle.textContent = visuallyExpanded ? '▲' : '▼';
+      toggle.setAttribute('aria-expanded', String(visuallyExpanded));
+      toggle.setAttribute('aria-label', `${verb} ${label}`);
+      toggle.setAttribute('title', `${verb} ${label}`);
+    });
+  }
+
+  function syncAllTaskExpansion() {
+    const seen = new Set();
+    document.querySelectorAll('[data-project-id][data-task-field]').forEach((wrapper) => {
+      const key = `${wrapper.dataset.projectId}\u0000${wrapper.dataset.taskField}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      syncTaskExpansion(wrapper.dataset.projectId, wrapper.dataset.taskField);
+    });
+  }
+
+  function activateTaskToggle(button) {
+    const wrapper = button.closest?.('[data-project-id][data-task-field]');
+    if (!wrapper) return;
+    const projectId = wrapper.dataset.projectId;
+    const field = wrapper.dataset.taskField;
+    setTaskExpansion(projectId, field, !isTaskExpanded(projectId, field));
+    syncTaskExpansion(projectId, field);
+  }
+
+  function bindTaskToggle(button) {
+    if (!button || button.dataset.expansionBound === 'true') return;
+    button.dataset.expansionBound = 'true';
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      activateTaskToggle(button);
+    });
+    button.addEventListener('keydown', (event) => {
+      event.stopPropagation();
+    });
+  }
 
   function esc(value) {
     return String(value ?? '').replace(/[&<>"']/g, (ch) => ESC[ch]);
@@ -392,6 +514,8 @@ const MODEL_OPTIONS = [
 
   function createCard(project) {
     const card = document.createElement('article');
+    const currentTextId = `task-text-${++taskTextCounter}`;
+    const nextTextId = `task-text-${++taskTextCounter}`;
     card.className = 'card';
     card.dataset.id = project.id;
     card.tabIndex = 0;
@@ -406,8 +530,8 @@ const MODEL_OPTIONS = [
         </div>
         <span class="badge idle"></span>
       </div>
-      <p class="card-task"></p>
-      <div class="card-up"></div>
+      <p class="card-task task-detail-wrap" data-task-field="current" data-project-id="${esc(project.id)}" data-fallback="true"><span class="task-detail-text task-detail-clamped" id="${currentTextId}"></span><button class="task-expand-toggle" type="button" aria-controls="${currentTextId}" aria-expanded="false" aria-label="Expand current task" title="Expand current task" hidden>▼</button></p>
+      <div class="card-up task-detail-wrap" data-task-field="next" data-project-id="${esc(project.id)}" data-fallback="true"><strong>Up next:</strong> <span class="task-detail-text task-detail-clamped" id="${nextTextId}"></span><button class="task-expand-toggle" type="button" aria-controls="${nextTextId}" aria-expanded="false" aria-label="Expand up next" title="Expand up next" hidden>▼</button></div>
       <div class="progress-row">
         <span>Progress</span>
         <span class="progress-count"></span>
@@ -420,6 +544,8 @@ const MODEL_OPTIONS = [
         <button class="button small danger" type="button" data-action="remove">Remove</button>
       </div>
       <div class="countdown" hidden></div>`;
+
+    card.querySelectorAll('.task-expand-toggle').forEach(bindTaskToggle);
 
     card.querySelector('.card-controls').addEventListener('click', (event) => {
       const button = event.target.closest('button[data-action]');
@@ -548,15 +674,20 @@ const MODEL_OPTIONS = [
     badge.className = `badge ${info.cls}${project.active && !project.paused ? ' active' : ''}`;
     badge.textContent = info.label;
 
-    const taskElement = card.querySelector('.card-task');
-    const taskText = project.currentTask || taskFallback(project);
-    taskElement.textContent = taskText;
-    taskElement.classList.toggle('empty', !project.currentTask);
+    const currentWrapper = card.querySelector('.card-task');
+    const currentText = currentWrapper.querySelector('.task-detail-text');
+    currentWrapper.dataset.projectId = String(project.id);
+    currentWrapper.dataset.fallback = project.currentTask ? 'false' : 'true';
+    currentText.textContent = project.currentTask || taskFallback(project);
+    currentWrapper.classList.toggle('empty', !project.currentTask);
 
-    const upNext = project.nextTask
-      ? `<strong>Up next:</strong> ${esc(project.nextTask)}`
-      : '<strong>Up next:</strong> —';
-    card.querySelector('.card-up').innerHTML = upNext;
+    const upWrapper = card.querySelector('.card-up');
+    const upText = upWrapper.querySelector('.task-detail-text');
+    upWrapper.dataset.projectId = String(project.id);
+    upWrapper.dataset.fallback = project.nextTask ? 'false' : 'true';
+    upText.textContent = project.nextTask || '—';
+    syncTaskExpansion(project.id, 'current');
+    syncTaskExpansion(project.id, 'next');
 
     const total = Number(project.progress?.total) || 0;
     const completed = Number(project.progress?.completed) || 0;
@@ -816,6 +947,14 @@ const MODEL_OPTIONS = [
     dom.drawerTask.textContent = project.currentTask || taskFallback(project);
     dom.drawerTask.classList.toggle('empty', !project.currentTask);
     dom.drawerNext.textContent = project.nextTask || '—';
+    const currentWrapper = dom.drawerTask.closest('.task-detail-wrap');
+    currentWrapper.dataset.projectId = String(project.id);
+    currentWrapper.dataset.fallback = project.currentTask ? 'false' : 'true';
+    const nextWrapper = dom.drawerNext.closest('.task-detail-wrap');
+    nextWrapper.dataset.projectId = String(project.id);
+    nextWrapper.dataset.fallback = project.nextTask ? 'false' : 'true';
+    syncTaskExpansion(project.id, 'current');
+    syncTaskExpansion(project.id, 'next');
     updateDrawerControls(project);
     updateDrawerPolicy(project);
     updateDrawerModel(project);
@@ -852,6 +991,11 @@ const MODEL_OPTIONS = [
     dom.drawerBackdrop.hidden = false;
     document.body.style.overflow = 'hidden';
     updateDrawerHeader(project);
+    requestAnimationFrame(() => {
+      if (app.drawerId !== id) return;
+      syncTaskExpansion(id, 'current');
+      syncTaskExpansion(id, 'next');
+    });
     renderLogs(id);
     loadPlan(id);
     loadAnswer(id);
@@ -1530,6 +1674,12 @@ const MODEL_OPTIONS = [
     if (document.activeElement !== dom.promptCliToolsNote) {
       dom.promptCliToolsNote.checked = settings.promptCliToolsNote === true;
     }
+    if (dom.stickyAddTaskRow && document.activeElement !== dom.stickyAddTaskRow) {
+      dom.stickyAddTaskRow.checked = settings.stickyAddTaskRow === true;
+    }
+    if (dom.taskAddRow && dom.stickyAddTaskRow) {
+      dom.taskAddRow.classList.toggle('is-sticky', settings.stickyAddTaskRow === true);
+    }
     fillRunnerSelect(dom.globalRunner, state.runners, settings.globalRunner);
     fillRunnerSelect(
       dom.projectRunner,
@@ -1578,7 +1728,8 @@ const MODEL_OPTIONS = [
           seedPromptTemplate: dom.seedPromptTemplate.value,
           analyzePromptTemplate: dom.analyzePromptTemplate.value,
           implementPromptTemplate: dom.implementPromptTemplate.value,
-          promptCliToolsNote: dom.promptCliToolsNote.checked
+          promptCliToolsNote: dom.promptCliToolsNote.checked,
+          stickyAddTaskRow: dom.stickyAddTaskRow.checked
         })
       });
       if (response?.settings) applyState({ ...(app.state || {}), settings: response.settings });
@@ -2244,6 +2395,8 @@ const MODEL_OPTIONS = [
     });
   }
 
+  [dom.drawerTaskToggle, dom.drawerNextToggle].forEach(bindTaskToggle);
+  window.addEventListener('resize', syncAllTaskExpansion);
   showView('projects');
   loadEnvSettings();
   fetch('/api/state').then((res) => res.json()).then(applyState).catch((error) => {

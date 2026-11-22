@@ -406,6 +406,18 @@ Confirmed decisions:
 - `.looparr/next_prompt.txt` replaced (was the stale line-110 CLI-tools handoff, which caused the pipeline to re-run completed work) with a lean handoff for plan.md line 112 (pin drawer Start/Pause/Stop controls). This is the plan.md-mandated handoff write for a completed batch.
 - No source constraint blocks this session: `src/engine.js` and `public/app.js` remain lifted until the user says stop (plan.md "Current discovered block"); no engine changes were needed for this batch.
 
+## Task detail collapse batch (2026-11-22)
+
+- Implemented plan.md line 119: current-task and up-next detail now clamp to three lines. Text that exceeds three lines shows a `▼` toggle; tapping expands to `▲` and tapping again collapses. Collapsed is the default.
+- Applied behavior to home-page cards and the project drawer with shared `data-project-id`/`data-task-field` wrappers. Toggles stay in sync across card and drawer instances, stop propagation from the card click/keyboard handler, and use literal `textContent` for task text.
+- Added per-project/per-field expansion persistence under `looparr.taskExpansion.v1` in `localStorage`, with schema validation, default `false`, and an in-memory fallback when storage throws. Stored state survives drawer close/reopen, view changes, SSE re-renders, and reload. No overflow removes the visible toggle and expanded styling without deleting stored state.
+- Re-measurement runs after text updates, drawer open, card reuse, and window resize. Toggle controls are real buttons with `aria-controls`, `aria-expanded`, `aria-label`/`title`, a visible focus outline, and a 44x44 tap target.
+- Files changed: `public/index.html`, `public/app.js`, `public/styles.css`, `scripts/test-plan-ui-controls.js`. No change to `.looparr/next_prompt.txt`.
+- Checks passed: `node --check public/app.js`, `node --check scripts/test-plan-ui-controls.js`, `git diff --check`, full `npm test` (11 scripts, including `plan-ui-controls smoke tests passed`), and targeted `node scripts/test-plan-ui-controls.js`.
+- Production verification: `docker compose build looparr && docker compose up -d looparr` succeeded; `docker compose ps looparr` showed `Up ... (healthy)`, image `looparr:latest`, manifest `sha256:933cbccef5758771acec60fef01a07b72c99ad86191d78cdd150989f15c7933d`. Served `/`, `/app.js`, and `/styles.css` from `http://127.0.0.1:4188/` contained the new toggle IDs/classes, storage key, overflow check, and `-webkit-line-clamp:3`. `GET /api/state` returned HTTP 200.
+- SHA-256 matched local vs container for `/app/public/index.html` (`d13aff8e7622c78fe41a5a326a38e8ac61e9cf5b1b0105298df9c86432c5b45f`), `/app/public/app.js` (`d633d5a4e4c97432823d3345975deb8b92819f0399cb06a6419c24ec8c05d9a4`), and `/app/public/styles.css` (`85e0617b5a5e4676003269d029c1b6ce46cb0eb8531699e75c7aa5b693f7a727`). Timestamps matched to the second for all three files.
+- Browser checks passed against production: short text showed no chevron; long text clamped to three lines and showed the chevron; card and drawer chevrons toggled glyph, `aria-expanded`, labels, and `localStorage`; card chevron did not open the drawer; drawer/card stayed in sync; close/reopen, view navigation, and reload preserved state; resize text swaps hid and restored the chevron; 390x844 viewport kept 44x44 toggles and pinned drawer controls visible; `<img src=x onerror="window.__xss=1">` rendered as literal text with no image or script effect.
+
 ## Issues found and fixed
 
 - `extra_hosts` with `network_mode: service:tailscale` produced daemon error `conflicting options: custom host-to-IP mapping and the network mode`. Removed `extra_hosts`.
@@ -419,3 +431,17 @@ Confirmed decisions:
 - Commit changes locally. No remote and no push.
 - Keep the host executor running for hosted task execution.
 - Funnel remains disabled; explicit approval required before enabling.
+
+## Task detail collapse final verification batch (2026-11-22)
+
+- Rebuilt `looparr:latest` with `docker compose build looparr && docker compose up -d looparr`. `docker compose images looparr` showed image ID `ca02ad0b3388`, created after the rebuild. `docker compose ps looparr` showed `Up ... (healthy)`.
+- Served `/`, `/app.js`, and `/styles.css` from `http://127.0.0.1:4188/` and confirmed the new toggle IDs/classes, `looparr.taskExpansion.v1`, `aria-expanded`, `stopPropagation`, `syncAllTaskExpansion`, and `-webkit-line-clamp:3`. `GET /api/state` returned HTTP 200.
+- SHA-256 matched across local source, served asset, and container copy: `public/index.html` / `/app/public/index.html` `d13aff8e7622c78fe41a5a326a38e8ac61e9cf5b1b0105298df9c86432c5b45f`; `public/app.js` / `/app/public/app.js` `9a391377f74bb9a36a2fd3d494f32ebb033b25656931b7243489d6bc1bfc376f`; `public/styles.css` / `/app/public/styles.css` `85e0617b5a5e4676003269d029c1b6ce46cb0eb8531699e75c7aa5b693f7a727`.
+- `stat -c %Y` epoch timestamps matched local and container: `index.html` `1795327139`, `app.js` `1795327566`, `styles.css` `1795327322`.
+- Checks passed: `node --check public/app.js`, `git diff --check`, full `npm test` (11 scripts), and targeted `node scripts/test-plan-ui-controls.js`.
+- Browser checks passed with routed fixture state: short text showed no chevron; long text clamped to three lines with `clientHeight 54` / `scrollHeight 198` and a visible chevron; card and drawer toggles flipped `▼`/`▲`, `aria-expanded`, and `localStorage` together; drawer stayed closed when the card toggle was used; drawer/card stayed in sync.
+- Close/reopen, settings→projects navigation, and reload preserved stored state. Keyboard Enter/Space toggled only the button and did not open the drawer.
+- Resize measurement showed toggle visibility following actual overflow: viewport 500 gave card width 468, overflow true, toggle visible; viewport 550 gave card width 518, overflow false, toggle hidden.
+- At 390x844 the drawer toggle measured 44x44 and did not overlap `#drawer-close`, `#drawer-controls`, `.drawer-toolbar`, or `.drawer-header`. Real iOS Safari was not emulated; this was a viewport and tap-target approximation.
+- `<img src=x onerror="window.__xss=1"> She said "hi" & bye` rendered as literal text in card and drawer, with zero `img` elements and no `window.__xss` value.
+- Only the marker on `plan.md` line 119 was changed for this task. No other plan item, `.looparr/next_prompt.txt`, or commit was touched.

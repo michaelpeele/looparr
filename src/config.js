@@ -97,6 +97,7 @@ const DEFAULT_SETTINGS = {
   temporaryLiftScope: '',
   permanentLift: '',
   promptCliToolsNote: false,
+  stickyAddTaskRow: false,
   seedPromptTemplate: DEFAULT_SEED_PROMPT_TEMPLATE,
   analyzePromptTemplate: DEFAULT_ANALYZE_PROMPT_TEMPLATE,
   implementPromptTemplate: DEFAULT_IMPLEMENT_PROMPT_TEMPLATE
@@ -153,6 +154,7 @@ function normalizeSettings(settings) {
     normalized[field] = normalizedModel(normalized[field], fallback);
   }
   normalized.promptCliToolsNote = normalized.promptCliToolsNote === true;
+  normalized.stickyAddTaskRow = normalized.stickyAddTaskRow === true;
   for (const [field, legacy] of Object.entries(LEGACY_PROMPT_TEMPLATES)) {
     if (normalized[field] === legacy) normalized[field] = CURRENT_PROMPT_TEMPLATES[field];
   }

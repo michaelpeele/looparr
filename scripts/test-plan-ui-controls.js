@@ -118,6 +118,30 @@ function loadTaskActionFunctions() {
   return factory();
 }
 
+function loadExpansionFunctions() {
+  const source = fs.readFileSync(path.join(REPO_ROOT, 'public/app.js'), 'utf8');
+  const fields = source.match(/^\s*const TASK_FIELDS = .*;$/m);
+  assert.ok(fields, 'Missing TASK_FIELDS');
+  const normalize = extractFunction(source, 'function normalizeExpansionState(raw)');
+  const overflow = extractFunction(source, 'function hasTaskOverflow(textEl)');
+  const isExpanded = extractFunction(source, 'function isTaskExpanded(projectId, field)');
+  const setExpanded = extractFunction(source, 'function setTaskExpansion(projectId, field, expanded)');
+  const factory = new Function('getState', 'saveState', [
+    fields[0],
+    normalize,
+    overflow,
+    'function loadExpansionState() { return getState(); }',
+    'function saveExpansionState(state) { saveState(state); }',
+    isExpanded,
+    setExpanded,
+    'return { normalizeExpansionState, hasTaskOverflow, isTaskExpanded, setTaskExpansion };'
+  ].join('\n'));
+  let current = {};
+  const helpers = factory(() => current, (state) => { current = state; });
+  helpers.getState = () => current;
+  return helpers;
+}
+
 function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(indexHtml, 'id="toggle-completed-tasks"', 'index toggle id');
   assertIncludes(indexHtml, 'data-action="toggle-completed"', 'index toggle action');
@@ -216,6 +240,71 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(cssSource, '.view', 'css view container');
   assertIncludes(cssSource, '.side-emoji', 'css nav emoji');
   assertIncludes(cssSource, '.drawer-policy-editor', 'css drawer policy editor');
+
+  assertIncludes(indexHtml, 'id="drawer-task-toggle"', 'index current task toggle id');
+  assertIncludes(indexHtml, 'id="drawer-next-toggle"', 'index up next toggle id');
+  assertIncludes(indexHtml, 'data-task-field="current"', 'index current field');
+  assertIncludes(indexHtml, 'data-task-field="next"', 'index next field');
+  assertIncludes(indexHtml, 'data-project-id=""', 'index dynamic project id slot');
+  assertIncludes(indexHtml, 'class="task-detail-text task-detail-clamped"', 'index clamped text span');
+  assertIncludes(indexHtml, 'class="task-expand-toggle"', 'index expand toggle class');
+  assertIncludes(indexHtml, 'aria-controls="drawer-task"', 'index current toggle control');
+  assertIncludes(indexHtml, 'aria-controls="drawer-next"', 'index next toggle control');
+  assertIncludes(indexHtml, 'aria-expanded="false"', 'index toggle default collapsed');
+  assertIncludes(indexHtml, 'aria-label="Expand current task"', 'index current toggle label');
+  assertIncludes(indexHtml, 'title="Expand up next"', 'index next toggle title');
+  assertIncludes(indexHtml, 'hidden>▼</button>', 'index collapsed chevron');
+
+  assertIncludes(appSource, "drawerTaskToggle: $('drawer-task-toggle')", 'app current toggle binding');
+  assertIncludes(appSource, "drawerNextToggle: $('drawer-next-toggle')", 'app next toggle binding');
+  assertIncludes(appSource, "const TASK_EXPANSION_KEY = 'looparr.taskExpansion.v1'", 'app expansion storage key');
+  assertIncludes(appSource, "const TASK_FIELDS = ['current', 'next']", 'app expansion fields');
+  assertIncludes(appSource, 'function normalizeExpansionState(raw)', 'app expansion normalizer');
+  assertIncludes(appSource, 'function isTaskExpanded(projectId, field)', 'app expansion reader');
+  assertIncludes(appSource, 'function setTaskExpansion(projectId, field, expanded)', 'app expansion writer');
+  assertIncludes(appSource, 'function hasTaskOverflow(textEl)', 'app overflow helper');
+  assertIncludes(appSource, 'function syncTaskExpansion(projectId, field)', 'app expansion sync');
+  assertIncludes(appSource, 'function syncAllTaskExpansion()', 'app all instances sync');
+  assertIncludes(appSource, 'function bindTaskToggle(button)', 'app toggle binding helper');
+  assertIncludes(appSource, 'normalized[field] = entry[field] === true', 'app expansion default false');
+  assertIncludes(appSource, 'state[String(projectId)][field] = Boolean(expanded)', 'app immediate expansion write');
+  assertIncludes(appSource, 'if (expansionMemory !== null) return normalizeExpansionState(expansionMemory);', 'app memory state authoritative');
+  assertIncludes(appSource, 'if (!expansionStorageAvailable) return;', 'app storage failure fallback');
+  assertIncludes(appSource, 'scrollHeight > textEl.clientHeight + 1', 'app overflow tolerance');
+  assertIncludes(appSource, "wrapper.dataset.fallback === 'true'", 'app fallback skip');
+  assertIncludes(appSource, "text !== '—'", 'app dash skip');
+  assertIncludes(appSource, "toggle.textContent = visuallyExpanded ? '▲' : '▼'", 'app chevron flip');
+  assertIncludes(appSource, "toggle.setAttribute('aria-expanded', String(visuallyExpanded))", 'app aria sync');
+  assertIncludes(appSource, 'event.stopPropagation()', 'app toggle propagation stop');
+  assertIncludes(appSource, "window.addEventListener('resize', syncAllTaskExpansion)", 'app resize resync');
+  assertIncludes(appSource, 'task-detail-text', 'app detail text class');
+  assertIncludes(appSource, 'task-expand-toggle', 'app expand toggle class');
+  assertIncludes(appSource, 'dataset.projectId', 'app dynamic project id');
+  assertIncludes(appSource, 'currentText.textContent = project.currentTask || taskFallback(project)', 'app card current textContent');
+  assertIncludes(appSource, 'upText.textContent = project.nextTask || \'—\'', 'app card next textContent');
+  assertIncludes(appSource, 'dom.drawerTask.textContent = project.currentTask || taskFallback(project)', 'app drawer current textContent');
+  assertIncludes(appSource, 'dom.drawerNext.textContent = project.nextTask || \'—\'', 'app drawer next textContent');
+  assert.ok(!appSource.includes("card.querySelector('.card-up').innerHTML"), 'card up next must not use innerHTML');
+  assert.ok(!appSource.includes('Up next:</strong> ${esc(project.nextTask)}'), 'card up next must not interpolate task text');
+
+  assertIncludes(cssSource, '.task-detail-clamped', 'css clamped text class');
+  assertIncludes(cssSource, '-webkit-line-clamp:3', 'css three line clamp');
+  assertIncludes(cssSource, '-webkit-box-orient:vertical', 'css clamp orientation');
+  assertIncludes(cssSource, '.task-detail-expanded', 'css expanded text class');
+  assertIncludes(cssSource, '.task-expand-toggle', 'css toggle button class');
+  assertIncludes(cssSource, 'min-height: 44px', 'css toggle tap target height');
+  assertIncludes(cssSource, 'min-width: 44px', 'css toggle tap target width');
+  assertIncludes(cssSource, ':focus-visible', 'css toggle focus outline');
+  assertIncludes(cssSource, '[hidden] { display: none !important; }', 'css hidden toggle');
+  assertIncludes(cssSource, 'overflow-wrap: anywhere', 'css task text wrapping');
+
+  assertIncludes(indexHtml, 'id="sticky-add-task-row"', 'sticky add task settings checkbox');
+  assertIncludes(appSource, "stickyAddTaskRow: $('sticky-add-task-row')", 'sticky add task DOM ref');
+  assertIncludes(appSource, 'stickyAddTaskRow: dom.stickyAddTaskRow.checked', 'sticky add task save body');
+  assertIncludes(cssSource, '.task-add-row.is-sticky', 'sticky add task css class');
+  assertIncludes(cssSource, 'position: sticky', 'sticky add task position');
+  assertIncludes(cssSource, '-webkit-sticky', 'sticky add task webkit position');
+  assertIncludes(appSource, 'addChecklistTask', 'add checklist task retained');
 }
 
 async function testReorderPureFunctions() {
@@ -299,6 +388,33 @@ async function testTaskActionPureFunctions() {
   assertEqual(removePlanTaskContent(duplicate, 1).content, '- [ ] same\n- [ ] other\n', 'served remove only target duplicate');
 }
 
+async function testExpansionPureFunctions() {
+  const helpers = loadExpansionFunctions();
+  assert.deepEqual(helpers.normalizeExpansionState(null), {}, 'expansion default state');
+  assert.deepEqual(helpers.normalizeExpansionState([]), {}, 'array expansion state ignored');
+  assert.deepEqual(
+    helpers.normalizeExpansionState({
+      demo: { current: true, next: 'yes', extra: true },
+      broken: null,
+      list: []
+    }),
+    { demo: { current: true, next: false } },
+    'expansion state keeps only true current/next booleans'
+  );
+  assertEqual(helpers.hasTaskOverflow(null), false, 'missing text does not overflow');
+  assertEqual(helpers.hasTaskOverflow({ scrollHeight: 10, clientHeight: 9 }), false, 'one pixel rounding tolerated');
+  assertEqual(helpers.hasTaskOverflow({ scrollHeight: 11, clientHeight: 9 }), true, 'real overflow detected');
+  assertEqual(helpers.isTaskExpanded('demo', 'current'), false, 'missing expansion state defaults to collapsed');
+  helpers.setTaskExpansion('demo', 'current', true);
+  assertEqual(helpers.getState().demo.current, true, 'expansion write persists immediately');
+  helpers.setTaskExpansion('demo', 'next', 'yes');
+  assertEqual(helpers.getState().demo.next, true, 'truthy expansion write coerced to true');
+  helpers.setTaskExpansion('demo', 'other', true);
+  assertEqual(helpers.getState().demo.other, undefined, 'invalid expansion field ignored');
+  helpers.setTaskExpansion('', 'current', true);
+  assertEqual(helpers.getState()[''], undefined, 'empty project id ignored');
+}
+
 async function main() {
   fs.rmSync(TEMP_DIR, { recursive: true, force: true });
   fs.mkdirSync(DEMO_DIR, { recursive: true });
@@ -340,6 +456,7 @@ async function main() {
 
     await testReorderPureFunctions();
     await testTaskActionPureFunctions();
+    await testExpansionPureFunctions();
 
     const created = await api('POST', '/api/projects', {
       name: 'demo',
