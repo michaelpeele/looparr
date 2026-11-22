@@ -267,6 +267,23 @@ function answerPath(project) {
   return path.join(project.path, '.looparr', 'next_prompt.txt');
 }
 
+function hasHandoff(project) {
+  try {
+    return Boolean(fs.readFileSync(answerPath(project), 'utf8').trim());
+  } catch {
+    return false;
+  }
+}
+
+function shouldReseedOnStart(rt, hasHandoffFile) {
+  return Boolean(
+    rt &&
+    rt.status === 'error' &&
+    (rt.nextPhase === 'analyze' || rt.nextPhase === 'implement') &&
+    !hasHandoffFile
+  );
+}
+
 function getAnswer(id) {
   const project = findProject(id);
   if (!project) return null;
@@ -314,6 +331,10 @@ function start(id) {
     const plan = planLib.readPlan(project.path);
     if (plan.ok && !plan.next) return true;
     rt.nextPhase = 'seed';
+  }
+  if (shouldReseedOnStart(rt, hasHandoff(project))) {
+    rt.nextPhase = 'seed';
+    appendLog(project.id, 'system', '↻ Reseed — missing .looparr/next_prompt.txt after error.');
   }
   rt.active = true;
   rt.paused = false;
@@ -847,6 +868,8 @@ module.exports = {
   getIcon,
   getAnswer,
   writeAnswer,
+  hasHandoff,
+  shouldReseedOnStart,
   start,
   pause,
   stop,

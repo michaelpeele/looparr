@@ -9,7 +9,7 @@
     "dev": "node --watch server.js",
     "executor": "node scripts/host-executor.js",
     "restart:looparr": "node scripts/restart-looparr.js",
-    "test": "node scripts/test-plan-helpers.js && node scripts/test-model-selector.js && node scripts/test-auto-resume.js && node scripts/test-plan-ui-controls.js && node scripts/test-up-next.js && node scripts/test-prompt-cli-tools-note.js && node scripts/test-rate-limit-detection.js && node scripts/test-rate-limit-retry-ui.js && node scripts/test-prompt-handoff-guard.js",
+    "test": "node scripts/test-plan-helpers.js && node scripts/test-model-selector.js && node scripts/test-auto-resume.js && node scripts/test-plan-ui-controls.js && node scripts/test-up-next.js && node scripts/test-prompt-cli-tools-note.js && node scripts/test-rate-limit-detection.js && node scripts/test-rate-limit-retry-ui.js && node scripts/test-prompt-handoff-guard.js && node scripts/test-start-reseed.js",
     "test:auto-resume": "node scripts/test-auto-resume.js",
     "test:rate-limit": "node scripts/test-rate-limit-detection.js",
     "test:rate-limit-ui": "node scripts/test-rate-limit-retry-ui.js"
