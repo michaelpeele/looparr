@@ -395,6 +395,12 @@ async function handleRun(req, res) {
   req.on('aborted', () => {
     if (!finished) child.kill('SIGTERM');
   });
+  res.on('close', () => {
+    if (!finished && !res.writableEnded) {
+      entry.finish(137);
+      terminateEntry(entry).catch(() => {});
+    }
+  });
 }
 
 async function handleCancel(req, res) {

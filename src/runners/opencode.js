@@ -167,6 +167,63 @@ function requestExecutor(pathname, payload) {
   });
 }
 
+function requestExecutorGet(pathname) {
+  const target = new URL(`${EXECUTOR_URL}${pathname}`);
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+    throw new Error(`unsupported executor URL protocol: ${target.protocol}`);
+  }
+  const transport = target.protocol === 'https:' ? https : http;
+  return new Promise((resolve, reject) => {
+    const request = transport.request({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port || undefined,
+      path: `${target.pathname}${target.search}`,
+      method: 'GET',
+      headers: {
+        authorization: `Bearer ${EXECUTOR_TOKEN}`
+      }
+    }, (response) => {
+      let text = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => {
+        if (text.length < 1000) text += chunk;
+      });
+      response.on('end', () => {
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+          if (!text.trim()) return resolve([]);
+          try {
+            return resolve(JSON.parse(text));
+          } catch {
+            return resolve([]);
+          }
+        }
+        reject(new Error(`executor returned HTTP ${response.statusCode}: ${text.slice(0, 500)}`));
+      });
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+async function listActiveRuns({ projectId, cwd } = {}) {
+  if (!EXECUTOR_URL) return [];
+  try {
+    const active = await requestExecutorGet('/active');
+    if (!Array.isArray(active)) return [];
+    const cwdNorm = cwd ? path.resolve(String(cwd)) : '';
+    return active.filter((entry) => {
+      if (!entry || typeof entry !== 'object') return false;
+      const pidMatch = projectId ? entry.projectId === projectId : true;
+      const cwdMatch = cwdNorm ? path.resolve(String(entry.cwd || '')) === cwdNorm : true;
+      return pidMatch && cwdMatch;
+    });
+  } catch (error) {
+    console.error(`[opencode] listActiveRuns failed: ${error.message}`);
+    return [];
+  }
+}
+
 async function cancelStaleRuns({ projectId, cwd, keepRunKey } = {}) {
   if (!EXECUTOR_URL) return { ok: true, cancelled: [] };
   if (!projectId && !cwd) return { ok: true, cancelled: [] };
@@ -190,5 +247,6 @@ module.exports = {
   buildCommand,
   isRateLimit,
   cancelStaleRuns,
+  listActiveRuns,
   shutdown
 };

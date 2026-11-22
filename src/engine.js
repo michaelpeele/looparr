@@ -406,13 +406,15 @@ function writeCheckpointIntent(project, rt) {
   if (!autoResume.shouldCaptureResumeIntent()) return false;
   if (!rt || !rt.active || rt.paused || !rt.currentTask) return false;
   if (rt.status === 'done' || rt.status === 'error') return false;
-  if (autoResume.hasIntent(project)) return false;
+  const phase = autoResume.PHASES.has(rt.nextPhase) ? rt.nextPhase : 'seed';
+  const runKey = runKeyFor(project, phase, rt.currentTask);
   const written = autoResume.writeIntent(project, {
     reason: 'checkpoint',
-    nextPhase: autoResume.PHASES.has(rt.nextPhase) ? rt.nextPhase : 'seed',
+    nextPhase: phase,
     status: rt.status,
     currentTask: rt.currentTask,
     resumeAt: rt.resumeAt,
+    runKey,
     pid: process.pid,
     hostname: process.env.HOSTNAME || ''
   });
@@ -427,6 +429,38 @@ function reconcileExternalPlan(project) {
     rt.currentTask && plan.tasks.some((task) => !task.checked && task.text === rt.currentTask)
   );
   if (stillCurrent) return;
+  const wasChecked = Boolean(
+    rt.currentTask && plan.tasks.some((task) => task.checked && task.text === rt.currentTask)
+  );
+  const hadHandoff = hasHandoff(project);
+  if (wasChecked) {
+    autoResume.appendAudit(project, 'plan-reconcile-degraded', {
+      phase: rt.nextPhase,
+      task: rt.currentTask || '',
+      cause: 'task-explicitly-checked'
+    });
+    rt.currentTask = '';
+    rt.stepTask = null;
+    rt.nextPhase = 'seed';
+    clearCheckpointIntent(project);
+    clearHandoff(project);
+    return;
+  }
+  if (rt.currentTask && hadHandoff) {
+    autoResume.appendAudit(project, 'plan-reconcile-preserved', {
+      phase: rt.nextPhase,
+      task: rt.currentTask,
+      cause: 'plan-task-text-changed-but-handoff-exists'
+    });
+    rt.nextPhase = autoResume.PHASES.has(rt.nextPhase) ? rt.nextPhase : 'seed';
+    clearCheckpointIntent(project);
+    return;
+  }
+  autoResume.appendAudit(project, 'plan-reconcile-degraded', {
+    phase: rt.nextPhase,
+    task: rt.currentTask || '',
+    cause: hadHandoff ? 'task-not-current' : 'task-not-current-no-handoff'
+  });
   rt.currentTask = '';
   rt.stepTask = null;
   rt.nextPhase = 'seed';
@@ -958,6 +992,7 @@ async function prepareShutdownResume(reason) {
     for (const project of config.projects) result.skipped.push({ id: project.id, reason: 'gated' });
     return result;
   }
+  const opencodeRunner = getRunner('opencode');
   for (const project of config.projects) {
     if (project.autoResumeOnStart !== true) {
       result.skipped.push({ id: project.id, reason: 'opted-out' });
@@ -981,12 +1016,34 @@ async function prepareShutdownResume(reason) {
       continue;
     }
     const phase = autoResume.PHASES.has(rt.nextPhase) ? rt.nextPhase : 'seed';
+    const currentTask = rt.currentTask || '';
+    const runKey = currentTask ? runKeyFor(project, phase, currentTask) : '';
+    try {
+      const cancelResult = opencodeRunner && typeof opencodeRunner.cancelStaleRuns === 'function'
+        ? await opencodeRunner.cancelStaleRuns({ projectId: project.id, cwd: project.path, keepRunKey: null })
+        : { ok: true, cancelled: [] };
+      const cancelledCount = Array.isArray(cancelResult.cancelled) ? cancelResult.cancelled.length : 0;
+      autoResume.appendAudit(project, 'executor-runs-cancelled', {
+        phase,
+        task: currentTask,
+        reason: captureReason,
+        cause: `count=${cancelledCount}`
+      });
+    } catch (error) {
+      autoResume.appendAudit(project, 'executor-runs-cancelled', {
+        phase,
+        task: currentTask,
+        reason: captureReason,
+        cause: `error:${String(error && error.message || 'unknown').slice(0, 120)}`
+      });
+    }
     const written = autoResume.writeIntent(project, {
       reason: captureReason,
       nextPhase: phase,
       status: rt.status,
-      currentTask: rt.currentTask || '',
+      currentTask,
       resumeAt: rt.resumeAt,
+      runKey: runKey || undefined,
       pid: process.pid,
       hostname: process.env.HOSTNAME || ''
     });
@@ -996,7 +1053,7 @@ async function prepareShutdownResume(reason) {
     }
     autoResume.appendAudit(project, 'about-to-resume', {
       phase,
-      task: rt.currentTask || '',
+      task: currentTask,
       reason: captureReason
     });
     await quiesceChild(rt);
@@ -1006,7 +1063,7 @@ async function prepareShutdownResume(reason) {
     emitState();
     autoResume.appendAudit(project, 'resume-child-quiesced', {
       phase,
-      task: rt.currentTask || '',
+      task: currentTask,
       reason: captureReason
     });
     result.prepared.push(project.id);
@@ -1033,8 +1090,9 @@ function cleanOrphanIntents() {
   }
 }
 
-function resumeOnStart() {
+async function resumeOnStart() {
   cleanOrphanIntents();
+  const opencodeRunner = getRunner('opencode');
   for (const project of config.projects) {
     const checked = autoResume.consumeIntent(project);
     if (!checked.ok && checked.reason === 'missing') continue;
@@ -1076,6 +1134,30 @@ function resumeOnStart() {
         });
         phase = 'seed';
         clearHandoff(project);
+      }
+      try {
+        if (opencodeRunner && typeof opencodeRunner.listActiveRuns === 'function') {
+          const activeRuns = await opencodeRunner.listActiveRuns({ projectId: project.id, cwd: project.path });
+          if (Array.isArray(activeRuns) && activeRuns.length > 0) {
+            const cancelled = opencodeRunner.cancelStaleRuns
+              ? await opencodeRunner.cancelStaleRuns({ projectId: project.id, cwd: project.path, keepRunKey: null })
+              : { cancelled: [] };
+            const cancelledKeys = Array.isArray(cancelled.cancelled) ? cancelled.cancelled.map((c) => c.runKey).filter(Boolean) : [];
+            autoResume.appendAudit(project, 'resume-dedupe-cancel', {
+              phase,
+              task: taskText,
+              reason: intent.reason,
+              cause: `cancelled=${cancelledKeys.join(',') || '0'}`
+            });
+          }
+        }
+      } catch (error) {
+        autoResume.appendAudit(project, 'resume-dedupe-cancel', {
+          phase,
+          task: taskText,
+          reason: intent.reason,
+          cause: `error:${String(error && error.message || 'unknown').slice(0, 120)}`
+        });
       }
       const rt = ensureRuntime(project);
       rt.active = true;

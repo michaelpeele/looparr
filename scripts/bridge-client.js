@@ -47,6 +47,31 @@ function requestRun(executorUrl, token, payload) {
   });
 }
 
+function cancelExecutorRun(executorUrl, token, payload) {
+  const target = new URL(`${executorUrl.replace(/\/+$/, '')}/cancel`);
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') return;
+  const transport = target.protocol === 'https:' ? https : http;
+  const body = JSON.stringify(payload);
+  return new Promise((resolve) => {
+    const req = transport.request({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port || undefined,
+      path: `${target.pathname}${target.search}`,
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(body),
+        authorization: `Bearer ${token}`
+      },
+      timeout: 3000
+    }, (res) => { res.resume(); res.on('end', resolve); });
+    req.on('timeout', () => { try { req.destroy(); } catch { /* ignore */ } resolve(); });
+    req.on('error', () => resolve());
+    req.end(body);
+  });
+}
+
 async function main() {
   const executorUrl = process.env.LOOPARR_EXECUTOR_URL;
   if (!executorUrl) throw new Error('LOOPARR_EXECUTOR_URL is not set');
@@ -58,6 +83,22 @@ async function main() {
   }
 
   const runKey = validateRunKey(payload.runKey);
+  let shuttingDown = false;
+  const shutdown = async (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      await cancelExecutorRun(executorUrl, token, {
+        runKey,
+        projectId: typeof payload.projectId === 'string' ? payload.projectId : '',
+        cwd: typeof payload.cwd === 'string' ? payload.cwd : ''
+      });
+    } catch { /* ignore */ }
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  };
+  process.once('SIGTERM', () => { shutdown('SIGTERM'); });
+  process.once('SIGINT', () => { shutdown('SIGINT'); });
+
   const response = await requestRun(executorUrl, token, { ...payload, runKey });
   response.setEncoding('utf8');
 

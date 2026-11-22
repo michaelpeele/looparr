@@ -393,7 +393,7 @@ async function main() {
   assert.equal(fs.existsSync(intentPath), true, 'intent file exists');
   const intent = JSON.parse(fs.readFileSync(intentPath, 'utf8'));
   assert.deepEqual(Object.keys(intent).sort(), [
-    'capturedAt', 'currentTask', 'hostname', 'pid', 'projectId', 'reason', 'resumeAt', 'status', 'version', 'nextPhase'
+    'capturedAt', 'currentTask', 'hostname', 'pid', 'projectId', 'reason', 'resumeAt', 'runKey', 'status', 'version', 'nextPhase'
   ].sort(), 'intent schema keys');
   assertEqual(intent.version, 1, 'intent version');
   assertEqual(intent.projectId, flagProject.id, 'intent project id');

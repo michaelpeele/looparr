@@ -1,6 +1,7 @@
 'use strict';
 
 const { execSync, spawnSync } = require('child_process');
+const fs = require('fs');
 const path = require('path');
 
 const autoResume = require('../src/auto-resume');
@@ -199,6 +200,36 @@ async function main() {
   }
   console.log('[looparr] API and container health check passed.');
 
+  try {
+    const executorUrl = process.env.LOOPARR_EXECUTOR_URL || 'http://127.0.0.1:4187';
+    const envPath = path.join(REPO_ROOT, '.env');
+    let token = '';
+    if (fs.existsSync(envPath)) {
+      const envText = fs.readFileSync(envPath, 'utf8');
+      const m = envText.match(/^LOOPARR_EXECUTOR_TOKEN\s*=\s*(.+)$/m);
+      if (m) token = m[1].trim().replace(/^['"]|['"]$/g, '');
+    }
+    if (token) {
+      const activeRes = await fetch(`${executorUrl}/active`, { headers: { authorization: `Bearer ${token}` } });
+      if (activeRes.ok) {
+        const activeList = await activeRes.json();
+        const looparrRuns = (Array.isArray(activeList) ? activeList : []).filter((a) => a && typeof a.cwd === 'string' && a.cwd.includes('looparr'));
+        if (looparrRuns.length > 1) {
+          console.error(`[looparr] ERROR: ${looparrRuns.length} active runs for looparr after restart`);
+          process.exitCode = 1;
+        } else {
+          console.log(`[looparr] Active runs for looparr project/cwd: ${looparrRuns.length}`);
+        }
+      } else {
+        console.error(`[looparr] Active check failed: HTTP ${activeRes.status}`);
+      }
+    } else {
+      console.log('[looparr] Active-run postcheck skipped (no LOOPARR_EXECUTOR_TOKEN in .env)');
+    }
+  } catch (e) {
+    console.error(`[looparr] Active-run postcheck failed: ${e.message}`);
+  }
+
   let staleAfterRestart = [];
   try {
     const state = await getState();
@@ -212,10 +243,7 @@ async function main() {
 
   if (clearStaleIntents(staleAfterRestart)) {
     console.log('[looparr] Cleared stale resume intent after restart.');
-    reportEvent('stale-intent-cleared', {
-      count: staleAfterRestart.length,
-      phase: 'post-restart'
-    });
+    reportEvent('stale-intent-cleared', { count: staleAfterRestart.length, phase: 'post-restart' });
   }
 
   console.log('[looparr] Complete the served-asset and container-content checks from plan.md.');
