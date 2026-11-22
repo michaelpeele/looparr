@@ -106,7 +106,7 @@ function normalizeModel(value) {
   if (typeof value !== 'string') throw new Error('model must be a string');
   const model = value.trim();
   if (!model) return '';
-  if (model.length > 200 || /\s/.test(model) || /[\u0000-\u001f\u007f]/.test(model) || model.startsWith('-')) {
+  if (model.includes(',') || model.length > 200 || /\s/.test(model) || /[\u0000-\u001f\u007f]/.test(model) || model.startsWith('-')) {
     throw new Error('model is invalid');
   }
   return model;

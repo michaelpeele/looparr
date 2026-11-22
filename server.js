@@ -9,6 +9,7 @@ const bus = require('./src/events');
 const envSettings = require('./src/env-settings');
 const iconLib = require('./src/icon');
 const { getRunner, listRunners } = require('./src/runners');
+const { parseModelList } = require('./src/model-list');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -137,15 +138,7 @@ function parseLiftScope(value, fallback, label) {
 }
 
 function parseModel(value, fallback, label) {
-  if (value === undefined) return { ok: true, value: undefined };
-  if (value === null) return { ok: true, value: fallback };
-  if (typeof value !== 'string') return { ok: false, error: `${label} must be a string` };
-  const model = value.trim();
-  if (!model) return { ok: true, value: fallback };
-  if (model.length > 200 || /\s/.test(model) || /[\u0000-\u001f\u007f]/.test(model) || model.startsWith('-')) {
-    return { ok: false, error: `${label} is invalid` };
-  }
-  return { ok: true, value: model };
+  return parseModelList(value, fallback, label);
 }
 
 const MODEL_PHASE_FIELDS = [

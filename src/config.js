@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { normalizeModelList } = require('./model-list');
 
 const CONFIG_PATH = path.resolve(process.env.CONFIG_PATH || path.join(__dirname, '..', 'config.json'));
 
@@ -99,6 +100,13 @@ const PREVIOUS_IMPLEMENT_PROMPT_TEMPLATE = [
 ].join('\n');
 
 const MODEL_PHASE_FIELDS = ['seedModel', 'analyzeModel', 'implementModel'];
+const MODEL_SETTINGS_FIELDS = ['model', ...MODEL_PHASE_FIELDS];
+const MODEL_FIELD_LABELS = {
+  model: 'Model',
+  seedModel: 'Seed model',
+  analyzeModel: 'Analyze model',
+  implementModel: 'Implement model'
+};
 
 function modelFieldForPhase(phase) {
   if (phase === 'analyze') return 'analyzeModel';
@@ -147,19 +155,23 @@ function normalizedLiftScope(value, fallback) {
   return value.trim().slice(0, 2000);
 }
 
-function normalizedModel(value, fallback) {
-  if (typeof value !== 'string') return fallback;
-  return value.trim() || fallback;
+function normalizedModel(value, fallback, label = 'Model') {
+  if (value === undefined || value === null || typeof value !== 'string') return fallback;
+  try {
+    return normalizeModelList(value, fallback, label);
+  } catch {
+    return fallback;
+  }
 }
 
 function normalizeProject(project) {
   if (!project || typeof project !== 'object') return project;
   return {
     ...project,
-    model: normalizedModel(project.model, ''),
-    seedModel: normalizedModel(project.seedModel, ''),
-    analyzeModel: normalizedModel(project.analyzeModel, ''),
-    implementModel: normalizedModel(project.implementModel, ''),
+    model: normalizedModel(project.model, '', MODEL_FIELD_LABELS.model),
+    seedModel: normalizedModel(project.seedModel, '', MODEL_FIELD_LABELS.seedModel),
+    analyzeModel: normalizedModel(project.analyzeModel, '', MODEL_FIELD_LABELS.analyzeModel),
+    implementModel: normalizedModel(project.implementModel, '', MODEL_FIELD_LABELS.implementModel),
     blockThreshold: normalizedBlockThreshold(project.blockThreshold, null),
     temporaryLiftScope: normalizedLiftScope(project.temporaryLiftScope, ''),
     permanentLift: normalizedLiftScope(project.permanentLift, ''),
@@ -169,11 +181,11 @@ function normalizeProject(project) {
 
 function normalizeSettings(settings) {
   const normalized = { ...(settings || {}) };
-  for (const field of MODEL_PHASE_FIELDS) {
+  for (const field of MODEL_SETTINGS_FIELDS) {
     const fallback = Object.prototype.hasOwnProperty.call(normalized, field) && typeof normalized[field] === 'string'
       ? ''
       : DEFAULT_SETTINGS[field];
-    normalized[field] = normalizedModel(normalized[field], fallback);
+    normalized[field] = normalizedModel(normalized[field], fallback, MODEL_FIELD_LABELS[field]);
   }
   normalized.promptCliToolsNote = normalized.promptCliToolsNote === true;
   normalized.stickyAddTaskRow = normalized.stickyAddTaskRow === true;

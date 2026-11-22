@@ -136,21 +136,22 @@
             </label>
             <label class="field">
               <span>Default model <small>fallback</small></span>
-              <select id="model"><option value="">OpenCode default</option></select>
+              <select id="model" multiple size="4"><option value="">OpenCode default</option></select>
               <small class="field-hint">Blank uses OpenCode default. Phase models override this.</small>
             </label>
             <label class="field">
               <span>Seed model</span>
-              <select id="seed-model"><option value="">Inherit default model</option></select>
+              <select id="seed-model" multiple size="4"><option value="">Inherit default model</option></select>
             </label>
             <label class="field">
               <span>Analyze model</span>
-              <select id="analyze-model"><option value="">Inherit default model</option></select>
+              <select id="analyze-model" multiple size="4"><option value="">Inherit default model</option></select>
             </label>
             <label class="field">
               <span>Implement model</span>
-              <select id="implement-model"><option value="">Inherit default model</option></select>
+              <select id="implement-model" multiple size="4"><option value="">Inherit default model</option></select>
             </label>
+            <small class="field-hint">Select one or more models in configured order. No selection or the blank option means inherit/default. The first model is tried first; later models are fallbacks on rate limit.</small>
             <label class="field">
               <span>Rate-limit pause <small>seconds</small></span>
               <input type="number" id="rate-limit-seconds" min="5" max="600" step="1" value="60">
@@ -264,20 +265,21 @@
             </label>
             <label class="field">
               <span>Default model <small>optional fallback</small></span>
-              <select id="project-model"><option value="">Inherit global</option></select>
+              <select id="project-model" multiple size="4"><option value="">Inherit global</option></select>
             </label>
             <label class="field">
               <span>Seed model <small>optional</small></span>
-              <select id="project-seed-model"><option value="">Inherit default model</option></select>
+              <select id="project-seed-model" multiple size="4"><option value="">Inherit default model</option></select>
             </label>
             <label class="field">
               <span>Analyze model <small>optional</small></span>
-              <select id="project-analyze-model"><option value="">Inherit default model</option></select>
+              <select id="project-analyze-model" multiple size="4"><option value="">Inherit default model</option></select>
             </label>
             <label class="field">
               <span>Implement model <small>optional</small></span>
-              <select id="project-implement-model"><option value="">Inherit default model</option></select>
+              <select id="project-implement-model" multiple size="4"><option value="">Inherit default model</option></select>
             </label>
+            <small class="field-hint">Select one or more models in configured order. No selection or the blank option means inherit/default. The first model is tried first; later models are fallbacks on rate limit.</small>
             <details class="block-policy">
               <summary>Block policy overrides <small>blank inherits global</small></summary>
               <div class="block-policy-fields">
@@ -388,12 +390,13 @@
         </div>
         <div class="policy-summary mono" id="drawer-model">—</div>
         <div class="editor-actions">
-          <select id="drawer-model-input" aria-label="Project default model override"><option value="">Inherit global</option></select>
-          <select id="drawer-seed-model" aria-label="Project seed model override"><option value="">Inherit default model</option></select>
-          <select id="drawer-analyze-model" aria-label="Project analyze model override"><option value="">Inherit default model</option></select>
-          <select id="drawer-implement-model" aria-label="Project implement model override"><option value="">Inherit default model</option></select>
+          <select id="drawer-model-input" aria-label="Project default model override" multiple size="4"><option value="">Inherit global</option></select>
+          <select id="drawer-seed-model" aria-label="Project seed model override" multiple size="4"><option value="">Inherit default model</option></select>
+          <select id="drawer-analyze-model" aria-label="Project analyze model override" multiple size="4"><option value="">Inherit default model</option></select>
+          <select id="drawer-implement-model" aria-label="Project implement model override" multiple size="4"><option value="">Inherit default model</option></select>
           <button class="button small" id="save-project-model" type="button">Save models</button>
         </div>
+        <small class="field-hint">Select one or more models in configured order. No selection or the blank option means inherit/default. The first model is tried first; later models are fallbacks on rate limit.</small>
       </section>
 
       <section class="drawer-section" id="drawer-auto-resume">

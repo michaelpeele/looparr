@@ -4,6 +4,7 @@ const http = require('http');
 const https = require('https');
 const path = require('path');
 const { spawn, execFileSync } = require('child_process');
+const { validateModelId } = require('../model-list');
 
 const SERVER_PORT = 4096;
 const SERVER_URL = `http://localhost:${SERVER_PORT}`;
@@ -85,6 +86,7 @@ async function ensureServer() {
 }
 
 function buildCommand({ prompt, cwd, url = SERVER_URL, files = [], model = '', runKey, projectId, phase, task }) {
+  if (model) validateModelId(model, 'Model');
   if (EXECUTOR_URL) {
     if (typeof runKey !== 'string' || !runKey.trim()) {
       throw new Error('runKey is required in bridge mode');

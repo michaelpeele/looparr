@@ -140,9 +140,9 @@
   const TASK_LINE_RE = /^\s*[-*+]\s+\[[ xX]\]\s*/;
   const TASK_EDIT_RE = /^(\s*[-*+]\s+\[)([ xX])(\]\s*)(.*)$/;
   // Mirrors `opencode models` output (CLI registry). Keep in sync manually:
-// the server/container has no opencode binary, so this list cannot be
-// populated dynamically at runtime. See plan.md model-picker items.
-const MODEL_OPTIONS = [
+  // the server/container has no opencode binary, so this list cannot be
+  // populated dynamically at runtime. See plan.md model-picker items.
+  const MODEL_OPTIONS = [
     'omniroute/auto',
     'omniroute/auto/coding',
     'opencode/big-pickle',
@@ -157,6 +157,24 @@ const MODEL_OPTIONS = [
     'opencode/mimo-v2.6-flash-free',
     'opencode/nemotron-3.5-lightning-free'
   ];
+
+  // Local mirrors of src/model-list.js; browser code cannot use Node modules.
+  function modelList(value) {
+    if (value === undefined || value === null || value === '') return [];
+    if (typeof value !== 'string') return [];
+    return value.split(',').map((entry) => entry.trim()).filter(Boolean);
+  }
+
+  function joinModelList(ids) {
+    const seen = new Set();
+    const unique = [];
+    for (const id of ids) {
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      unique.push(id);
+    }
+    return unique.join(',');
+  }
 
   const app = {
     state: null,
@@ -518,19 +536,33 @@ const MODEL_OPTIONS = [
 
   function modelOptions(selected, placeholder) {
     const blank = placeholder || 'OpenCode default';
-    return `<option value="">${esc(blank)}</option>` + MODEL_OPTIONS.map((id) =>
-      `<option value="${esc(id)}">${esc(id)}</option>`
+    const ids = modelList(selected);
+    const selectedIds = new Set(ids);
+    const blankSelected = ids.length ? '' : ' selected';
+    return `<option value=""${blankSelected}>${esc(blank)}</option>` + MODEL_OPTIONS.map((id) =>
+      `<option value="${esc(id)}"${selectedIds.has(id) ? ' selected' : ''}>${esc(id)}</option>`
     ).join('');
   }
 
   function fillModelSelect(select, selected, placeholder) {
+    if (!select || document.activeElement === select) return;
     const markup = modelOptions(selected, placeholder);
     if (select.dataset.modelMarkup !== markup) {
       select.innerHTML = markup;
       select.dataset.modelMarkup = markup;
     }
-    const exists = [...select.options].some((option) => option.value === selected);
-    if (exists && document.activeElement !== select) select.value = selected;
+    const ids = modelList(selected);
+    const selectedIds = new Set(ids);
+    Array.from(select.options).forEach((option) => {
+      option.selected = option.value ? selectedIds.has(option.value) : ids.length === 0;
+    });
+  }
+
+  function readModelSelect(select) {
+    if (!select) return '';
+    return joinModelList(
+      Array.from(select.selectedOptions).map((option) => option.value).filter(Boolean)
+    );
   }
 
   function fillPathSuggestions(projects) {
@@ -549,15 +581,41 @@ const MODEL_OPTIONS = [
     }
   }
 
+  function appendModelSummary(parts, label, value) {
+    const ids = modelList(value);
+    if (!ids.length) return;
+    parts.push(`${label}: ${ids.join(', ')}`);
+  }
+
+  function displayModelList(value, emptyLabel = 'OpenCode default') {
+    const ids = modelList(value);
+    return ids.length ? ids.join(', ') : emptyLabel;
+  }
+
   function updateHostSummary(state) {
     const settings = state.settings || {};
     const runner = (state.runners || []).find((item) => item.id === settings.globalRunner);
     dom.hostRunner.textContent = runner?.label || settings.globalRunner || 'Unknown';
-    const model = settings.model || settings.seedModel || '';
-    dom.hostRunnerDetail.textContent = model
-      ? `${runner?.description || 'Server-side executor'} · model ${model}`
-      : runner?.description || 'Server-side executor';
+    const settingsLists = settings.effectiveModelLists || {};
+    const modelParts = [];
+    appendModelSummary(modelParts, 'default', settingsLists.model ?? settings.model);
+    appendModelSummary(modelParts, 'seed', settingsLists.seed ?? settings.seedModel);
+    appendModelSummary(modelParts, 'analyze', settingsLists.analyze ?? settings.analyzeModel);
+    appendModelSummary(modelParts, 'implement', settingsLists.implement ?? settings.implementModel);
     const projects = state.projects || [];
+    for (const project of projects) {
+      const name = project.name || project.id || 'project';
+      const lists = project.effectiveModelLists || project.effectiveModels || {};
+      const fallback = project.effectiveModel || '';
+      appendModelSummary(modelParts, `${name} default`, lists.model ?? fallback);
+      appendModelSummary(modelParts, `${name} seed`, lists.seed ?? fallback);
+      appendModelSummary(modelParts, `${name} analyze`, lists.analyze ?? fallback);
+      appendModelSummary(modelParts, `${name} implement`, lists.implement ?? fallback);
+    }
+    const detail = runner?.description || 'Server-side executor';
+    dom.hostRunnerDetail.textContent = modelParts.length
+      ? `${detail} · ${modelParts.join(' · ')}`
+      : detail;
     const setupCount = projects.filter(isPlanSetup).length;
     dom.hostProjects.textContent = String(projects.length);
     dom.hostSetup.textContent = setupCount ? `${setupCount} need setup` : 'all configured';
@@ -948,25 +1006,46 @@ const MODEL_OPTIONS = [
     if (dom.blockPolicyStatus) dom.blockPolicyStatus.textContent = '';
   }
 
-  function updateDrawerModel(project) {
-    const override = project.model || '';
-    const effective = project.effectiveModel || override || app.state?.settings?.model || '';
+  function effectiveModelListsFor(project) {
+    if (project.effectiveModelLists) {
+      const lists = project.effectiveModelLists;
+      return {
+        model: lists.model ?? project.effectiveModel ?? project.model ?? '',
+        seed: lists.seed ?? project.effectiveModel ?? '',
+        analyze: lists.analyze ?? project.effectiveModel ?? '',
+        implement: lists.implement ?? project.effectiveModel ?? ''
+      };
+    }
+    const fallback = project.effectiveModel || '';
     const models = project.effectiveModels || {};
+    return {
+      model: project.effectiveModel || project.model || '',
+      seed: models.seed || fallback || '',
+      analyze: models.analyze || fallback || '',
+      implement: models.implement || fallback || ''
+    };
+  }
+
+  function updateDrawerModel(project) {
+    const settings = app.state?.settings || {};
+    const override = project.model || '';
+    const effective = effectiveModelListsFor(project);
     const rows = [
-      ['Seed model', models.seed || effective || 'OpenCode default'],
-      ['Analyze model', models.analyze || effective || 'OpenCode default'],
-      ['Implement model', models.implement || effective || 'OpenCode default'],
-      ['Project default override', override || 'global']
+      ['Default model', displayModelList(effective.model || override || settings.model, 'OpenCode default')],
+      ['Seed model', displayModelList(effective.seed || settings.seedModel || settings.model, 'OpenCode default')],
+      ['Analyze model', displayModelList(effective.analyze || settings.analyzeModel || settings.model, 'OpenCode default')],
+      ['Implement model', displayModelList(effective.implement || settings.implementModel || settings.model, 'OpenCode default')],
+      ['Project default override', displayModelList(override, 'global')]
     ];
     dom.drawerModel.innerHTML = rows.map(([label, value]) => `
       <div class="policy-line">
         <span>${esc(label)}</span>
         <span>${esc(value)}</span>
       </div>`).join('');
-    setIfIdle(dom.drawerModelInput, override);
-    setIfIdle(dom.drawerSeedModel, project.seedModel);
-    setIfIdle(dom.drawerAnalyzeModel, project.analyzeModel);
-    setIfIdle(dom.drawerImplementModel, project.implementModel);
+    fillModelSelect(dom.drawerModelInput, project.model, 'Inherit global');
+    fillModelSelect(dom.drawerSeedModel, project.seedModel, 'Inherit default model');
+    fillModelSelect(dom.drawerAnalyzeModel, project.analyzeModel, 'Inherit default model');
+    fillModelSelect(dom.drawerImplementModel, project.implementModel, 'Inherit default model');
     dom.projectModelStatus.textContent = '';
   }
 
@@ -1623,10 +1702,10 @@ const MODEL_OPTIONS = [
       await api(`/api/projects/${encodeURIComponent(id)}`, {
         method: 'PATCH',
         body: JSON.stringify({
-          model: dom.drawerModelInput.value,
-          seedModel: dom.drawerSeedModel.value,
-          analyzeModel: dom.drawerAnalyzeModel.value,
-          implementModel: dom.drawerImplementModel.value
+          model: readModelSelect(dom.drawerModelInput),
+          seedModel: readModelSelect(dom.drawerSeedModel),
+          analyzeModel: readModelSelect(dom.drawerAnalyzeModel),
+          implementModel: readModelSelect(dom.drawerImplementModel)
         })
       });
       await refreshState();
@@ -1771,10 +1850,10 @@ const MODEL_OPTIONS = [
           maxConcurrent: Number(dom.maxConcurrent.value),
           mode: dom.mode.value,
           globalRunner: dom.globalRunner.value,
-      model: dom.model.value,
-          seedModel: dom.seedModel.value,
-          analyzeModel: dom.analyzeModel.value,
-          implementModel: dom.implementModel.value,
+          model: readModelSelect(dom.model),
+          seedModel: readModelSelect(dom.seedModel),
+          analyzeModel: readModelSelect(dom.analyzeModel),
+          implementModel: readModelSelect(dom.implementModel),
           rateLimitPauseSeconds: Number(dom.rateLimitSeconds.value),
           blockThreshold: dom.blockThreshold.value.trim() === '' ? '' : Number(dom.blockThreshold.value),
           temporaryLiftScope: dom.temporaryLiftScope.value,
@@ -1955,10 +2034,10 @@ const MODEL_OPTIONS = [
           path,
           name: dom.projectName.value.trim(),
           runner: dom.projectRunner.value,
-      model: dom.projectModel.value.trim(),
-          seedModel: dom.projectSeedModel.value.trim(),
-          analyzeModel: dom.projectAnalyzeModel.value.trim(),
-          implementModel: dom.projectImplementModel.value.trim(),
+          model: readModelSelect(dom.projectModel),
+          seedModel: readModelSelect(dom.projectSeedModel),
+          analyzeModel: readModelSelect(dom.projectAnalyzeModel),
+          implementModel: readModelSelect(dom.projectImplementModel),
           blockThreshold: dom.projectBlockThreshold.value.trim() === ''
             ? ''
             : Number(dom.projectBlockThreshold.value),
@@ -1968,10 +2047,9 @@ const MODEL_OPTIONS = [
       });
       dom.projectPath.value = '';
       dom.projectName.value = '';
-    dom.projectModel.value = '';
-      dom.projectSeedModel.value = '';
-      dom.projectAnalyzeModel.value = '';
-      dom.projectImplementModel.value = '';
+      [dom.projectModel, dom.projectSeedModel, dom.projectAnalyzeModel, dom.projectImplementModel].forEach((select) => {
+        Array.from(select.options).forEach((option) => { option.selected = option.value === ''; });
+      });
       dom.projectBlockThreshold.value = '';
       dom.projectTemporaryLiftScope.value = '';
       dom.projectPermanentLift.value = '';

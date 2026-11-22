@@ -12,6 +12,7 @@ const bus = require('./events');
 const planLib = require('./plan');
 const iconLib = require('./icon');
 const { getRunner, listRunners } = require('./runners');
+const { modelList, joinModelList } = require('./model-list');
 
 const config = configStore.loadConfig();
 const runtime = new Map();
@@ -64,6 +65,8 @@ function ensureRuntime(project) {
       child: null,
       starting: false,
       token: 0,
+      modelIndex: 0,
+      modelAttemptRunKey: '',
       stepTask: null,
       stepOutput: '',
       icon: null,
@@ -79,9 +82,14 @@ function findProject(id) {
   return config.projects.find((project) => project.id === id) || null;
 }
 
-function effectiveModel(project, phase = 'seed') {
+function effectiveModelList(project, phase = 'seed') {
   const field = configStore.modelFieldForPhase(phase);
-  return project[field] || project.model || config.settings[field] || config.settings.model || '';
+  const selected = project[field] || project.model || config.settings[field] || config.settings.model || '';
+  return modelList(selected);
+}
+
+function effectiveModel(project, phase = 'seed') {
+  return effectiveModelList(project, phase)[0] || '';
 }
 
 function blockPolicyFor(project) {
@@ -146,6 +154,12 @@ function getState() {
           seed: effectiveModel(project, 'seed'),
           analyze: effectiveModel(project, 'analyze'),
           implement: effectiveModel(project, 'implement')
+        },
+        effectiveModelLists: {
+          model: joinModelList(modelList(project.model || config.settings.model || '')),
+          seed: joinModelList(effectiveModelList(project, 'seed')),
+          analyze: joinModelList(effectiveModelList(project, 'analyze')),
+          implement: joinModelList(effectiveModelList(project, 'implement'))
         },
         blockPolicy: blockPolicyFor(project),
         status,
@@ -567,6 +581,11 @@ function shortCommand(command, args) {
   return `$ ${command} ${preview.join(' ')}`;
 }
 
+function rateLimitPauseMs() {
+  const pauseSeconds = Math.max(5, Math.min(600, Number(config.settings.rateLimitPauseSeconds) || 60));
+  return pauseSeconds * 1000;
+}
+
 function rateLimitRetry(project, rt, pauseMs) {
   appendLog(project.id, 'system', `Provider backoff engaged. Retrying in ${Math.round(pauseMs / 1000)}s.`);
   setTimeout(() => {
@@ -579,10 +598,78 @@ function rateLimitRetry(project, rt, pauseMs) {
   }, pauseMs + 200);
 }
 
+function scheduleModelFallback(project, rt, runner, phase, models) {
+  if (!runner || !runner.isRateLimit || !runner.isRateLimit(rt.stepOutput)) return false;
+  if (rt.modelIndex + 1 >= models.length) return false;
+  const currentModel = models[rt.modelIndex] || 'OpenCode default';
+  const nextModel = models[rt.modelIndex + 1] || 'OpenCode default';
+  const pauseMs = rateLimitPauseMs();
+  appendLog(project.id, 'system', `Rate limited on ${currentModel}; retrying with ${nextModel}.`);
+  rt.modelIndex += 1;
+  rt.status = 'rateLimited';
+  rt.resumeAt = Date.now() + pauseMs;
+  rt.nextPhase = phase;
+  rt.stepOutput = '';
+  rateLimitRetry(project, rt, pauseMs);
+  emitState();
+  return true;
+}
+
+async function spawnRunnerAttempt(project, rt, runner, options) {
+  const { prompt, url, files, model, runKey, phase, task, models } = options;
+  const built = runner.buildCommand({
+    prompt,
+    cwd: project.path,
+    url,
+    files,
+    model,
+    runKey,
+    projectId: project.id,
+    phase,
+    task
+  });
+  try {
+    await runner.cancelStaleRuns?.({ projectId: project.id, cwd: project.path, keepRunKey: runKey });
+  } catch (error) {
+    appendLog(project.id, 'system', `Stale run cancellation failed: ${error.message}`);
+  }
+  const child = spawn(built.command, built.args, built.options);
+  rt.child = child;
+  rt.token += 1;
+  const token = rt.token;
+  appendLog(project.id, 'system', shortCommand(built.command, built.args));
+
+  if (child.stdout) child.stdout.on('data', (chunk) => {
+    if (rt.token !== token) return;
+    rt.stepOutput += String(chunk);
+    appendLog(project.id, 'out', chunk);
+  });
+  if (child.stderr) child.stderr.on('data', (chunk) => {
+    if (rt.token !== token) return;
+    rt.stepOutput += String(chunk);
+    appendLog(project.id, 'err', chunk);
+  });
+  child.on('error', (error) => {
+    if (rt.token !== token) return;
+    rt.child = null;
+    rt.status = 'error';
+    rt.active = false;
+    rt.error = error.message;
+    appendLog(project.id, 'system', `✖ ${error.message}`);
+    emitState();
+    scheduleTick();
+  });
+  child.on('close', (code) => {
+    if (rt.token !== token) return;
+    rt.child = null;
+    if (scheduleModelFallback(project, rt, runner, phase, models)) return;
+    handleClose(project, rt, code, task, phase, runner);
+  });
+}
+
 function handleClose(project, rt, code, task, phase, runner) {
   try {
-    const pauseSeconds = Math.max(5, Math.min(600, Number(config.settings.rateLimitPauseSeconds) || 60));
-    const pauseMs = pauseSeconds * 1000;
+    const pauseMs = rateLimitPauseMs();
     if (runner && runner.isRateLimit && runner.isRateLimit(rt.stepOutput)) {
       rt.status = 'rateLimited';
       rt.resumeAt = Date.now() + pauseMs;
@@ -714,54 +801,25 @@ async function startStep(project) {
     emitState();
 
     const url = runner.ensureServer ? await runner.ensureServer() : null;
-    const model = effectiveModel(project, phase);
-    appendLog(project.id, 'system', `Model: ${model || 'OpenCode default'}`);
-    const built = runner.buildCommand({
+    const models = effectiveModelList(project, phase);
+    if (rt.modelAttemptRunKey !== runKey) {
+      rt.modelAttemptRunKey = runKey;
+      rt.modelIndex = 0;
+    } else if (rt.modelIndex >= models.length) {
+      rt.modelIndex = 0;
+    }
+    const model = models[rt.modelIndex] || '';
+    const fallbackNote = models.length > 1 ? ` (fallback ${rt.modelIndex + 1}/${models.length})` : '';
+    appendLog(project.id, 'system', `Model: ${model || 'OpenCode default'}${fallbackNote}`);
+    await spawnRunnerAttempt(project, rt, runner, {
       prompt,
-      cwd: project.path,
       url,
       files,
       model,
       runKey,
-      projectId: project.id,
       phase,
-      task
-    });
-    try {
-      await runner.cancelStaleRuns?.({ projectId: project.id, cwd: project.path, keepRunKey: runKey });
-    } catch (error) {
-      appendLog(project.id, 'system', `Stale run cancellation failed: ${error.message}`);
-    }
-    const child = spawn(built.command, built.args, built.options);
-    rt.child = child;
-    rt.token += 1;
-    const token = rt.token;
-    appendLog(project.id, 'system', shortCommand(built.command, built.args));
-
-    if (child.stdout) child.stdout.on('data', (chunk) => {
-      if (rt.token !== token) return;
-      rt.stepOutput += String(chunk);
-      appendLog(project.id, 'out', chunk);
-    });
-    if (child.stderr) child.stderr.on('data', (chunk) => {
-      if (rt.token !== token) return;
-      rt.stepOutput += String(chunk);
-      appendLog(project.id, 'err', chunk);
-    });
-    child.on('error', (error) => {
-      if (rt.token !== token) return;
-      rt.child = null;
-      rt.status = 'error';
-      rt.active = false;
-      rt.error = error.message;
-      appendLog(project.id, 'system', `✖ ${error.message}`);
-      emitState();
-      scheduleTick();
-    });
-    child.on('close', (code) => {
-      if (rt.token !== token) return;
-      rt.child = null;
-      handleClose(project, rt, code, task, phase, runner);
+      task,
+      models
     });
   } catch (error) {
     rt.status = 'error';
