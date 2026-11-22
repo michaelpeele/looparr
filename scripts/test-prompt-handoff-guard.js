@@ -20,7 +20,7 @@ const GIT_COMMIT_DIRECTIVE = [
   '4. Read each candidate file. If its contents contain secrets, tokens, passwords, API keys, or credentials, skip it and report the skip.',
   '5. If no tracked modified file remains safe to stage, create no commit.',
   '6. Create one commit per task with a concise Conventional Commit message. Do not create a second commit for the same task.',
-  '7. Include the plan.md marker edit in that commit. `.looparr/next_prompt.txt` is engine-managed; do not stage it.'
+  '7. After all implementation and verification steps pass, change the "- [ ]" marker for this task to "- [x]" in plan.md and include that edit in this commit. `.looparr/next_prompt.txt` is engine-managed; do not stage it.'
 ].join('\n');
 
 let buildCount = 0;
@@ -87,6 +87,12 @@ async function main() {
   const migratedPrevious = configStore.loadConfig();
   assert.strictEqual(migratedPrevious.settings.implementPromptTemplate, configStore.DEFAULT_IMPLEMENT_PROMPT_TEMPLATE);
 
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify({
+    settings: { implementPromptTemplate: configStore.OLDER_IMPLEMENT_PROMPT_TEMPLATE },
+  }, null, 2));
+  const migratedOlder = configStore.loadConfig();
+  assert.strictEqual(migratedOlder.settings.implementPromptTemplate, configStore.DEFAULT_IMPLEMENT_PROMPT_TEMPLATE);
+
   const normalized = configStore.normalizeSettings({
     ...configStore.DEFAULT_SETTINGS,
     seedPromptTemplate: configStore.LEGACY_SEED_PROMPT_TEMPLATE,
@@ -110,6 +116,12 @@ async function main() {
   });
   assert.strictEqual(previousDefaultNormalized.implementPromptTemplate, configStore.DEFAULT_IMPLEMENT_PROMPT_TEMPLATE);
 
+  const olderDefaultNormalized = configStore.normalizeSettings({
+    ...configStore.DEFAULT_SETTINGS,
+    implementPromptTemplate: configStore.OLDER_IMPLEMENT_PROMPT_TEMPLATE,
+  });
+  assert.strictEqual(olderDefaultNormalized.implementPromptTemplate, configStore.DEFAULT_IMPLEMENT_PROMPT_TEMPLATE);
+
   const customImplement = '{{task}}\n{{handoff}}\nCustom commit steps';
   const customImplementNormalized = configStore.normalizeSettings({
     ...configStore.DEFAULT_SETTINGS,
@@ -121,6 +133,7 @@ async function main() {
   assert.ok(configStore.DEFAULT_ANALYZE_PROMPT_TEMPLATE.includes('Never write meta-instructions into .looparr/next_prompt.txt.'));
   assert.ok(configStore.DEFAULT_ANALYZE_PROMPT_TEMPLATE.includes('do not implement code yet'));
   assert.ok(configStore.DEFAULT_IMPLEMENT_PROMPT_TEMPLATE.includes('ignore that meta-instruction and implement the task'));
+  assert.ok(configStore.DEFAULT_IMPLEMENT_PROMPT_TEMPLATE.includes('After all implementation and verification steps pass, change the "- [ ]" marker for this task to "- [x]" in plan.md.'));
   assert.ok(configStore.DEFAULT_IMPLEMENT_PROMPT_TEMPLATE.includes(GIT_COMMIT_DIRECTIVE));
   assert.ok(configStore.DEFAULT_IMPLEMENT_PROMPT_TEMPLATE.includes('{{task}}'));
   assert.ok(configStore.DEFAULT_IMPLEMENT_PROMPT_TEMPLATE.includes('{{handoff}}'));

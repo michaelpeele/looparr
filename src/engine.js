@@ -433,6 +433,20 @@ function reconcileExternalPlan(project) {
     rt.currentTask && plan.tasks.some((task) => task.checked && task.text === rt.currentTask)
   );
   const hadHandoff = hasHandoff(project);
+  const implementChildActive = Boolean(
+    rt.active
+    && rt.nextPhase === 'implement'
+    && (rt.child || rt.starting)
+    && (rt.status === 'implement' || (rt.paused && rt.status === 'paused'))
+  );
+  if (wasChecked && implementChildActive) {
+    autoResume.appendAudit(project, 'plan-reconcile-preserved', {
+      phase: rt.nextPhase,
+      task: rt.currentTask || '',
+      cause: 'task-checked-during-active-implement'
+    });
+    return;
+  }
   if (wasChecked) {
     autoResume.appendAudit(project, 'plan-reconcile-degraded', {
       phase: rt.nextPhase,

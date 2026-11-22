@@ -92,7 +92,7 @@ For every unchecked task, Looparr runs three isolated, fresh-session steps via t
 
 1. **Seed**: reads `@plan.md`, finds the first unchecked item, and writes a concise analysis prompt to `.looparr/next_prompt.txt`.
 2. **Analyze**: executes that prompt and writes a detailed implementation prompt to `.looparr/next_prompt.txt`.
-3. **Implement**: executes the implementation prompt, marks the item `- [x]` in `plan.md`, and exits.
+3. **Implement**: executes the implementation prompt, verifies the work, and exits. Looparr marks the item `- [x]` in `plan.md` on successful close.
 
 Each step runs in the project directory. The CLI attaches `plan.md` with `--file` so the agent can read and edit it. Logs stream live to the project card drawer.
 
@@ -106,7 +106,7 @@ The phase contract is:
 
 - **Seed question**: built-in Seed prompt plus attached `plan.md`. **Answer**: write only a concise analysis prompt to `.looparr/next_prompt.txt`. Do not edit `plan.md`.
 - **Analyze question**: current `.looparr/next_prompt.txt` from Seed. **Answer**: overwrite `.looparr/next_prompt.txt` with a detailed implementation prompt. Do not implement code.
-- **Implement question**: current `.looparr/next_prompt.txt` from Analyze. **Answer**: implement the task, commit safe tracked modified files, mark it `- [x]` in `plan.md`, and leave `.looparr/next_prompt.txt` untouched.
+- **Implement question**: current `.looparr/next_prompt.txt` from Analyze. **Answer**: implement the task, run verification, commit safe tracked modified files, and leave `.looparr/next_prompt.txt` untouched. Leave the plan marker unchanged until verification passes; Looparr marks the item `- [x]` in `plan.md` on successful close.
 
 Analyze handoffs are validated before Implement. A handoff containing meta-instructions such as "do not implement code yet" or "produce the prompt only" is rejected. Looparr keeps the phase at Analyze, sets a visible error, and requires a manual retry. The Implement prompt also ignores that wording if it reaches a custom template. The default Implement prompt directs the agent to stage explicit paths, skip untracked files, and skip files containing secrets, tokens, passwords, API keys, or credentials.
 
