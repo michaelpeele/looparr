@@ -118,7 +118,7 @@ Stale production assets have shipped three times. For every batch that changes s
 - [x] Does looparr pull favicon for the project display? If not have it look for one and show that icon
 - [x] If detail on current and next task is too long, have it collapsed/ only show three lines, if it’s more than three lines add a triangle or something that designates more and I can tap it to view more. The triangle or arrow would flip after clicking and clicking again hides it, this would be available for current and up next. Remember state so navigate away and back doesn’t reset. Default is collapsed
 - [x] See if there is a way to freeze the add task textbox and button as I scroll to it, make it configurable if I want it to do this on the settings page
-- [ ] Mobile looks good with layout, desktop things aren’t lining up and opening to the side, keep mobile but see if desktop can be fixed. If multiple steps are needed add to plan markdown at the end.
+- [x] Mobile looks good with layout, desktop things aren’t lining up and opening to the side, keep mobile but see if desktop can be fixed. If multiple steps are needed add to plan markdown at the end.
 - [ ] Mark hide show completed per project persist after setting
 - [ ] Implement should include directive in prompt to commit to git if tracked updated files, exclude files with secrets tokens or passwords.
 - [ ] Model picker (global settings and per-project drawer) should support multi-select so more than one model can be chosen, not just a single dropdown value. On the main settings page and on the project-level dropdowns, allow selecting multiple models if possible; if multi-select is not feasible in the current UI/API shape, document that in plan markdown and describe the smallest change that would enable it (for example multiple `--model` fallbacks in the runner, or comma-separated values through `parseModel`). Documented as blocked (2026-11-21): `opencode run --model` takes a single string (`provider/model#variant`); repeated `--model` is not supported by the CLI, so a comma-separated value would pass `parseModel` (no whitespace, <=200 chars) but be passed to `opencode` as one invalid model id. Smallest enabling change: keep the single-string comma-separated value through `parseModel`, split on comma in `src/runners/opencode.js` `buildCommand` (or engine fallback loop over models on failure via the existing `isRateLimit` path), plus a multiple-select UI composing the comma string and an `index.html` change. Choice if enabled: applies uniformly to all model fields (global `model`/`seedModel`/`analyzeModel`/`implementModel` and per-project equivalents).
@@ -142,3 +142,9 @@ Stale production assets have shipped three times. For every batch that changes s
 - [ ] Link GitHub repo, publish and tag as v1.0
 - [ ] Publish docker container with multi arch testing similar to how we did Curatarr. Link docker container repo link to project so button appears
 - [ ] Add GitHub button to project detail on home page and detail page, if a GitHub repo is linked. Add a whale icon to link to docker image repo if one is linked.
+
+## Desktop layout and drawer batch
+
+- [x] Add desktop-only CSS for centered page width, compact icon rail, aligned full-width cards, and unchanged mobile breakpoints.
+- [x] Convert desktop project drawer to a centered modal overlay with stable scrollbar gutter, pinned header/toolbar, and scrolling body.
+- [x] Run unit tests, diff checks, local and production browser checks at all required widths, promote to production, verify served assets, and commit tracked changes.
