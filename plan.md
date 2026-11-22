@@ -12,81 +12,82 @@ Stale production assets have shipped three times. For every batch that changes s
 
 ## Hosted deployment baseline
 
+- [x] Add a setting global, and per project, pause in seconds, between tasks. Default is 0. Call it "Cooloff"
+- [ ] Check for additional 429 error messages the rate-limit parser misses. Example encountered in a log that was not pulled: `SessionError: [429]: Tokens per minute limit exceeded - too many tokens processed. (reset after 1m)`. Widen the `RATE_LIMIT_PATTERN` in `src/runners/opencode.js` so bracketed `[429]` and tokens-per-minute phrasing both match.
 - [x] The previously worked task "Hide completed should be the default task", appeared to launch another session when looparr prod was restarted, verify and correct.
 - [x] When a task finishes it is marking the plan completed too early and looparr shows the project current item as “idle press start" verbiage instead of task it is working on. It does show when it moves to the next task though, but not while it is wrapping up the previous since it was marked too early. Does the implement prompt need to be updated?
 - [x] Hide completed should be the default, last UI state of all settings should be remembered per project. Anything empty should be collapse like questions when there are none
 - [x] Mobile view only shows four icons across per task should be all
 - [ ] Seed prompts injecting entire plan markdown ballooning context. See if just filePath to plan is sufficient to pass context
-- [ ] Remove project count from top right of home page
 
 ## Bootstrap batch
 
+- [ ] Remove project count from top right of home page
 - [x] Add container and Tailscale Serve deployment files
 - [x] Add host-side OpenCode execution bridge
 - [x] Verify local API, SSE, bridge health, Serve, and Funnel status
-- [x] Commit hosted deployment changes locally
 
 ## Next batch
 
+- [x] Commit hosted deployment changes locally
 - [x] Keep host executor running for hosted task execution
 - [x] Keep Funnel disabled
-- [x] Create plan.md and initial handoff from deployment docs
 
 ## Next after
 
+- [x] Create plan.md and initial handoff from deployment docs
 - [x] Register Looparr repository as a managed project
-- [x] Harden project watcher against unreadable state directories
 
 ## iOS home-screen batch
 
-- [x] Re-verify hosted deployment after project registration and record current status
+- [x] Harden project watcher against unreadable state directories
 
 ## Touch icon fill batch
 
-- [x] Audit the existing dashboard UI for project setup and hosted status gaps
+- [x] Re-verify hosted deployment after project registration and record current status
 
 ## Touch icon fit batch
 
-- [x] Implement the needed UI changes in `public/`
+- [x] Audit the existing dashboard UI for project setup and hosted status gaps
 
 ## Touch icon fit follow-up batch
 
-- [x] Verify the UI through local HTTP and update `.project_documents/PROGRESS.md`
+- [x] Implement the needed UI changes in `public/`
 
 ## Touch icon scale 1.5 batch
 
-- [x] Propose UI grouping: sidebar navigation versus all-on-one-page layout. Review Splitarr or Curatarr for patterns, then record the recommendation in project markdown. Recommendation in `.project_documents/RESEARCH-ui-ux.md`.
+- [x] Verify the UI through local HTTP and update `.project_documents/PROGRESS.md`
 
 ## Touch icon scale 1.3 batch
 
-- [x] Propose iOS web-app icon support: favicon plus Apple touch icon and meta tags for saving to the iOS home screen. Review Splitarr or Curatarr for clues, then record the recommendation in project markdown. Recommendation in `.project_documents/RESEARCH-ui-ux.md`.
+- [x] Propose UI grouping: sidebar navigation versus all-on-one-page layout. Review Splitarr or Curatarr for patterns, then record the recommendation in project markdown. Recommendation in `.project_documents/RESEARCH-ui-ux.md`.
 
 ## Touch icon confirmation
 
-- [x] Add 180x180 opaque RGB `public/apple-touch-icon.png` and iOS home-screen meta tags to `public/index.html`.
+- [x] Propose iOS web-app icon support: favicon plus Apple touch icon and meta tags for saving to the iOS home screen. Review Splitarr or Curatarr for clues, then record the recommendation in project markdown. Recommendation in `.project_documents/RESEARCH-ui-ux.md`.
 
 ## Plan setup guidance batch
 
-- [x] Scale `public/apple-touch-icon.png` edge to edge, keep opaque RGB format, and verify served hash.
+- [x] Add 180x180 opaque RGB `public/apple-touch-icon.png` and iOS home-screen meta tags to `public/index.html`.
 
 ## Drawer activity and logs batch
 
-- [x] Reduce the touch icon artwork scale from 2.2 to 2.0 to address user-reported home-screen crop, keep full-bleed opaque RGB background, and verify served hash.
+- [x] Scale `public/apple-touch-icon.png` edge to edge, keep opaque RGB format, and verify served hash.
 
 ## Hosted add-project documentation batch
 
-- [x] Reduce the touch icon artwork scale from 2.0 to 1.8 after user feedback, keep full-bleed opaque RGB background, and verify served hash.
+- [x] Reduce the touch icon artwork scale from 2.2 to 2.0 to address user-reported home-screen crop, keep full-bleed opaque RGB background, and verify served hash.
 
 ## Headless handoff documentation batch
 
-- [x] Reduce the touch icon artwork scale from 1.8 to 1.5 after user feedback, keep full-bleed opaque RGB background, and verify served hash.
+- [x] Reduce the touch icon artwork scale from 2.0 to 1.8 after user feedback, keep full-bleed opaque RGB background, and verify served hash.
 
 ## Constraint block discovery list
 
+- [x] Reduce the touch icon artwork scale from 1.8 to 1.5 after user feedback, keep full-bleed opaque RGB background, and verify served hash.
 - [x] Reduce the touch icon artwork scale from 1.5 to 1.3 after user feedback, keep full-bleed opaque RGB background, and verify served hash.
 - [x] User confirmed the scale 1.3 icon is correct; icon work is complete.
 - [x] Add drawer guidance for creating a valid `plan.md` from the browser without backend changes.
-- [x] Improve the project drawer with labeled current/up-next task text, log status, empty state, and jump-to-latest control without backend changes.
 
 ### Current discovered block
 
@@ -95,6 +96,7 @@ Stale production assets have shipped three times. For every batch that changes s
 
 ## E2E UI batch
 
+- [x] Improve the project drawer with labeled current/up-next task text, log status, empty state, and jump-to-latest control without backend changes.
 - [x] Update `README.md` for the server-side Add Project path flow, validation, `~` expansion, setup state, and hosted mounted-path behavior.
 - [x] Document the current headless prompt/answer phase contract and manual markdown question/answer archive flow in `README.md` without engine, backend, or UI changes.
 - [x] Add the escalation rule: when a constraint blocks work, ask the user instead of silently switching to a smaller batch.
@@ -127,20 +129,19 @@ Stale production assets have shipped three times. For every batch that changes s
 - [x] Mobile looks good with layout, desktop things aren’t lining up and opening to the side, keep mobile but see if desktop can be fixed. If multiple steps are needed add to plan markdown at the end.
 - [x] Mark hide show completed per project persist after setting
 - [x] Implement should include directive in prompt to commit to git if tracked updated files, exclude files with secrets tokens or passwords.
-- [x] Model picker (global settings and per-project drawer) supports multi-select. Implemented 2026-11-22: all four global and all four per-project model fields accept one model or an ordered comma-separated fallback list. All 12 selectors use native multi-select; shared parsing persists canonical strings; engine falls back on rate limit with the same task, phase, and run key; one model id reaches each local or bridge `opencode` run. Previously blocked (2026-11-21): `opencode run --model` takes one string (`provider/model#variant`); repeated `--model` is unsupported, so a comma string would pass `parseModel` but reach `opencode` as one invalid id. Historical smallest enabling change: keep the single comma string through `parseModel`, add engine fallback over models on `isRateLimit`, and add a multi-select UI plus `index.html` change. Applies uniformly to all model fields (global `model`/`seedModel`/`analyzeModel`/`implementModel` and per-project equivalents).
 
 ## New-project planning flow
 
-- [ ] When clicking project to show details keep icons and buttons in the same place, for example implement moves to the left side and it should stay in the same place so it’s not jumping
+- [x] Model picker (global settings and per-project drawer) supports multi-select. Implemented 2026-11-22: all four global and all four per-project model fields accept one model or an ordered comma-separated fallback list. All 12 selectors use native multi-select; shared parsing persists canonical strings; engine falls back on rate limit with the same task, phase, and run key; one model id reaches each local or bridge `opencode` run. Previously blocked (2026-11-21): `opencode run --model` takes one string (`provider/model#variant`); repeated `--model` is unsupported, so a comma string would pass `parseModel` but reach `opencode` as one invalid id. Historical smallest enabling change: keep the single comma string through `parseModel`, add engine fallback over models on `isRateLimit`, and add a multi-select UI plus `index.html` change. Applies uniformly to all model fields (global `model`/`seedModel`/`analyzeModel`/`implementModel` and per-project equivalents).
 
 ## Sprint and phase parallelism
 
+- [ ] When clicking project to show details keep icons and buttons in the same place, for example implement moves to the left side and it should stay in the same place so it’s not jumping
 - [ ] (plan) Plan prompt type — see [PLAN-plan-prompt-type.md](.project_documents/PLAN-plan-prompt-type.md)
 - [ ] Add sprints or phases so one project can split by area, for example backend and frontend. Provide options to run sprints in parallel, run tasks inside a sprint in parallel, or both. Add options on task cards to merge previous branches, and a merge to main/prod deploy option. This way it could be injected into the implement task. Grayed out if task already started. Each task works in its own Git branch. Merge branches at the end of the sprint, then run an automated testing round before the sprint is complete as a new task type ‘[Type] Validation, I.e. if I picked sprint Sprint Validation, or have some suggestions of types like sprint backend front end etc to choose from. Questions and design for this flow come first; record the answers in `.project_documents/` before editing code.
 - [ ] Verify / Update Promotion workflow: promote to prod only after testing has completed. Run relevant test scripts and `npm test`, then `npm run restart:looparr -- --dry-run` and `npm run restart:looparr`. Verify container health, new image, container source hashes matching local source, served HTML/CSS/JS hashes matching local files, and `/api/state` before treating deployment as verified. Rate-limit false-positive fix promoted 2026-11-22 after `npm test`; container `b2c72c838f2c` healthy on image `68ca51074656`.
 - [ ] Investigate desktop layout, div not going wide on project card, awkward placement of sidebar and detail just goes to the right side instead of overlay like mobile.
 - [ ] Add Triangle to main screen project card. Look at legibility for up next in div, vertical on home page but correct on detail page.
-- [ ] Add a setting global, and per project, pause in seconds, between tasks. Default is 0.
 
 ## Desktop layout and drawer batch
 

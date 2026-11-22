@@ -8,6 +8,7 @@ const engine = require('./src/engine');
 const bus = require('./src/events');
 const envSettings = require('./src/env-settings');
 const iconLib = require('./src/icon');
+const iconPngLib = require('./src/icon-png');
 const { getRunner, listRunners } = require('./src/runners');
 const { parseModelList } = require('./src/model-list');
 
@@ -17,6 +18,9 @@ const HOST = process.env.HOST || '127.0.0.1';
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 const PROJECTS_ROOT = path.resolve(process.env.LOOPARR_PROJECTS_ROOT || '/home/michaelpeele/ai-projects');
+const PLAN_FILE_MAX_BYTES = 200000;
+const PLAN_FILE_BASENAME = /^(PLAN|plan)-[^/\\]+\.md$/;
+const PLAN_FILE_DIR_PREFIX = '.project_documents/';
 
 function isInside(root, target) {
   const relative = path.relative(root, target);
@@ -112,6 +116,77 @@ function findProject(id) {
   return engine.getState().projects.find((project) => project.id === id) || null;
 }
 
+function resolveProjectIcon(id) {
+  const project = findProject(id);
+  if (!project) return { ok: false, status: 404, error: 'Project not found' };
+  const icon = engine.getIcon(id);
+  if (!icon) return { ok: false, status: 404, error: 'No icon found' };
+  if (!iconLib.isInside(project.path, icon.absolutePath)) {
+    return { ok: false, status: 400, error: 'Invalid icon path' };
+  }
+
+  let projectReal;
+  let iconReal;
+  try {
+    projectReal = fs.realpathSync(project.path);
+    iconReal = fs.realpathSync(icon.absolutePath);
+  } catch {
+    return { ok: false, status: 404, error: 'Icon unavailable' };
+  }
+  if (!iconLib.isInside(projectReal, iconReal)) {
+    return { ok: false, status: 400, error: 'Invalid icon path' };
+  }
+
+  return {
+    ok: true,
+    project,
+    icon: { ...icon, absolutePath: iconReal, realPath: iconReal }
+  };
+}
+
+function resolveProjectPlanFile(project, requestedPath) {
+  if (typeof requestedPath !== 'string') return { ok: false, status: 400, error: 'path must be a string' };
+  if (!requestedPath || requestedPath.includes('\0') || requestedPath.includes('\\') ||
+      path.isAbsolute(requestedPath) || requestedPath.startsWith('/')) {
+    return { ok: false, status: 400, error: 'Invalid plan file path' };
+  }
+  if (requestedPath.split('/').includes('..')) {
+    return { ok: false, status: 400, error: 'Invalid plan file path' };
+  }
+
+  let rest = requestedPath;
+  if (rest.startsWith('./')) rest = rest.slice(2);
+  let relativeDir = '';
+  if (rest.startsWith(PLAN_FILE_DIR_PREFIX)) {
+    relativeDir = '.project_documents';
+    rest = rest.slice(PLAN_FILE_DIR_PREFIX.length);
+  }
+  if (rest.startsWith('./')) rest = rest.slice(2);
+  if (!rest || rest.includes('/') || !PLAN_FILE_BASENAME.test(rest)) {
+    return { ok: false, status: 400, error: 'Invalid plan file path' };
+  }
+
+  let projectReal;
+  try {
+    projectReal = fs.realpathSync(project.path);
+  } catch {
+    return { ok: false, status: 404, error: 'Project directory not found' };
+  }
+
+  const candidateParent = path.resolve(projectReal, relativeDir || '.');
+  if (!isInside(projectReal, candidateParent)) {
+    return { ok: false, status: 400, error: 'Invalid plan file path' };
+  }
+  return {
+    ok: true,
+    projectReal,
+    relativeDir,
+    basename: rest,
+    candidateParent,
+    candidate: path.join(candidateParent, rest)
+  };
+}
+
 function clampNumber(value, min, max, fallback) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
@@ -124,6 +199,16 @@ function parseBlockThreshold(value, fallback, label) {
   const number = Number(value);
   if (!Number.isInteger(number) || number < 1 || number > 20) {
     return { ok: false, error: `${label} must be an integer between 1 and 20` };
+  }
+  return { ok: true, value: number };
+}
+
+function parseCooloffSeconds(value, fallback, label) {
+  if (value === undefined) return { ok: true, value: undefined };
+  if (value === null || value === '') return { ok: true, value: fallback };
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 0 || number > 3600) {
+    return { ok: false, error: `${label} must be an integer between 0 and 3600` };
   }
   return { ok: true, value: number };
 }
@@ -228,6 +313,8 @@ app.post('/api/projects', (req, res) => {
 
   const threshold = parseBlockThreshold(body.blockThreshold, null, 'Block threshold');
   if (!threshold.ok) return fail(res, 400, threshold.error);
+  const cooloff = parseCooloffSeconds(body.cooloffSeconds, null, 'Cooloff');
+  if (!cooloff.ok) return fail(res, 400, cooloff.error);
   const temporaryLift = parseLiftScope(body.temporaryLiftScope, '', 'Temporary lift scope');
   if (!temporaryLift.ok) return fail(res, 400, temporaryLift.error);
   const permanentLift = parseLiftScope(body.permanentLift, '', 'Permanent lift');
@@ -245,6 +332,7 @@ app.post('/api/projects', (req, res) => {
       runner: selected,
       ...modelFields,
       blockThreshold: threshold.value,
+      cooloffSeconds: cooloff.value,
       temporaryLiftScope: temporaryLift.value,
       permanentLift: permanentLift.value,
       autoResumeOnStart: body.autoResumeOnStart
@@ -361,6 +449,9 @@ app.patch('/api/projects/:id', (req, res) => {
   const threshold = parseBlockThreshold(body.blockThreshold, null, 'Block threshold');
   if (!threshold.ok) return fail(res, 400, threshold.error);
   if (threshold.value !== undefined) patch.blockThreshold = threshold.value;
+  const cooloff = parseCooloffSeconds(body.cooloffSeconds, null, 'Cooloff');
+  if (!cooloff.ok) return fail(res, 400, cooloff.error);
+  if (cooloff.value !== undefined) patch.cooloffSeconds = cooloff.value;
   const temporaryLift = parseLiftScope(body.temporaryLiftScope, '', 'Temporary lift scope');
   if (!temporaryLift.ok) return fail(res, 400, temporaryLift.error);
   if (temporaryLift.value !== undefined) patch.temporaryLiftScope = temporaryLift.value;
@@ -424,6 +515,9 @@ app.patch('/api/settings', (req, res) => {
       current.rateLimitPauseSeconds
     );
   }
+  if (body.cooloffSeconds !== undefined) {
+    patch.cooloffSeconds = clampNumber(body.cooloffSeconds, 0, 3600, current.cooloffSeconds);
+  }
   const threshold = parseBlockThreshold(body.blockThreshold, current.blockThreshold, 'Block threshold');
   if (!threshold.ok) return fail(res, 400, threshold.error);
   if (threshold.value !== undefined) patch.blockThreshold = threshold.value;
@@ -486,6 +580,102 @@ app.put('/api/projects/:id/plan', (req, res) => {
   }
 });
 
+app.get('/api/projects/:id/plan-file', (req, res) => {
+  const project = findProject(req.params.id);
+  if (!project) return fail(res, 404, 'Project not found');
+  const target = resolveProjectPlanFile(project, req.query.path);
+  if (!target.ok) return fail(res, target.status, target.error);
+
+  let realFile;
+  try {
+    realFile = fs.realpathSync(target.candidate);
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return fail(res, 404, 'Plan file not found');
+    return fail(res, 400, 'Invalid plan file path');
+  }
+  if (!isInside(target.projectReal, realFile)) return fail(res, 400, 'Invalid plan file path');
+
+  let stats;
+  try {
+    stats = fs.statSync(realFile);
+  } catch {
+    return fail(res, 404, 'Plan file not found');
+  }
+  if (!stats.isFile()) return fail(res, 400, 'Not a file');
+  if (stats.size > PLAN_FILE_MAX_BYTES) return fail(res, 413, 'Plan file too large');
+
+  try {
+    const content = fs.readFileSync(realFile, 'utf8');
+    if (Buffer.byteLength(content, 'utf8') > PLAN_FILE_MAX_BYTES) return fail(res, 413, 'Plan file too large');
+    res.set('Cache-Control', 'no-store');
+    return res.json({ ok: true, content });
+  } catch (error) {
+    return fail(res, 500, error.message);
+  }
+});
+
+app.put('/api/projects/:id/plan-file', (req, res) => {
+  const project = findProject(req.params.id);
+  if (!project) return fail(res, 404, 'Project not found');
+  if (typeof req.body?.content !== 'string') return fail(res, 400, 'content must be a string');
+  if (Buffer.byteLength(req.body.content, 'utf8') > PLAN_FILE_MAX_BYTES) {
+    return fail(res, 413, 'content must be at most 200000 bytes');
+  }
+  const target = resolveProjectPlanFile(project, req.query.path);
+  if (!target.ok) return fail(res, target.status, target.error);
+
+  let realParent;
+  try {
+    realParent = fs.realpathSync(target.candidateParent);
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return fail(res, 404, 'Plan file directory not found');
+    return fail(res, 400, 'Invalid plan file path');
+  }
+  if (!isInside(target.projectReal, realParent)) return fail(res, 400, 'Invalid plan file path');
+
+  let parentStats;
+  try {
+    parentStats = fs.statSync(realParent);
+  } catch {
+    return fail(res, 404, 'Plan file directory not found');
+  }
+  if (!parentStats.isDirectory()) return fail(res, 400, 'Not a directory');
+
+  const file = path.join(realParent, target.basename);
+  let currentStats = null;
+  try {
+    currentStats = fs.lstatSync(file);
+  } catch (error) {
+    if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') return fail(res, 400, 'Invalid plan file path');
+  }
+  if (currentStats?.isSymbolicLink()) {
+    let linkedFile;
+    try {
+      linkedFile = fs.realpathSync(file);
+    } catch {
+      return fail(res, 400, 'Invalid plan file path');
+    }
+    if (!isInside(target.projectReal, linkedFile)) return fail(res, 400, 'Invalid plan file path');
+    try {
+      if (!fs.statSync(linkedFile).isFile()) return fail(res, 400, 'Not a file');
+    } catch {
+      return fail(res, 400, 'Invalid plan file path');
+    }
+  } else if (currentStats && !currentStats.isFile()) {
+    return fail(res, 400, 'Not a file');
+  }
+
+  const temp = path.join(realParent, `.${target.basename}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    fs.writeFileSync(temp, req.body.content, { encoding: 'utf8', flag: 'wx' });
+    fs.renameSync(temp, file);
+    return res.json({ ok: true });
+  } catch (error) {
+    try { fs.unlinkSync(temp); } catch { /* best effort cleanup */ }
+    return fail(res, 500, error.message);
+  }
+});
+
 app.post('/api/projects/:id/tasks', (req, res) => {
   if (!findProject(req.params.id)) return fail(res, 404, 'Project not found');
   const index = Number(req.body?.index);
@@ -512,22 +702,10 @@ app.put('/api/projects/:id/answer', (req, res) => {
 });
 
 app.get('/api/projects/:id/icon', (req, res) => {
-  const project = findProject(req.params.id);
-  if (!project) return fail(res, 404, 'Project not found');
-  const icon = engine.getIcon(req.params.id);
-  if (!icon) return fail(res, 404, 'No icon found');
-  if (!iconLib.isInside(project.path, icon.absolutePath)) return fail(res, 400, 'Invalid icon path');
+  const resolved = resolveProjectIcon(req.params.id);
+  if (!resolved.ok) return fail(res, resolved.status, resolved.error);
 
-  let projectReal;
-  let iconReal;
-  try {
-    projectReal = fs.realpathSync(project.path);
-    iconReal = fs.realpathSync(icon.absolutePath);
-  } catch {
-    return fail(res, 404, 'Icon unavailable');
-  }
-  if (!iconLib.isInside(projectReal, iconReal)) return fail(res, 400, 'Invalid icon path');
-
+  const icon = resolved.icon;
   const contentType = icon.mime || 'application/octet-stream';
   const headers = { 'Content-Type': contentType, 'X-Content-Type-Options': 'nosniff' };
   if (contentType === 'image/svg+xml') {
@@ -536,11 +714,34 @@ app.get('/api/projects/:id/icon', (req, res) => {
   if (icon.version) headers.ETag = `"${icon.version}"`;
   res.set('Cache-Control', 'no-cache');
   res.set(headers);
-  return res.sendFile(iconReal, { headers }, (error) => {
+  return res.sendFile(icon.absolutePath, { headers }, (error) => {
     if (!error) return;
     if (!res.headersSent) return fail(res, 404, 'Icon unavailable');
     if (!res.writableEnded) res.end();
   });
+});
+
+app.get('/api/projects/:id/icon.png', async (req, res) => {
+  const resolved = resolveProjectIcon(req.params.id);
+  if (!resolved.ok) return fail(res, resolved.status, resolved.error);
+
+  let rendered;
+  try {
+    rendered = await iconPngLib.renderPng(resolved.icon);
+  } catch {
+    rendered = null;
+  }
+  if (!rendered) return fail(res, 404, 'Icon unavailable');
+
+  const etag = `"${rendered.etag}"`;
+  res.set({
+    'Content-Type': 'image/png',
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'no-cache',
+    ETag: etag
+  });
+  if (req.headers['if-none-match'] === etag) return res.status(304).end();
+  return res.status(200).send(rendered.buffer);
 });
 
 app.get('/api/runners', (req, res) => {

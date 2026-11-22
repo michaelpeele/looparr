@@ -19,6 +19,7 @@
     analyzeModel: $('analyze-model'),
     implementModel: $('implement-model'),
     rateLimitSeconds: $('rate-limit-seconds'),
+    cooloffSeconds: $('cooloff-seconds'),
     blockThreshold: $('block-threshold'),
     temporaryLiftScope: $('temporary-lift-scope'),
     permanentLift: $('permanent-lift'),
@@ -66,6 +67,7 @@
     projectAnalyzeModel: $('project-analyze-model'),
     projectImplementModel: $('project-implement-model'),
     projectBlockThreshold: $('project-block-threshold'),
+    projectCooloffSeconds: $('project-cooloff-seconds'),
     projectTemporaryLiftScope: $('project-temporary-lift-scope'),
     projectPermanentLift: $('project-permanent-lift'),
     addStatus: $('add-status'),
@@ -119,6 +121,7 @@
     logFollow: $('log-follow'),
     blockPolicyStatus: $('block-policy-status'),
     drawerBlockThreshold: $('drawer-block-threshold'),
+    drawerCooloffSeconds: $('drawer-cooloff-seconds'),
     drawerTemporaryLiftScope: $('drawer-temporary-lift-scope'),
     drawerPermanentLift: $('drawer-permanent-lift'),
     saveBlockPolicy: $('save-block-policy'),
@@ -1381,6 +1384,7 @@
     const overrides = policy.overrides || {};
     const rows = [
       ['Threshold', String(policy.blockThreshold ?? '—'), overrides.blockThreshold != null],
+      ['Cooloff', String(project.effectiveCooloffSeconds ?? '—'), overrides.cooloffSeconds != null],
       ['Temporary lift', displayScope(policy.temporaryLiftScope), Boolean(overrides.temporaryLiftScope)],
       ['Permanent lift', displayScope(policy.permanentLift), Boolean(overrides.permanentLift)]
     ];
@@ -1390,6 +1394,7 @@
         <span>${esc(value)}<span class="policy-override">${overridden ? 'project' : 'global'}</span></span>
       </div>`).join('');
     setIfIdle(dom.drawerBlockThreshold, overrides.blockThreshold ?? '');
+    setIfIdle(dom.drawerCooloffSeconds, overrides.cooloffSeconds ?? '');
     setIfIdle(dom.drawerTemporaryLiftScope, overrides.temporaryLiftScope || '');
     setIfIdle(dom.drawerPermanentLift, overrides.permanentLift || '');
     if (dom.blockPolicyStatus) dom.blockPolicyStatus.textContent = '';
@@ -2168,6 +2173,7 @@
         method: 'PATCH',
         body: JSON.stringify({
           blockThreshold: dom.drawerBlockThreshold.value.trim() === '' ? '' : Number(dom.drawerBlockThreshold.value),
+          cooloffSeconds: dom.drawerCooloffSeconds.value.trim() === '' ? '' : Number(dom.drawerCooloffSeconds.value),
           temporaryLiftScope: dom.drawerTemporaryLiftScope.value,
           permanentLift: dom.drawerPermanentLift.value
         })
@@ -2220,6 +2226,7 @@
     fillModelSelect(dom.projectAnalyzeModel, '', 'Inherit default model');
     fillModelSelect(dom.projectImplementModel, '', 'Inherit default model');
     setIfIdle(dom.rateLimitSeconds, settings.rateLimitPauseSeconds);
+    setIfIdle(dom.cooloffSeconds, settings.cooloffSeconds);
     setIfIdle(dom.blockThreshold, settings.blockThreshold);
     setIfIdle(dom.temporaryLiftScope, settings.temporaryLiftScope);
     setIfIdle(dom.permanentLift, settings.permanentLift);
@@ -2278,6 +2285,7 @@
           analyzeModel: readModelSelect(dom.analyzeModel),
           implementModel: readModelSelect(dom.implementModel),
           rateLimitPauseSeconds: Number(dom.rateLimitSeconds.value),
+          cooloffSeconds: Number(dom.cooloffSeconds.value),
           blockThreshold: dom.blockThreshold.value.trim() === '' ? '' : Number(dom.blockThreshold.value),
           temporaryLiftScope: dom.temporaryLiftScope.value,
           permanentLift: dom.permanentLift.value,
@@ -2464,6 +2472,9 @@
           blockThreshold: dom.projectBlockThreshold.value.trim() === ''
             ? ''
             : Number(dom.projectBlockThreshold.value),
+          cooloffSeconds: dom.projectCooloffSeconds.value.trim() === ''
+            ? ''
+            : Number(dom.projectCooloffSeconds.value),
           temporaryLiftScope: dom.projectTemporaryLiftScope.value,
           permanentLift: dom.projectPermanentLift.value
         })
@@ -2474,6 +2485,7 @@
         Array.from(select.options).forEach((option) => { option.selected = option.value === ''; });
       });
       dom.projectBlockThreshold.value = '';
+      dom.projectCooloffSeconds.value = '';
       dom.projectTemporaryLiftScope.value = '';
       dom.projectPermanentLift.value = '';
       app.nameTouched = false;

@@ -60,6 +60,7 @@ function ensureRuntime(project) {
       currentTask: '',
       nextPhase: 'seed',
       resumeAt: null,
+      cooloffUntil: null,
       error: '',
       logs: [],
       child: null,
@@ -98,10 +99,15 @@ function blockPolicyFor(project) {
     ...configStore.resolveBlockPolicy(normalized, config.settings),
     overrides: {
       blockThreshold: normalized.blockThreshold ?? null,
+      cooloffSeconds: normalized.cooloffSeconds ?? null,
       temporaryLiftScope: normalized.temporaryLiftScope || '',
       permanentLift: normalized.permanentLift || ''
     }
   };
+}
+
+function cooloffMsFor(project) {
+  return configStore.resolveCooloff(project, config.settings) * 1000;
 }
 
 function appendLog(projectId, stream, text) {
@@ -189,6 +195,8 @@ function getState() {
         icon: rt.icon ? rt.icon.relativePath : null,
         iconVersion: rt.iconVersion || null,
         resumeAt: rt.resumeAt,
+        cooloffUntil: rt.cooloffUntil || null,
+        effectiveCooloffSeconds: configStore.resolveCooloff(project, config.settings),
         autoResumeOnStart: project.autoResumeOnStart === true,
         autoResumePending: fs.existsSync(autoResume.statePath(project)),
         error: rt.error || (plan.ok ? '' : `plan.md: ${plan.error}`),
@@ -259,6 +267,7 @@ function addProject(input) {
     analyzeModel: configStore.normalizedModel(input.analyzeModel, ''),
     implementModel: configStore.normalizedModel(input.implementModel, ''),
     blockThreshold: input.blockThreshold ?? null,
+    cooloffSeconds: input.cooloffSeconds ?? null,
     temporaryLiftScope: input.temporaryLiftScope || '',
     permanentLift: input.permanentLift || '',
     autoResumeOnStart: input.autoResumeOnStart
@@ -555,6 +564,7 @@ function start(id) {
   rt.paused = false;
   rt.pauseAfterStep = false;
   rt.resumeAt = null;
+  rt.cooloffUntil = null;
   rt.error = '';
   rt.currentTask = rt.currentTask || '';
   if (!rt.child) rt.status = 'idle';
@@ -588,6 +598,7 @@ function stop(id) {
   rt.paused = false;
   rt.pauseAfterStep = false;
   rt.resumeAt = null;
+  rt.cooloffUntil = null;
   rt.status = 'idle';
   rt.currentTask = '';
   rt.error = '';
@@ -776,6 +787,11 @@ function handleClose(project, rt, code, task, phase, runner) {
       clearHandoff(project);
       appendLog(project.id, 'system', `✓ Done: ${task.text}`);
       rt.nextPhase = 'seed';
+      const cooloffMs = cooloffMsFor(project);
+      if (cooloffMs > 0) {
+        rt.cooloffUntil = Date.now() + cooloffMs;
+        appendLog(project.id, 'system', `Cooloff ${cooloffMs / 1000}s.`);
+      }
     }
 
     if (rt.paused) {
@@ -917,7 +933,7 @@ function scheduleTick() {
 function eligibleProjects() {
   return config.projects.filter((project) => {
     const rt = ensureRuntime(project);
-    return rt.active && !rt.paused && !rt.child && !rt.starting && !rt.resumeAt && rt.status !== 'done' && rt.status !== 'error';
+    return rt.active && !rt.paused && !rt.child && !rt.starting && !rt.resumeAt && rt.status !== 'done' && rt.status !== 'error' && (!rt.cooloffUntil || Date.now() >= rt.cooloffUntil);
   });
 }
 
@@ -930,6 +946,10 @@ function tick() {
     if (rt.resumeAt && rt.active && !rt.paused && Date.now() >= rt.resumeAt) {
       rt.resumeAt = null;
       if (rt.status === 'rateLimited') rt.status = 'idle';
+      emitState();
+    }
+    if (rt.cooloffUntil && rt.active && !rt.paused && Date.now() >= rt.cooloffUntil) {
+      rt.cooloffUntil = null;
       emitState();
     }
   }

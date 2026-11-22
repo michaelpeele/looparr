@@ -146,6 +146,7 @@ const DEFAULT_SETTINGS = {
   implementModel: 'opencode/big-pickle',
   rateLimitPauseSeconds: 60,
   blockThreshold: 2,
+  cooloffSeconds: 0,
   temporaryLiftScope: '',
   permanentLift: '',
   promptCliToolsNote: false,
@@ -172,6 +173,13 @@ function normalizedBlockThreshold(value, fallback) {
   return Number.isInteger(number) && number >= 1 && number <= 20 ? number : fallback;
 }
 
+function normalizedCooloff(value, fallback) {
+  if (value === null || value === undefined || value === '') return fallback;
+  const number = Number(value);
+  if (!Number.isInteger(number)) return fallback;
+  return Math.max(0, Math.min(3600, number));
+}
+
 function normalizedLiftScope(value, fallback) {
   if (typeof value !== 'string') return fallback;
   return value.trim().slice(0, 2000);
@@ -195,6 +203,7 @@ function normalizeProject(project) {
     analyzeModel: normalizedModel(project.analyzeModel, '', MODEL_FIELD_LABELS.analyzeModel),
     implementModel: normalizedModel(project.implementModel, '', MODEL_FIELD_LABELS.implementModel),
     blockThreshold: normalizedBlockThreshold(project.blockThreshold, null),
+    cooloffSeconds: normalizedCooloff(project.cooloffSeconds, null),
     temporaryLiftScope: normalizedLiftScope(project.temporaryLiftScope, ''),
     permanentLift: normalizedLiftScope(project.permanentLift, ''),
     autoResumeOnStart: typeof project.autoResumeOnStart === 'boolean' ? project.autoResumeOnStart : false
@@ -211,6 +220,7 @@ function normalizeSettings(settings) {
   }
   normalized.promptCliToolsNote = normalized.promptCliToolsNote === true;
   normalized.stickyAddTaskRow = normalized.stickyAddTaskRow === true;
+  normalized.cooloffSeconds = normalizedCooloff(normalized.cooloffSeconds, DEFAULT_SETTINGS.cooloffSeconds);
   for (const [field, legacy] of Object.entries(LEGACY_PROMPT_TEMPLATES)) {
     if (normalized[field] === legacy) normalized[field] = CURRENT_PROMPT_TEMPLATES[field];
   }
@@ -243,6 +253,13 @@ function resolveBlockPolicy(project, settings) {
     temporaryLiftScope: normalized.temporaryLiftScope || globalTemporaryLift,
     permanentLift: normalized.permanentLift || globalPermanentLift
   };
+}
+
+function resolveCooloff(project, settings) {
+  const globalSettings = settings || {};
+  const normalized = normalizeProject(project) || {};
+  const globalCooloff = normalizedCooloff(globalSettings.cooloffSeconds, DEFAULT_SETTINGS.cooloffSeconds);
+  return normalized.cooloffSeconds ?? globalCooloff ?? DEFAULT_SETTINGS.cooloffSeconds;
 }
 
 function defaults() {
@@ -290,5 +307,6 @@ module.exports = {
   normalizedModel,
   normalizeProject,
   normalizeSettings,
-  resolveBlockPolicy
+  resolveBlockPolicy,
+  resolveCooloff
 };
