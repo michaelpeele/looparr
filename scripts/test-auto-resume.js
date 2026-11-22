@@ -56,6 +56,12 @@ function createFixture() {
   fs.chmodSync(dockerStub, 0o755);
 }
 
+function writeDockerStub(body) {
+  const dockerStub = path.join(BIN_DIR, 'docker');
+  fs.writeFileSync(dockerStub, `#!/bin/sh\n${body}\nexit 0\n`, 'utf8');
+  fs.chmodSync(dockerStub, 0o755);
+}
+
 function serverEnv(gated) {
   const env = { ...process.env, HOSTNAME: gated ? 'looparr' : 'test-host' };
   if (gated) env.LOOPARR_ALLOW_RESUME_INTENT = '1';
@@ -643,7 +649,189 @@ async function main() {
   assert.equal(fs.existsSync(DOCKER_MARKER), false, 'stale helper dry run did not call Docker');
   assertNoSecrets(`${staleHelper.stdout}\n${staleHelper.stderr}`, 'stale restart helper output');
 
-  // 17. Hard recreation resumes from checkpoint intent without graceful shutdown.
+  // 17. Promotion lock rejects contention, then releases on exit, failure, and signal.
+  const lockPath = path.join(TEMP_DIR, 'contention.lock');
+  const lockLog = path.join(TEMP_DIR, 'contention-promotions.log');
+  const lockEnv = {
+    ...helperEnv,
+    LOOPARR_RESTART_LOCK_PATH: lockPath,
+    LOOPARR_PROMOTIONS_LOG: lockLog
+  };
+  const lockHolder = spawn('bash', ['scripts/restart-lock.sh', 'bash', '-c', 'sleep 5'], {
+    cwd: REPO_ROOT,
+    env: lockEnv,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  servers.push(lockHolder);
+  await delay(500);
+  const contended = spawnSync('bash', ['scripts/restart-lock.sh', 'bash', '-c', 'echo contention-ran'], {
+    cwd: REPO_ROOT,
+    env: lockEnv,
+    encoding: 'utf8',
+    timeout: 5000
+  });
+  assertEqual(contended.status, 75, `lock contention status\n${contended.stdout}\n${contended.stderr}`);
+  assert.ok(contended.stderr.includes('lock-rejected'), 'contention reports lock rejection');
+  assert.ok(contended.stderr.includes('PROMOTION_LOCK_HELD'), 'contention reports structured lock error');
+  assert.ok(fs.existsSync(lockLog) && fs.readFileSync(lockLog, 'utf8').includes('PROMOTION_LOCK_HELD'), 'lock rejection logged');
+  assertNoSecrets(`${contended.stdout}\n${contended.stderr}`, 'lock contention output');
+  const [lockHolderCode] = await once(lockHolder, 'exit');
+  assertEqual(lockHolderCode, 0, 'lock holder exit code');
+  const retryAfterRelease = spawnSync('bash', ['scripts/restart-lock.sh', 'bash', '-c', 'echo retry-ok'], {
+    cwd: REPO_ROOT,
+    env: lockEnv,
+    encoding: 'utf8',
+    timeout: 5000
+  });
+  assertEqual(retryAfterRelease.status, 0, `retry after release\n${retryAfterRelease.stderr}`);
+  assert.ok(retryAfterRelease.stdout.includes('retry-ok'), 'retry ran after lock release');
+
+  const failedChild = spawnSync('bash', ['scripts/restart-lock.sh', 'bash', '-c', 'exit 3'], {
+    cwd: REPO_ROOT,
+    env: lockEnv,
+    encoding: 'utf8',
+    timeout: 5000
+  });
+  assertEqual(failedChild.status, 3, 'failed child status propagated');
+  const retryAfterFailure = spawnSync('bash', ['scripts/restart-lock.sh', 'bash', '-c', 'echo after-fail'], {
+    cwd: REPO_ROOT,
+    env: lockEnv,
+    encoding: 'utf8',
+    timeout: 5000
+  });
+  assertEqual(retryAfterFailure.status, 0, `retry after failed child\n${retryAfterFailure.stderr}`);
+  assert.ok(retryAfterFailure.stdout.includes('after-fail'), 'lock released after failed child');
+
+  const signalHolder = spawn('bash', ['scripts/restart-lock.sh', 'bash', '-c', 'sleep 10'], {
+    cwd: REPO_ROOT,
+    env: lockEnv,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  servers.push(signalHolder);
+  await delay(500);
+  signalHolder.kill('SIGTERM');
+  const [signalHolderCode] = await once(signalHolder, 'exit');
+  assertEqual(signalHolderCode, 143, 'signal holder exit code');
+  const retryAfterSignal = spawnSync('bash', ['scripts/restart-lock.sh', 'bash', '-c', 'echo after-signal'], {
+    cwd: REPO_ROOT,
+    env: lockEnv,
+    encoding: 'utf8',
+    timeout: 5000
+  });
+  assertEqual(retryAfterSignal.status, 0, `retry after signal\n${retryAfterSignal.stderr}`);
+  assert.ok(retryAfterSignal.stdout.includes('after-signal'), 'lock released after signal');
+
+  // 18. Restart helper reports Docker failure and succeeds on retry.
+  const retryProject = await createProjectViaApi('helper-retry', true);
+  await startAndWait(retryProject.id);
+  await prepare();
+  fs.rmSync(DOCKER_MARKER, { force: true });
+  const healthyPs = '  "compose ps looparr") printf \'NAME SERVICE STATUS\\nlooparr looparr Up (healthy)\\n\' ;;';
+  writeDockerStub([
+    `printf '%s\\n' "$*" >> ${JSON.stringify(DOCKER_MARKER)}`,
+    'case "$*" in',
+    '  "compose build looparr") exit 1 ;;',
+    healthyPs,
+    'esac'
+  ].join('\n'));
+  const failedRestart = spawnSync(process.execPath, ['scripts/restart-looparr.js'], {
+    cwd: REPO_ROOT,
+    env: helperEnv,
+    encoding: 'utf8',
+    timeout: 15000
+  });
+  assertEqual(failedRestart.status, 1, `failed restart status\n${failedRestart.stdout}\n${failedRestart.stderr}`);
+  assert.ok(failedRestart.stderr.includes('Docker command failed (1).'), 'restart reports Docker failure');
+  assert.ok(failedRestart.stderr.includes('DOCKER_RESTART_FAILED'), 'restart reports structured Docker error');
+  assertNoSecrets(`${failedRestart.stdout}\n${failedRestart.stderr}`, 'failed restart output');
+
+  fs.rmSync(DOCKER_MARKER, { force: true });
+  writeDockerStub([
+    `printf '%s\\n' "$*" >> ${JSON.stringify(DOCKER_MARKER)}`,
+    'case "$*" in',
+    healthyPs,
+    'esac'
+  ].join('\n'));
+  const retriedRestart = spawnSync(process.execPath, ['scripts/restart-looparr.js'], {
+    cwd: REPO_ROOT,
+    env: helperEnv,
+    encoding: 'utf8',
+    timeout: 15000
+  });
+  assertEqual(retriedRestart.status, 0, `retried restart status\n${retriedRestart.stdout}\n${retriedRestart.stderr}`);
+  const retryMarker = fs.readFileSync(DOCKER_MARKER, 'utf8');
+  assert.ok(retryMarker.includes('compose build looparr'), 'retry rebuilt image');
+  assert.ok(retryMarker.includes('compose up -d looparr'), 'retry recreated container');
+  assertNoSecrets(`${retriedRestart.stdout}\n${retriedRestart.stderr}`, 'retried restart output');
+
+  // 19. Stale intent found after restart is cleared without another restart.
+  const postRestartProject = await createProjectViaApi('helper-post-restart', true);
+  await startAndWait(postRestartProject.id);
+  await prepare();
+  const followUpPlan = `# Plan\n\n- [x] ${postRestartProject.task}\n- [ ] ${postRestartProject.task} after restart\n`;
+  const followUpPlanPath = path.join(TEMP_DIR, 'post-restart-plan.md');
+  fs.writeFileSync(followUpPlanPath, followUpPlan, 'utf8');
+  writeDockerStub([
+    `printf '%s\\n' "$*" >> ${JSON.stringify(DOCKER_MARKER)}`,
+    'case "$*" in',
+    `  "compose up -d looparr") cp ${JSON.stringify(followUpPlanPath)} ${JSON.stringify(path.join(postRestartProject.path, 'plan.md'))} ;;`,
+    healthyPs,
+    'esac'
+  ].join('\n'));
+  fs.rmSync(DOCKER_MARKER, { force: true });
+  const postRestartHelper = spawnSync(process.execPath, ['scripts/restart-looparr.js'], {
+    cwd: REPO_ROOT,
+    env: helperEnv,
+    encoding: 'utf8',
+    timeout: 15000
+  });
+  assertEqual(postRestartHelper.status, 0, `post-restart helper status\n${postRestartHelper.stdout}\n${postRestartHelper.stderr}`);
+  assert.ok(
+    postRestartHelper.stdout.includes(`Stale resume intent for ${postRestartProject.id}; clearing it.`),
+    'post-restart stale intent reported'
+  );
+  assert.ok(postRestartHelper.stdout.includes('Cleared stale resume intent after restart.'), 'post-restart stale intent cleared');
+  assert.equal(fs.existsSync(stateFile(postRestartProject.id)), false, 'post-restart stale intent removed');
+  assert.equal(
+    fs.readFileSync(DOCKER_MARKER, 'utf8').includes('compose restart'),
+    false,
+    'no extra clean restart after clearing stale intent'
+  );
+  assertNoSecrets(`${postRestartHelper.stdout}\n${postRestartHelper.stderr}`, 'post-restart helper output');
+
+  writeDockerStub(`printf '%s\\n' "$*" > ${JSON.stringify(DOCKER_MARKER)}`);
+
+  // 20. Promotion fails fast when another promotion or restart holds the lock.
+  const promoEnv = {
+    ...helperEnv,
+    LOOPARR_RESTART_LOCK_PATH: path.join(TEMP_DIR, 'promotion.lock'),
+    LOOPARR_PROMOTIONS_LOG: path.join(TEMP_DIR, 'promotion-promotions.log')
+  };
+  const promoHolder = spawn('bash', ['scripts/restart-lock.sh', 'bash', '-c', 'sleep 5'], {
+    cwd: REPO_ROOT,
+    env: promoEnv,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  servers.push(promoHolder);
+  await delay(500);
+  const rejectedPromotion = spawnSync('bash', ['scripts/promote.sh', '--sandbox-only'], {
+    cwd: REPO_ROOT,
+    env: promoEnv,
+    encoding: 'utf8',
+    timeout: 5000
+  });
+  assertEqual(rejectedPromotion.status, 75, `promotion lock rejection status\n${rejectedPromotion.stdout}\n${rejectedPromotion.stderr}`);
+  assert.ok(rejectedPromotion.stderr.includes('lock-rejected'), 'promotion reports lock rejection');
+  assert.ok(rejectedPromotion.stderr.includes('PROMOTION_LOCK_HELD'), 'promotion reports structured lock error');
+  assert.ok(
+    fs.readFileSync(promoEnv.LOOPARR_PROMOTIONS_LOG, 'utf8').includes('PROMOTION_LOCK_HELD'),
+    'promotion lock rejection logged'
+  );
+  assertNoSecrets(`${rejectedPromotion.stdout}\n${rejectedPromotion.stderr}`, 'promotion lock output');
+  const [promoHolderCode] = await once(promoHolder, 'exit');
+  assertEqual(promoHolderCode, 0, 'promotion lock holder exits cleanly');
+
+  // 21. Hard recreation resumes from checkpoint intent without graceful shutdown.
   const hardProject = await createProjectViaApi('hard-recreation', true);
   await startAndWait(hardProject.id);
   const hardPid = await waitForChildPid(projectById(hardProject.id));

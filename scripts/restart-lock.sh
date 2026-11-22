@@ -17,8 +17,11 @@ mkdir -p "$(dirname "$LOCK_PATH")" "$(dirname "$PROMOTIONS_LOG")"
 
 reject_locked() {
   local message="lock-rejected: another promotion or restart is running (lock: ${LOCK_PATH})"
+  local structured='{"event":"error","code":"PROMOTION_LOCK_HELD","message":"another promotion or restart is running"}'
   printf '[looparr-promote] %s\n' "$message" >&2
+  printf '%s\n' "$structured" >&2
   printf '[%s] [looparr-promote] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$message" >>"$PROMOTIONS_LOG"
+  printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$structured" >>"$PROMOTIONS_LOG"
   exit 75
 }
 

@@ -15,7 +15,14 @@ const BASE_URL = (
 ).replace(/\/$/, '');
 
 const DOCKER_COMMAND = 'docker compose build looparr && docker compose up -d looparr';
-const CLEAN_RESTART_COMMAND = 'docker compose restart looparr';
+
+function reportEvent(event, fields = {}) {
+  console.log(JSON.stringify({ event, ...fields }));
+}
+
+function reportError(code, message, details = {}) {
+  console.error(JSON.stringify({ event: 'error', code, message, ...details }));
+}
 
 if (process.env.LOOPARR_RESTART_LOCK_HELD !== '1') {
   const wrapped = spawnSync(
@@ -25,6 +32,7 @@ if (process.env.LOOPARR_RESTART_LOCK_HELD !== '1') {
   );
   if (wrapped.error) {
     console.error(`[looparr] Lock wrapper failed: ${wrapped.error.message}`);
+    reportError('LOCK_WRAPPER_FAILED', wrapped.error.message);
     process.exit(1);
   }
   process.exit(wrapped.status ?? 1);
@@ -121,6 +129,7 @@ async function main() {
   } catch (error) {
     console.error(`[looparr] Preflight failed: ${error.message}`);
     console.error('[looparr] No rebuild started. Start Looparr and retry.');
+    reportError('PREFLIGHT_FAILED', error.message);
     process.exitCode = 1;
     return;
   }
@@ -131,6 +140,7 @@ async function main() {
   } catch (error) {
     console.error(`[looparr] Resume preparation failed: ${error.message}`);
     console.error('[looparr] No rebuild started.');
+    reportError('RESUME_PREPARE_FAILED', error.message);
     process.exitCode = 1;
     return;
   }
@@ -139,6 +149,7 @@ async function main() {
     console.error('[looparr] Resume intent capture is gated off for this instance.');
     console.error('[looparr] Run against the looparr container with HOSTNAME=looparr.');
     console.error('[looparr] No rebuild started.');
+    reportError('RESUME_INTENT_GATED', 'resume intent capture is gated off');
     process.exitCode = 1;
     return;
   }
@@ -156,6 +167,7 @@ async function main() {
   } catch (error) {
     console.error(`[looparr] Stale intent check failed: ${error.message}`);
     console.error('[looparr] No rebuild started.');
+    reportError('STALE_INTENT_CHECK_FAILED', error.message);
     process.exitCode = 1;
     return;
   }
@@ -171,6 +183,9 @@ async function main() {
     execSync(DOCKER_COMMAND, { cwd: REPO_ROOT, stdio: 'inherit' });
   } catch (error) {
     console.error(`[looparr] Docker command failed (${error.status ?? 'unknown'}).`);
+    reportError('DOCKER_RESTART_FAILED', 'docker rebuild failed', {
+      status: error.status ?? null
+    });
     process.exitCode = 1;
     return;
   }
@@ -178,6 +193,7 @@ async function main() {
   const ready = await waitForRestart('post-restart');
   if (!ready) {
     console.error('[looparr] Restart check timed out. Check the container manually.');
+    reportError('RESTART_TIMEOUT', 'restart check timed out', { phase: 'post-restart' });
     process.exitCode = 1;
     return;
   }
@@ -189,26 +205,17 @@ async function main() {
     staleAfterRestart = collectStaleIntents(state.projects);
   } catch (error) {
     console.error(`[looparr] Post-restart intent check failed: ${error.message}`);
+    reportError('POST_RESTART_INTENT_CHECK_FAILED', error.message);
     process.exitCode = 1;
     return;
   }
 
   if (clearStaleIntents(staleAfterRestart)) {
-    console.log('[looparr] Stale intent found after restart; running one clean restart.');
-    try {
-      execSync(CLEAN_RESTART_COMMAND, { cwd: REPO_ROOT, stdio: 'inherit' });
-    } catch (error) {
-      console.error(`[looparr] Clean restart failed (${error.status ?? 'unknown'}).`);
-      process.exitCode = 1;
-      return;
-    }
-    const cleanReady = await waitForRestart('clean-restart');
-    if (!cleanReady) {
-      console.error('[looparr] Clean restart check timed out. Check the container manually.');
-      process.exitCode = 1;
-      return;
-    }
-    console.log('[looparr] Clean restart check passed.');
+    console.log('[looparr] Cleared stale resume intent after restart.');
+    reportEvent('stale-intent-cleared', {
+      count: staleAfterRestart.length,
+      phase: 'post-restart'
+    });
   }
 
   console.log('[looparr] Complete the served-asset and container-content checks from plan.md.');
@@ -216,5 +223,6 @@ async function main() {
 
 main().catch((error) => {
   console.error(`[looparr] ${error.message}`);
+  reportError('UNEXPECTED_ERROR', error.message);
   process.exitCode = 1;
 });

@@ -49,6 +49,7 @@ on_error() {
   local status=$?
   local line=$1
   log "FAILED: exit ${status} at line ${line}"
+  printf '{"event":"error","code":"PROMOTION_FAILED","status":%d,"line":%d}\n' "$status" "$line" >&2
   exit "$status"
 }
 
