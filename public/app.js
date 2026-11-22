@@ -107,6 +107,7 @@
     taskAddRow: document.querySelector('.task-add-row'),
     toggleCompletedTasks: $('toggle-completed-tasks'),
     planStatus: $('plan-status'),
+    dependencyStatus: $('dependency-status'),
     checklist: $('checklist'),
     planGuide: $('plan-guide'),
     planGuideSummary: $('plan-format-hint'),
@@ -1097,6 +1098,14 @@
     updateDrawerAutoResume(project);
     updateAllCountdowns();
     updateLogStatus();
+    updateDependencyWarning(project);
+  }
+
+  function updateDependencyWarning(project) {
+    if (!dom.dependencyStatus) return;
+    const warning = project?.dependencyWarning || project?.dependencyError || '';
+    dom.dependencyStatus.textContent = warning ? `⚠ ${warning}` : '';
+    dom.dependencyStatus.classList.toggle('warn', Boolean(warning));
   }
 
   function openDrawer(id) {
@@ -1276,6 +1285,17 @@
       const taskText = editing
         ? `<input class="task-edit-input" data-action="edit-input" data-task-index="${taskIndex}" value="${esc(task.text || '')}">`
         : `<span class="task-text">${esc(task.text || '(empty task)')}</span>`;
+      const dependencyView = plan.dependencyStatus?.tasks?.[task.index];
+      const dependencies = dependencyView?.dependencies || [];
+      const depLabel = dependencies.length
+        ? `Depends on: ${dependencies.map((dep) => `#${dep}`).join(', ')}`
+        : '';
+      const depWarning = dependencyView?.blocked
+        ? `<span class="task-deps warn">⚠ ${esc(dependencyView.reason || 'Dependency not ready')}</span>`
+        : '';
+      const depsMarkup = depLabel || depWarning
+        ? `<span class="task-deps${dependencyView?.blocked ? ' warn' : ''}">${esc(depLabel)}</span>${depWarning}`
+        : '';
       return `
       <div class="check-item${task.checked ? ' checked' : ''}" data-task-index="${taskIndex}">
         <button class="move-button drag-handle" type="button" data-action="drag" data-task-index="${taskIndex}" title="Drag to reorder task" aria-label="Drag to reorder task">☰</button>
@@ -1283,6 +1303,7 @@
           <input type="checkbox" data-index="${task.index}" ${task.checked ? 'checked' : ''}>
           <span class="check-index">${task.index + 1}</span>
           ${taskText}
+          ${depsMarkup}
         </div>
         <div class="task-move">
           <button class="move-button" type="button" data-action="move-top" data-task-index="${taskIndex}" ${taskIndex === 0 ? 'disabled' : ''} aria-label="Move task to top">⇈</button>
@@ -1396,14 +1417,18 @@
       updatePlanGuide(plan);
       dom.planEditor.value = plan.content || '';
       updatePlanControls();
+      let statusText;
       if (plan.ok) {
-        dom.planStatus.textContent = `${plan.stats.completed}/${plan.stats.total} tasks`;
+        statusText = `${plan.stats.completed}/${plan.stats.total} tasks`;
       } else {
         const project = projectById(id);
-        dom.planStatus.textContent = project && isPlanSetup(project)
+        statusText = project && isPlanSetup(project)
           ? 'Create plan.md here, then save.'
           : plan.error || 'Could not read plan.md';
       }
+      const dependencyError = plan.dependencyStatus?.error || '';
+      if (dependencyError) statusText += ` · ⚠ ${dependencyError}`;
+      dom.planStatus.textContent = statusText;
     } catch (error) {
       if (app.drawerId === id) {
         dom.planStatus.textContent = error.message;

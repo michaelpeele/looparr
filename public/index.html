@@ -431,6 +431,7 @@
         <div class="section-heading">
           <h3>plan.md</h3>
           <span class="muted" id="plan-status"></span>
+          <span class="dependency-status" id="dependency-status"></span>
         </div>
         <div class="plan-actions">
           <button class="button small secondary toggle-completed" id="toggle-completed-tasks" data-action="toggle-completed" type="button" aria-pressed="false" aria-label="Show completed tasks in the checklist" title="Show completed tasks in the checklist"><span aria-hidden="true">⊞</span> Show completed</button>
@@ -447,9 +448,11 @@
             <pre class="plan-example mono"># Build plan
 
 - [ ] First task
-- [x] Done task</pre>
+- [x] Done task
+- [ ] Third task (depends: 1, 2)</pre>
             <p>Use one checklist item per task. Looparr tracks only checklist lines: <span class="mono">- [ ]</span>, <span class="mono">- [x]</span>, <span class="mono">* [ ]</span>, and <span class="mono">+ [ ]</span>.</p>
-            <p>The first unchecked item runs next. Headings and notes stay in the file, but Looparr does not run them.</p>
+            <p>Add <span class="mono">(depends: 1, 2)</span> after a task to require those checklist numbers first. Numbers are 1-based; <span class="mono">#1</span> also works. Old plans without dependencies stay valid.</p>
+            <p>The first unchecked item still runs next. If its dependencies are missing, part of a cycle, or not complete, Start reports a clean error and does not reorder or skip tasks. Headings and notes stay in the file, but Looparr does not run them.</p>
           </div>
         </details>
         <textarea id="plan-editor" class="plan-editor" spellcheck="false" aria-label="Edit plan.md" aria-describedby="plan-format-hint"></textarea>

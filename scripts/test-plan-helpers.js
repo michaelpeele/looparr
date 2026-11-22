@@ -130,6 +130,76 @@ async function main() {
   assertEqual(plan.ok, true, 'readPlan ok');
   assertEqual(plan.next && plan.next.text, 'alpha', 'idle fallback plan.next is first unchecked');
 
+  const oldStyle = tasksFrom('- [ ] alpha\n- [x] beta\n');
+  assertEqual(oldStyle[0].text, 'alpha', 'old plan task text unchanged');
+  assertEqual(oldStyle[0].deps.length, 0, 'old plan has no dependencies');
+
+  const withDeps = tasksFrom([
+    '- [ ] Build',
+    '- [ ] Deploy (depends: 1, 3)',
+    '- [x] Config',
+    '- [ ] Verify (depends: #2, 1)'
+  ].join('\n'));
+  assertEqual(withDeps[1].text, 'Deploy', 'dependency suffix stripped from task text');
+  assertEqual(withDeps[1].deps.join(','), '0,2', 'dependency suffix parsed to 0-based indexes');
+  assertEqual(withDeps[1].dependencySuffix, '(depends: 1, 3)', 'dependency suffix retained');
+  assertEqual(withDeps[3].deps.join(','), '1,0', 'hash-prefixed dependency parsed and deduped');
+
+  const depContent = [
+    '- [x] Build',
+    '- [ ] Deploy (depends: 1)'
+  ].join('\n');
+  const depEdited = planLib.editTask(depContent, 1, 'Ship');
+  assertEqual(depEdited.ok, true, 'edit dependency task ok');
+  assertEqual(depEdited.content, '- [x] Build\n- [ ] Ship (depends: 1)', 'edit preserves dependency suffix');
+
+  const depPlan = planLib.analyzeDependencies(withDeps);
+  assertEqual(depPlan.ok, true, 'pending dependencies are valid');
+  assertEqual(depPlan.tasks[1].dependencies.join(','), '1,3', 'dependency view uses 1-based numbers');
+  assertEqual(depPlan.tasks[1].pending.join(','), '1', 'completed dependency is not pending');
+  assertEqual(depPlan.tasks[1].blocked, true, 'pending dependency blocks task');
+  assertIncludes(depPlan.tasks[1].reason, 'waiting on dependency #1', 'pending dependency reason');
+  assertEqual(depPlan.tasks[2].blocked, false, 'completed task has no warning');
+
+  const satisfied = planLib.analyzeDependencies(tasksFrom([
+    '- [x] Build',
+    '- [ ] Deploy (depends: 1)'
+  ].join('\n')));
+  assertEqual(satisfied.tasks[1].blocked, false, 'completed dependency clears warning');
+  assertEqual(satisfied.tasks[1].pending.length, 0, 'completed dependency has no pending list');
+
+  const missing = planLib.analyzeDependencies(tasksFrom([
+    '- [ ] alpha',
+    '- [ ] beta (depends: 9)'
+  ].join('\n')));
+  assertEqual(missing.ok, false, 'missing dependency is invalid');
+  assertIncludes(missing.error, 'depends on missing task #9', 'missing dependency error');
+  assertEqual(missing.tasks[1].missing[0], 9, 'missing dependency reported in task view');
+  assertEqual(missing.tasks[1].blocked, true, 'missing dependency blocks task');
+
+  const invalid = planLib.analyzeDependencies(tasksFrom('- [ ] alpha (depends: nope)\n'));
+  assertEqual(invalid.ok, false, 'invalid dependency token is rejected');
+  assertIncludes(invalid.error, 'invalid dependency "nope"', 'invalid dependency error');
+
+  const cycle = planLib.analyzeDependencies(tasksFrom([
+    '- [ ] a (depends: 2)',
+    '- [ ] b (depends: 1)'
+  ].join('\n')));
+  assertEqual(cycle.ok, false, 'dependency cycle is invalid');
+  assertIncludes(cycle.error, 'dependency cycle detected: 1 -> 2 -> 1', 'cycle error text');
+  assertEqual(cycle.tasks[0].cycle, true, 'cycle member flagged');
+  assertEqual(cycle.tasks[1].blocked, true, 'cycle blocks task');
+  assertIncludes(cycle.tasks[1].reason, 'dependency cycle detected', 'cycle reason');
+
+  fs.writeFileSync(path.join(TEMP_DIR, 'plan.md'), [
+    '- [x] Build',
+    '- [ ] Deploy (depends: 1)'
+  ].join('\n'), 'utf8');
+  const readWithDeps = planLib.readPlan(TEMP_DIR);
+  assertEqual(readWithDeps.ok, true, 'readPlan ok with dependencies');
+  assertEqual(readWithDeps.next.text, 'Deploy', 'dependency suffix stripped from state next task');
+  assertEqual(readWithDeps.dependencyStatus.tasks[1].dependencies[0], 1, 'readPlan exposes dependency state');
+
   console.log('plan-helpers tests passed');
 }
 

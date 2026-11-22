@@ -54,6 +54,23 @@ Each project directory needs a `plan.md` in its root:
 
 Only `- [ ]`, `- [x]`, `* [ ]`, and `+ [ ]` checklist items are tracked. Looparr reads the first unchecked item for each step and marks it complete only after the Implement step succeeds.
 
+Tasks can declare dependencies with an optional trailing suffix:
+
+```markdown
+- [ ] Build
+- [ ] Deploy (depends: 1)
+```
+
+Dependency numbers are 1-based checklist positions. `#1` also works. The suffix is stripped from the task text passed to agents. Old plans without dependencies stay valid.
+
+The first unchecked item still runs next. Start reports a clean error and does not reorder or skip tasks when that item waits on an incomplete dependency, or when the plan has a missing dependency or cycle:
+
+- `Cannot start task 1: waiting on dependency #2`
+- `Cannot start plan: Checklist item 2 depends on missing task #9`
+- `Cannot start plan: dependency cycle detected: 1 -> 2 -> 1`
+
+The plan drawer shows `Depends on: #1, #2` and a warning while dependencies are unmet. Completing the listed tasks clears the warning.
+
 ## Add a project
 
 Use the add form in the dashboard:

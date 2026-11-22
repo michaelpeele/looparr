@@ -376,6 +376,10 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(cssSource, 'position: sticky', 'sticky add task position');
   assertIncludes(cssSource, '-webkit-sticky', 'sticky add task webkit position');
   assertIncludes(appSource, 'addChecklistTask', 'add checklist task retained');
+  assertIncludes(appSource, 'Depends on:', 'dependency display retained');
+  assertIncludes(appSource, 'dependencyStatus', 'dependency state display retained');
+  assertIncludes(cssSource, '.task-deps.warn', 'dependency warning style retained');
+  assertIncludes(indexHtml, '(depends: 1, 2)', 'dependency syntax guide retained');
 }
 
 async function testReorderPureFunctions() {

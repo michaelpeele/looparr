@@ -136,10 +136,17 @@ function getState() {
         const active = plan.tasks.find((task) => task.text === rt.currentTask && !task.checked);
         if (active) currentIndex = active.index;
       }
-      const nextTask =
-        currentIndex >= 0
-          ? ((planLib.nextUncheckedAfter(plan.tasks, currentIndex) || {}).text || '')
-          : (plan.next ? plan.next.text : '');
+      const next = currentIndex >= 0
+        ? planLib.nextUncheckedAfter(plan.tasks, currentIndex)
+        : plan.next;
+      const nextTask = next ? next.text : '';
+      const dependencyStatus = plan.dependencyStatus || {
+        ok: true, error: '', issues: [], cycles: [], tasks: []
+      };
+      const dependencyViews = dependencyStatus.tasks || [];
+      const currentDependency = currentIndex >= 0 ? (dependencyViews[currentIndex] || null) : null;
+      const nextDependency = next ? (dependencyViews[next.index] || null) : null;
+      const dependencyWarning = currentDependency?.reason || nextDependency?.reason || '';
       return {
         id: project.id,
         name: project.name,
@@ -169,6 +176,15 @@ function getState() {
         pauseRequested: rt.pauseAfterStep,
         currentTask: rt.currentTask || '',
         nextTask,
+        nextTaskIndex: next ? next.index : -1,
+        dependencyStatus: {
+          ok: dependencyStatus.ok !== false,
+          error: dependencyStatus.error || '',
+          current: currentDependency,
+          next: nextDependency
+        },
+        dependencyError: dependencyStatus.error || '',
+        dependencyWarning,
         progress: plan.stats,
         icon: rt.icon ? rt.icon.relativePath : null,
         iconVersion: rt.iconVersion || null,
@@ -750,6 +766,14 @@ async function startStep(project) {
       appendLog(project.id, 'system', 'All tasks complete.');
       emitState();
       return;
+    }
+    const dependencyStatus = plan.dependencyStatus;
+    if (dependencyStatus && !dependencyStatus.ok) {
+      throw new Error(`Cannot start plan: ${dependencyStatus.error}`);
+    }
+    const taskDependency = dependencyStatus?.tasks?.[task.index];
+    if (taskDependency?.blocked) {
+      throw new Error(`Cannot start task ${task.index + 1}: ${taskDependency.reason}`);
     }
     const phase = rt.nextPhase || 'seed';
     const runKey = runKeyFor(project, phase, task.text);

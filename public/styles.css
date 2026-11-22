@@ -642,11 +642,16 @@ input[type="number"] { max-width: 130px; }
   border: 1px solid var(--border-soft);
   font-size: 13px;
 }
-.check-label { display: flex; gap: 9px; align-items: flex-start; min-width: 0; flex: 1 1 auto; }
+.check-label { display: flex; flex-wrap: wrap; gap: 9px; align-items: flex-start; min-width: 0; flex: 1 1 auto; }
 .check-item.checked .check-label { color: var(--muted); text-decoration: line-through; }
 .check-item input { margin-top: 3px; accent-color: var(--accent); }
 .check-index { color: var(--muted); font-size: 11px; flex: 0 0 24px; }
 .task-text { min-width: 0; overflow-wrap: anywhere; }
+.task-deps { display: block; flex: 0 0 100%; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.task-deps.warn { color: #ffb4a2; }
+.check-item.checked .task-deps { text-decoration: none; }
+.dependency-status { color: var(--muted); font-size: 12px; }
+.dependency-status.warn { color: #ffb4a2; }
 .task-edit-input { min-width: 0; flex: 1 1 auto; padding: 5px 8px; font-size: 13px; }
 .task-edit-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .task-edit-input:disabled { opacity: 0.55; cursor: not-allowed; }
