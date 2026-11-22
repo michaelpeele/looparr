@@ -83,7 +83,7 @@ async function ensureServer() {
   return serverPromise;
 }
 
-function buildCommand({ prompt, cwd, url = SERVER_URL, files = [] }) {
+function buildCommand({ prompt, cwd, url = SERVER_URL, files = [], model = '' }) {
   if (EXECUTOR_URL) {
     return {
       command: process.execPath,
@@ -94,13 +94,14 @@ function buildCommand({ prompt, cwd, url = SERVER_URL, files = [] }) {
           ...process.env,
           LOOPARR_EXECUTOR_URL: EXECUTOR_URL,
           LOOPARR_EXECUTOR_TOKEN: EXECUTOR_TOKEN,
-          LOOPARR_TASK_PAYLOAD: JSON.stringify({ prompt, cwd, files, url })
+          LOOPARR_TASK_PAYLOAD: JSON.stringify({ prompt, cwd, files, url, model })
         },
         shell: false
       }
     };
   }
   const args = ['run', getAttachFlag(), url, '--auto'];
+  if (model) args.push('--model', model);
   for (const file of files) {
     if (file) args.push('--file', file);
   }
@@ -112,8 +113,10 @@ function buildCommand({ prompt, cwd, url = SERVER_URL, files = [] }) {
   };
 }
 
+const RATE_LIMIT_PATTERN = /\b(?:HTTP(?:\/[\d.]+)?|status|code)[\s:=]+429\b|\b429[\s:.+-]+(?:too\s+many\s+requests|rate[\s-]?limit|quota|usage\s+limit|throttl)|\b(?:too\s+many\s+requests|quota\s+(?:exceeded|reached)|usage\s+limit\s+(?:exceeded|reached)|rate[\s-]?limit\s+(?:exceeded|reached|error)|throttl(?:e|ed|ing)\s+(?:error|limit|request))\b/i;
+
 function isRateLimit(text) {
-  return /\b429\b|rate[\s-]?limit|too many requests|quota exceeded|usage limit|throttl(?:e|ed|ing)/i.test(String(text));
+  return RATE_LIMIT_PATTERN.test(String(text));
 }
 
 function shutdown() {

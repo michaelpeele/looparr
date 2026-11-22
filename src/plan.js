@@ -26,6 +26,10 @@ function firstUnchecked(tasks) {
   return tasks.find((task) => !task.checked) || null;
 }
 
+function nextUncheckedAfter(tasks, fromIndex) {
+  return tasks.find((task) => !task.checked && task.index > fromIndex) || null;
+}
+
 function stats(tasks) {
   const total = tasks.length;
   const completed = tasks.filter((task) => task.checked).length;
@@ -69,4 +73,4 @@ function writePlan(projectDir, content) {
   fs.renameSync(temp, planPath);
 }
 
-module.exports = { TASK_RE, parseTasks, firstUnchecked, stats, readPlan, setChecked, markTask, writePlan };
+module.exports = { TASK_RE, parseTasks, firstUnchecked, nextUncheckedAfter, stats, readPlan, setChecked, markTask, writePlan };

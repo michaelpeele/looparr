@@ -7,6 +7,7 @@ const { spawn } = require('child_process');
 const chokidar = require('chokidar');
 
 const configStore = require('./config');
+const autoResume = require('./auto-resume');
 const bus = require('./events');
 const planLib = require('./plan');
 const iconLib = require('./icon');
@@ -55,6 +56,23 @@ function findProject(id) {
   return config.projects.find((project) => project.id === id) || null;
 }
 
+function effectiveModel(project, phase = 'seed') {
+  const field = configStore.modelFieldForPhase(phase);
+  return project[field] || project.model || config.settings[field] || config.settings.model || '';
+}
+
+function blockPolicyFor(project) {
+  const normalized = configStore.normalizeProject(project);
+  return {
+    ...configStore.resolveBlockPolicy(normalized, config.settings),
+    overrides: {
+      blockThreshold: normalized.blockThreshold ?? null,
+      temporaryLiftScope: normalized.temporaryLiftScope || '',
+      permanentLift: normalized.permanentLift || ''
+    }
+  };
+}
+
 function appendLog(projectId, stream, text) {
   const rt = runtime.get(projectId);
   if (!rt) return;
@@ -79,20 +97,45 @@ function getState() {
       const rt = ensureRuntime(project);
       const plan = planLib.readPlan(project.path);
       const status = plan.ok ? rt.status : 'error';
+      let currentIndex = -1;
+      if (rt.stepTask && typeof rt.stepTask.index === 'number') {
+        currentIndex = rt.stepTask.index;
+      } else if (rt.currentTask) {
+        const active = plan.tasks.find((task) => task.text === rt.currentTask);
+        currentIndex = active ? active.index : -1;
+      }
+      const nextTask =
+        currentIndex >= 0
+          ? ((planLib.nextUncheckedAfter(plan.tasks, currentIndex) || {}).text || '')
+          : (plan.next ? plan.next.text : '');
       return {
         id: project.id,
         name: project.name,
         path: project.path,
         runner: project.runner || config.settings.globalRunner,
+        model: project.model || '',
+        seedModel: project.seedModel || '',
+        analyzeModel: project.analyzeModel || '',
+        implementModel: project.implementModel || '',
+        effectiveModel: effectiveModel(project),
+        effectiveModels: {
+          seed: effectiveModel(project, 'seed'),
+          analyze: effectiveModel(project, 'analyze'),
+          implement: effectiveModel(project, 'implement')
+        },
+        blockPolicy: blockPolicyFor(project),
         status,
+        nextPhase: rt.nextPhase || 'seed',
         active: rt.active,
         paused: rt.paused,
         pauseRequested: rt.pauseAfterStep,
         currentTask: rt.currentTask || '',
-        nextTask: plan.next ? plan.next.text : '',
+        nextTask,
         progress: plan.stats,
         icon: rt.icon ? rt.icon.relativePath : null,
         resumeAt: rt.resumeAt,
+        autoResumeOnStart: project.autoResumeOnStart === true,
+        autoResumePending: fs.existsSync(autoResume.statePath(project)),
         error: rt.error || (plan.ok ? '' : `plan.md: ${plan.error}`),
         logs: rt.logs.slice(-200)
       };
@@ -102,8 +145,16 @@ function getState() {
 
 function watchProject(project) {
   if (watchers.has(project.id)) return;
-  const ignored = (candidate) => /(^|\/)(\.git|node_modules|\.looparr)($|\/)/.test(String(candidate));
-  const watcher = chokidar.watch(project.path, { ignored, ignoreInitial: true, depth: 4 });
+  const ignored = (candidate) => /(^|\/)(\.git|node_modules|\.looparr|looparr-tailscale-data)($|\/)/.test(String(candidate));
+  const watcher = chokidar.watch(project.path, {
+    ignored,
+    ignoreInitial: true,
+    ignorePermissionErrors: true,
+    depth: 4
+  });
+  watcher.on('error', (error) => {
+    appendLog(project.id, 'system', `Watch error: ${error.message}`);
+  });
   watcher.on('all', (event, filePath) => {
     const relative = path.relative(project.path, filePath).split(path.sep).join('/');
     if (relative === 'plan.md') {
@@ -128,12 +179,20 @@ function save() {
 }
 
 function addProject(input) {
-  const project = {
+  const project = configStore.normalizeProject({
     id: newId(),
     name: input.name,
     path: input.path,
-    runner: input.runner || config.settings.globalRunner
-  };
+    runner: input.runner || config.settings.globalRunner,
+    model: configStore.normalizedModel(input.model, ''),
+    seedModel: configStore.normalizedModel(input.seedModel, ''),
+    analyzeModel: configStore.normalizedModel(input.analyzeModel, ''),
+    implementModel: configStore.normalizedModel(input.implementModel, ''),
+    blockThreshold: input.blockThreshold ?? null,
+    temporaryLiftScope: input.temporaryLiftScope || '',
+    permanentLift: input.permanentLift || '',
+    autoResumeOnStart: input.autoResumeOnStart
+  });
   config.projects.push(project);
   save();
   ensureRuntime(project);
@@ -160,6 +219,16 @@ function updateSettings(patch) {
   save();
   emitState();
   return config.settings;
+}
+
+function updateProject(id, patch) {
+  const index = config.projects.findIndex((project) => project.id === id);
+  if (index < 0) return null;
+  const project = configStore.normalizeProject({ ...config.projects[index], ...patch });
+  config.projects[index] = project;
+  save();
+  emitState();
+  return project;
 }
 
 function getPlan(id) {
@@ -192,6 +261,42 @@ function getIcon(id) {
   const project = findProject(id);
   if (!project) return null;
   return ensureRuntime(project).icon;
+}
+
+function answerPath(project) {
+  return path.join(project.path, '.looparr', 'next_prompt.txt');
+}
+
+function getAnswer(id) {
+  const project = findProject(id);
+  if (!project) return null;
+  const file = answerPath(project);
+  if (!iconLib.isInside(project.path, file)) return { ok: false, error: 'Invalid answer path' };
+  try {
+    const content = fs.readFileSync(file, 'utf8');
+    return { ok: true, exists: true, content };
+  } catch (error) {
+    if (error.code === 'ENOENT') return { ok: true, exists: false, content: '' };
+    return { ok: false, error: error.message };
+  }
+}
+
+function writeAnswer(id, content) {
+  const project = findProject(id);
+  if (!project) return { ok: false, error: 'Project not found' };
+  if (typeof content !== 'string') return { ok: false, error: 'content must be a string' };
+  if (content.length > 200000) return { ok: false, error: 'content is too long' };
+  const file = answerPath(project);
+  if (!iconLib.isInside(project.path, file)) return { ok: false, error: 'Invalid answer path' };
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const temp = `${file}.tmp`;
+    fs.writeFileSync(temp, content);
+    fs.renameSync(temp, file);
+    return { ok: true, exists: true, content };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
 }
 
 function maxWorkers() {
@@ -237,6 +342,7 @@ function stop(id) {
   const project = findProject(id);
   if (!project) return false;
   const rt = ensureRuntime(project);
+  const stoppedTask = rt.currentTask || '';
   rt.token += 1;
   if (rt.child) {
     try { rt.child.kill('SIGTERM'); } catch { /* already gone */ }
@@ -251,52 +357,51 @@ function stop(id) {
   rt.error = '';
   rt.nextPhase = 'seed';
   rt.stepTask = null;
+  if (fs.existsSync(autoResume.statePath(project))) {
+    autoResume.clearIntent(project);
+    autoResume.appendAudit(project, 'resume-cancelled', {
+      task: stoppedTask,
+      reason: 'planned-restart'
+    });
+  }
   emitState();
   scheduleTick();
   return true;
 }
 
-function seedPrompt(taskText) {
-  return [
-    'Looparr SEED step. Fresh session. Work only inside the current project directory.',
-    'Read @plan.md (attached; also available as plan.md on disk).',
-    `First unchecked task: "${taskText}"`,
-    '',
-    'Write a concise analysis prompt for the next AI agent.',
-    'The prompt must restate the task, name the likely files, list risks, and ask for a detailed implementation prompt.',
-    'Write ONLY that prompt to .looparr/next_prompt.txt (create .looparr/ if needed).',
-    'Do not edit plan.md. Do not implement code.'
-  ].join('\n');
+function renderPrompt(settingKey, values) {
+  const configured = config.settings[settingKey];
+  const template = typeof configured === 'string' && configured.trim()
+    ? configured
+    : configStore.DEFAULT_SETTINGS[settingKey];
+  return template
+    .replace(/{{task}}/g, () => String(values.task ?? ''))
+    .replace(/{{handoff}}/g, () => String(values.handoff ?? ''));
 }
 
-function analyzePrompt(taskText, handoff) {
-  return [
-    'Looparr ANALYZE step. Fresh session. Work only inside the current project directory.',
-    `Task: "${taskText}"`,
-    'Execute this analysis prompt:',
-    '---',
-    handoff,
-    '---',
-    '',
-    'Produce a detailed implementation prompt for the next fresh agent.',
-    'Include exact files to change, concrete steps, tests, and acceptance criteria.',
-    'Write ONLY the implementation prompt to .looparr/next_prompt.txt (overwrite it).',
-    'Do not edit plan.md. Do not implement code.'
-  ].join('\n');
+const META_HANDOFF_PATTERNS = [
+  { reason: 'do not implement code yet', pattern: /\bdo\s+not\s+implement\s+code\s+yet\b/i },
+  { reason: 'do not implement code', pattern: /\bdo\s+not\s+implement\s+(?:any\s+)?code\b/i },
+  { reason: 'do not implement', pattern: /\bdo\s+not\s+implement\b/i },
+  { reason: 'stop before coding', pattern: /\bstop\s+before\s+coding\b/i },
+  { reason: 'produce the prompt only', pattern: /\bproduce\s+(?:the\s+)?prompt\s+only\b/i },
+  { reason: 'write only prompt', pattern: /\bwrite\s+only\s+(?:a|the)\s+(?:implementation\s+)?prompt\b/i },
+  { reason: 'write a detailed implementation prompt', pattern: /\b(?:write|produce|create|generate)\s+(?:a\s+)?detailed\s+implementation\s+prompt\b/i },
+  { reason: 'implementation prompt for next agent', pattern: /\b(?:write|produce|create|generate)\s+(?:a\s+)?(?:detailed\s+)?implementation\s+prompt\s+for\s+the\s+next\s+(?:fresh\s+)?(?:ai\s+)?agent\b/i }
+];
+
+function isMetaPromptHandoff(text) {
+  const content = String(text ?? '');
+  for (const entry of META_HANDOFF_PATTERNS) {
+    if (entry.pattern.test(content)) return { poisoned: true, reason: entry.reason };
+  }
+  return { poisoned: false };
 }
 
-function implementPrompt(taskText, handoff) {
-  return [
-    'Looparr IMPLEMENT step. Fresh session. Work only inside the current project directory.',
-    `Task: "${taskText}"`,
-    'Execute this implementation prompt:',
-    '---',
-    handoff,
-    '---',
-    '',
-    'After implementation, change the "- [ ]" marker for this task to "- [x]" in plan.md.',
-    'Do not touch .looparr/next_prompt.txt.'
-  ].join('\n');
+const CLI_TOOLS_NOTE = 'Note: required CLI tools may be installed during this task. If a needed command is missing, install it (prefer the project\'s documented package manager) before continuing.';
+
+function promptPreamble() {
+  return config.settings.promptCliToolsNote === true ? CLI_TOOLS_NOTE : '';
 }
 
 function shortCommand(command, args) {
@@ -305,7 +410,7 @@ function shortCommand(command, args) {
 }
 
 function rateLimitRetry(project, rt, pauseMs) {
-  appendLog(project.id, 'system', `Rate limit detected. Retrying in ${Math.round(pauseMs / 1000)}s.`);
+  appendLog(project.id, 'system', `Provider backoff engaged. Retrying in ${Math.round(pauseMs / 1000)}s.`);
   setTimeout(() => {
     if (runtime.get(project.id) !== rt || !rt.resumeAt) return;
     if (Date.now() < rt.resumeAt) return;
@@ -342,6 +447,16 @@ function handleClose(project, rt, code, task, phase, runner) {
       let handoff = '';
       try { handoff = fs.readFileSync(promptFile, 'utf8').trim(); } catch { /* missing */ }
       if (!handoff) throw new Error(`${phase} step did not write .looparr/next_prompt.txt`);
+      const metaCheck = isMetaPromptHandoff(handoff);
+      if (phase === 'analyze' && metaCheck.poisoned) {
+        rt.nextPhase = 'analyze';
+        rt.status = 'error';
+        rt.active = false;
+        rt.error = `Analyze handoff rejected (${metaCheck.reason}); meta-instruction handoffs cannot advance to Implement. Re-run Analyze with a real implementation prompt.`;
+        appendLog(project.id, 'system', '✖ Analyze produced meta-prompt handoff; retrying analyze.');
+        emitState();
+        return;
+      }
       rt.nextPhase = phase === 'seed' ? 'analyze' : 'implement';
     } else {
       const current = planLib.readPlan(project.path);
@@ -398,15 +513,34 @@ async function startStep(project) {
     let prompt;
     let files = [];
     if (phase === 'seed') {
-      prompt = seedPrompt(task.text);
+      prompt = renderPrompt('seedPromptTemplate', { task: task.text });
       files = [plan.planPath];
       try { fs.unlinkSync(promptFile); } catch { /* no stale handoff */ }
     } else {
       let handoff = '';
       try { handoff = fs.readFileSync(promptFile, 'utf8').trim(); } catch { /* missing */ }
       if (!handoff) throw new Error(`No .looparr/next_prompt.txt for ${phase} step`);
-      prompt = phase === 'analyze' ? analyzePrompt(task.text, handoff) : implementPrompt(task.text, handoff);
+      if (phase === 'implement') {
+        const metaCheck = isMetaPromptHandoff(handoff);
+        if (metaCheck.poisoned) {
+          rt.nextPhase = 'analyze';
+          rt.status = 'error';
+          rt.active = false;
+          rt.error = `Stale meta-prompt handoff rejected before Implement (${metaCheck.reason}); re-run Analyze with a real implementation prompt.`;
+          appendLog(project.id, 'system', '✖ Stale meta-prompt handoff; retrying analyze.');
+          emitState();
+          return;
+        }
+      }
+      prompt = renderPrompt(
+        phase === 'analyze' ? 'analyzePromptTemplate' : 'implementPromptTemplate',
+        { task: task.text, handoff }
+      );
     }
+
+    const preamble = promptPreamble();
+    // Future: append enabled promptSnippets here (see .project_documents/RESEARCH-prompt-snippets.md).
+    if (preamble) prompt = `${preamble}\n\n${prompt}`;
 
     rt.status = phase;
     rt.currentTask = task.text;
@@ -417,7 +551,15 @@ async function startStep(project) {
     emitState();
 
     const url = runner.ensureServer ? await runner.ensureServer() : null;
-    const built = runner.buildCommand({ prompt, cwd: project.path, url, files });
+    const model = effectiveModel(project, phase);
+    appendLog(project.id, 'system', `Model: ${model || 'OpenCode default'}`);
+    const built = runner.buildCommand({
+      prompt,
+      cwd: project.path,
+      url,
+      files,
+      model
+    });
     const child = spawn(built.command, built.args, built.options);
     rt.child = child;
     rt.token += 1;
@@ -483,6 +625,11 @@ function tick() {
   for (const project of config.projects) {
     const rt = ensureRuntime(project);
     if (rt.child) running += 1;
+    if (rt.resumeAt && rt.active && !rt.paused && Date.now() >= rt.resumeAt) {
+      rt.resumeAt = null;
+      if (rt.status === 'rateLimited') rt.status = 'idle';
+      emitState();
+    }
   }
   if (running >= limit) return;
   const eligible = eligibleProjects();
@@ -506,11 +653,169 @@ function tick() {
   }
 }
 
+function auditStaleIntent(project, intent) {
+  autoResume.appendAudit(project, 'stale-intent-ignored', {
+    phase: intent && autoResume.PHASES.has(intent.nextPhase) ? intent.nextPhase : undefined,
+    task: intent && intent.currentTask ? intent.currentTask : '',
+    reason: intent && autoResume.REASONS.has(intent.reason) ? intent.reason : undefined
+  });
+}
+
+function prepareShutdownResume(reason) {
+  const captureReason = autoResume.REASONS.has(reason) ? reason : 'planned-restart';
+  const result = { gated: autoResume.shouldCaptureResumeIntent(), prepared: [], skipped: [] };
+  if (!result.gated) {
+    for (const project of config.projects) result.skipped.push({ id: project.id, reason: 'gated' });
+    return result;
+  }
+  for (const project of config.projects) {
+    if (project.autoResumeOnStart !== true) {
+      result.skipped.push({ id: project.id, reason: 'opted-out' });
+      continue;
+    }
+    const rt = ensureRuntime(project);
+    if (!rt.active) {
+      result.skipped.push({ id: project.id, reason: 'inactive' });
+      continue;
+    }
+    if (rt.paused) {
+      result.skipped.push({ id: project.id, reason: 'paused' });
+      continue;
+    }
+    if (rt.status === 'done' || rt.status === 'error') {
+      result.skipped.push({ id: project.id, reason: rt.status === 'done' ? 'completed' : 'failed' });
+      continue;
+    }
+    if (autoResume.hasIntent(project)) {
+      result.skipped.push({ id: project.id, reason: 'already-pending' });
+      continue;
+    }
+    const phase = autoResume.PHASES.has(rt.nextPhase) ? rt.nextPhase : 'seed';
+    const written = autoResume.writeIntent(project, {
+      reason: captureReason,
+      nextPhase: phase,
+      status: rt.status,
+      currentTask: rt.currentTask || '',
+      resumeAt: rt.resumeAt,
+      pid: process.pid,
+      hostname: process.env.HOSTNAME || ''
+    });
+    if (!written.ok) {
+      result.skipped.push({ id: project.id, reason: 'write-failed' });
+      continue;
+    }
+    autoResume.appendAudit(project, 'about-to-resume', {
+      phase,
+      task: rt.currentTask || '',
+      reason: captureReason
+    });
+    result.prepared.push(project.id);
+  }
+  return result;
+}
+
+function cleanOrphanIntents() {
+  const root = process.env.LOOPARR_PROJECTS_ROOT;
+  if (!root || !fs.existsSync(root)) return;
+  const known = new Set(config.projects.map((project) => path.resolve(project.path)));
+  let entries = [];
+  try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return; }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const projectPath = path.join(root, entry.name);
+    if (known.has(path.resolve(projectPath))) continue;
+    if (!fs.existsSync(path.join(projectPath, '.looparr', autoResume.STATE_NAME))) continue;
+    const pseudo = { id: entry.name, name: '', path: projectPath };
+    const checked = autoResume.consumeIntent(pseudo);
+    const intent = checked.ok ? checked.intent : null;
+    if (intent) pseudo.id = intent.projectId;
+    auditStaleIntent(pseudo, intent);
+  }
+}
+
+function resumeOnStart() {
+  cleanOrphanIntents();
+  for (const project of config.projects) {
+    const checked = autoResume.consumeIntent(project);
+    if (!checked.ok && checked.reason === 'missing') continue;
+    const intent = checked.ok ? checked.intent : null;
+    if (!checked.ok || !intent) {
+      if (checked.reason === 'unlink-failed') {
+        autoResume.appendAudit(project, 'resume-failed', { reason: 'planned-restart' });
+      } else {
+        auditStaleIntent(project, intent);
+      }
+      continue;
+    }
+    if (project.autoResumeOnStart !== true) {
+      auditStaleIntent(project, intent);
+      continue;
+    }
+    let phase = autoResume.PHASES.has(intent.nextPhase) ? intent.nextPhase : 'seed';
+    let taskText = '';
+    try {
+      const plan = planLib.readPlan(project.path);
+      if (!plan.ok || !plan.next || !plan.next.text) {
+        auditStaleIntent(project, intent);
+        continue;
+      }
+      taskText = plan.next.text;
+      if (phase !== 'seed') {
+        let handoff = '';
+        try { handoff = fs.readFileSync(answerPath(project), 'utf8').trim(); } catch { /* absent */ }
+        if (!handoff) {
+          phase = 'seed';
+          autoResume.appendAudit(project, 'resume-degraded', {
+            phase, task: taskText, reason: intent.reason
+          });
+        }
+      }
+      if (intent.currentTask !== taskText) {
+        autoResume.appendAudit(project, 'resume-degraded', {
+          phase, task: taskText, reason: intent.reason, skipped: 'task-no-longer-next'
+        });
+        auditStaleIntent(project, intent);
+        continue;
+      }
+      const rt = ensureRuntime(project);
+      rt.active = true;
+      rt.paused = false;
+      rt.pauseAfterStep = false;
+      rt.child = null;
+      rt.starting = false;
+      rt.token = 0;
+      rt.stepTask = null;
+      rt.stepOutput = '';
+      rt.error = '';
+      rt.currentTask = taskText;
+      rt.nextPhase = phase;
+      appendLog(project.id, 'system', `↻ Auto-resume after restart (phase ${phase}).`);
+      if (intent.resumeAt && intent.resumeAt > Date.now()) {
+        rt.resumeAt = intent.resumeAt;
+        rt.status = 'rateLimited';
+        emitState();
+      } else {
+        rt.resumeAt = null;
+        rt.status = 'idle';
+        start(project.id);
+      }
+      autoResume.appendAudit(project, 'resume-on-start', {
+        phase, task: taskText, reason: intent.reason
+      });
+    } catch {
+      autoResume.appendAudit(project, 'resume-failed', {
+        phase, task: taskText, reason: intent.reason
+      });
+    }
+  }
+}
+
 function init() {
   for (const project of config.projects) {
     ensureRuntime(project);
     watchProject(project);
   }
+  resumeOnStart();
   tickTimer = setInterval(tick, 1000);
 }
 
@@ -535,11 +840,18 @@ module.exports = {
   addProject,
   removeProject,
   updateSettings,
+  updateProject,
   getPlan,
   writePlan,
   setTaskChecked,
   getIcon,
+  getAnswer,
+  writeAnswer,
   start,
   pause,
-  stop
+  stop,
+  prepareShutdownResume,
+  resumeOnStart,
+  promptPreamble,
+  isMetaPromptHandoff
 };

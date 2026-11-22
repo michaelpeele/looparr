@@ -91,6 +91,17 @@ function isInside(root, target) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
+function normalizeModel(value) {
+  if (value === undefined || value === null) return '';
+  if (typeof value !== 'string') throw new Error('model must be a string');
+  const model = value.trim();
+  if (!model) return '';
+  if (model.length > 200 || /\s/.test(model) || /[\u0000-\u001f\u007f]/.test(model) || model.startsWith('-')) {
+    throw new Error('model is invalid');
+  }
+  return model;
+}
+
 function authorized(req) {
   const header = req.headers.authorization || '';
   const supplied = header.startsWith('Bearer ') ? header.slice(7) : '';
@@ -223,7 +234,8 @@ function validateRun(payload) {
     return real;
   });
 
-  return { prompt: payload.prompt, cwd, files: checkedFiles };
+  const model = normalizeModel(payload.model);
+  return { prompt: payload.prompt, cwd, files: checkedFiles, model };
 }
 
 async function handleRun(req, res) {
@@ -244,6 +256,7 @@ async function handleRun(req, res) {
 
   const flag = getAttachFlag();
   const args = ['run', flag, serverUrl, '--auto'];
+  if (payload.model) args.push('--model', payload.model);
   for (const file of payload.files) args.push('--file', file);
   args.push(payload.prompt);
 

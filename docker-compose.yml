@@ -14,11 +14,14 @@ services:
       HOST: 0.0.0.0
       PORT: 3000
       CONFIG_PATH: /app/data/config.json
+      ENV_PATH: /app/.env
       HOME: /home/michaelpeele
+      HOSTNAME: looparr
       LOOPARR_EXECUTOR_URL: ${LOOPARR_EXECUTOR_URL:-http://172.17.0.1:4187}
       LOOPARR_EXECUTOR_TOKEN: ${LOOPARR_EXECUTOR_TOKEN:-}
     volumes:
       - ./data:/app/data:rw
+      - ./.env:/app/.env:rw
       - ${LOOPARR_PROJECTS_ROOT:-/home/michaelpeele/ai-projects}:${LOOPARR_PROJECTS_ROOT:-/home/michaelpeele/ai-projects}:rw
     healthcheck:
       test:
