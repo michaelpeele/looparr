@@ -89,11 +89,11 @@ The phase contract is:
 
 - **Seed question**: built-in Seed prompt plus attached `plan.md`. **Answer**: write only a concise analysis prompt to `.looparr/next_prompt.txt`. Do not edit `plan.md`.
 - **Analyze question**: current `.looparr/next_prompt.txt` from Seed. **Answer**: overwrite `.looparr/next_prompt.txt` with a detailed implementation prompt. Do not implement code.
-- **Implement question**: current `.looparr/next_prompt.txt` from Analyze. **Answer**: implement the task, mark it `- [x]` in `plan.md`, and leave `.looparr/next_prompt.txt` untouched.
+- **Implement question**: current `.looparr/next_prompt.txt` from Analyze. **Answer**: implement the task, commit safe tracked modified files, mark it `- [x]` in `plan.md`, and leave `.looparr/next_prompt.txt` untouched.
 
-Analyze handoffs are validated before Implement. A handoff containing meta-instructions such as "do not implement code yet" or "produce the prompt only" is rejected. Looparr keeps the phase at Analyze, sets a visible error, and requires a manual retry. The Implement prompt also ignores that wording if it reaches a custom template.
+Analyze handoffs are validated before Implement. A handoff containing meta-instructions such as "do not implement code yet" or "produce the prompt only" is rejected. Looparr keeps the phase at Analyze, sets a visible error, and requires a manual retry. The Implement prompt also ignores that wording if it reaches a custom template. The default Implement prompt directs the agent to stage explicit paths, skip untracked files, and skip files containing secrets, tokens, passwords, API keys, or credentials.
 
-Settings > Prompt templates edits the Seed, Analyze, and Implement prompt templates. Use `{{task}}` for the current task text; Analyze and Implement also use `{{handoff}}` for the current `.looparr/next_prompt.txt` content. Defaults live in `config.json` under `settings` and are saved through `PATCH /api/settings`.
+Settings > Prompt templates edits the Seed, Analyze, and Implement prompt templates. Use `{{task}}` for the current task text; Analyze and Implement also use `{{handoff}}` for the current `.looparr/next_prompt.txt` content. Defaults live in `config.json` under `settings` and are saved through `PATCH /api/settings`. Saved settings equal to the previous default Implement template are upgraded once on load; custom templates are preserved.
 
 To keep a markdown question/answer archive:
 
@@ -134,7 +134,7 @@ The archive is manual. Looparr does not create or rotate these files automatical
 - **Models**: dropdowns select `opencode/big-pickle` (default), `opencode/tidepool-alpha-free`, `opencode/hy4-flash-free`, `opencode/iceman-free`, `opencode/longcat-2.5-free`, `opencode/flint-40b-free`, `opencode/deepseek-v4.1-flash-free`, `opencode/nemotron-3.5-super-vl-free`, `opencode/beam-free`, `opencode/mimo-v2.6-flash-free`, or `opencode/nemotron-3.5-lightning-free`. Seed, Analyze, and Implement each have an independent global default and project override. Resolution order is project phase model, project default model, global phase model, global default model, then OpenCode default. Blank project phase fields inherit; blank global phase fields inherit the global default model. The plain `model` field remains as the global or project fallback.
 - **Rate-limit pause**: `60` seconds by default. Only an explicit provider error signature reported by the runner pauses that project, shows a countdown, then retries the same step. Incidental mentions of rate limits, `429`, quota, usage limits, or throttling do not trigger a pause. Looparr's own backoff notice does not trigger a pause.
 - **Sticky add task row**: off by default. When enabled, the Add task input and button stay visible while scrolling the plan checklist in a project drawer.
-- **Prompt templates**: edit the Seed, Analyze, and Implement prompts. `{{task}}` is required; `{{handoff}}` is also required for Analyze and Implement.
+- **Prompt templates**: edit the Seed, Analyze, and Implement prompts. `{{task}}` is required; `{{handoff}}` is also required for Analyze and Implement. The Implement default includes the git commit directive and replaces the saved previous default once on load.
 - **Block threshold**: `2` by default. Allowed range is `1` to `20`. It records how many repeated constraint blocks happen before asking the user.
 - **Temporary lift scope**: blank by default. Enter comma- or newline-separated file or path fragments temporarily lifted for the current session.
 - **Permanent lift**: blank by default. Uses the same path-fragment format for paths lifted permanently.
