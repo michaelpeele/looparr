@@ -6,6 +6,7 @@ const express = require('express');
 
 const engine = require('./src/engine');
 const bus = require('./src/events');
+const configStore = require('./src/config');
 const envSettings = require('./src/env-settings');
 const iconLib = require('./src/icon');
 const iconPngLib = require('./src/icon-png');
@@ -242,7 +243,8 @@ function parseRunner(value, fallback) {
 const MODEL_PHASE_FIELDS = [
   { field: 'seedModel', label: 'Seed model' },
   { field: 'analyzeModel', label: 'Analyze model' },
-  { field: 'implementModel', label: 'Implement model' }
+  { field: 'implementModel', label: 'Implement model' },
+  { field: 'planModel', label: 'Plan model' }
 ];
 
 function applyModelPhaseFields(body, target) {
@@ -259,6 +261,7 @@ const MODEL_ROTATION_FIELDS = [
   { field: 'seedRotation', label: 'Seed rotation' },
   { field: 'analyzeRotation', label: 'Analyze rotation' },
   { field: 'implementRotation', label: 'Implement rotation' },
+  { field: 'planRotation', label: 'Plan rotation' },
   { field: 'runnerRotation', label: 'Runner rotation' }
 ];
 
@@ -278,11 +281,7 @@ function applyRotationFields(body, target, allowNull = false) {
   return { ok: true };
 }
 
-const PROMPT_TEMPLATE_FIELDS = [
-  { field: 'seedPromptTemplate', label: 'Seed prompt template', placeholders: ['{{task}}'] },
-  { field: 'analyzePromptTemplate', label: 'Analyze prompt template', placeholders: ['{{task}}', '{{handoff}}'] },
-  { field: 'implementPromptTemplate', label: 'Implement prompt template', placeholders: ['{{task}}', '{{handoff}}'] }
-];
+const PROMPT_TEMPLATE_FIELDS = configStore.PROMPT_TEMPLATE_FIELDS;
 
 app.get('/api/state', (req, res) => {
   res.set('Cache-Control', 'no-store');
@@ -751,9 +750,23 @@ app.get('/api/projects/:id/answer', (req, res) => {
 app.put('/api/projects/:id/answer', (req, res) => {
   if (!findProject(req.params.id)) return fail(res, 404, 'Project not found');
   if (typeof req.body?.content !== 'string') return fail(res, 400, 'content must be a string');
+  // While the engine parks in waitingAnswer for the plan flow, the answer must
+  // be non-empty: the questions+answers text becomes the planWrite handoff.
+  if (engine.isWaitingForAnswer(req.params.id) && !req.body.content.trim()) {
+    return fail(res, 400, 'Answer cannot be empty while the plan questions wait for an answer');
+  }
   const answer = engine.writeAnswer(req.params.id, req.body.content);
   if (!answer.ok) return fail(res, 400, answer.error || 'Could not save answer');
+  const advanced = engine.onAnswerSaved(req.params.id);
+  if (!advanced.ok) return fail(res, advanced.status || 400, advanced.error || 'Could not advance plan');
   return res.json(answer);
+});
+
+app.post('/api/projects/:id/plan-confirm', (req, res) => {
+  if (!findProject(req.params.id)) return fail(res, 404, 'Project not found');
+  const result = engine.confirmPlan(req.params.id);
+  if (!result.ok) return fail(res, result.status || 409, result.error || 'Could not confirm plan');
+  return res.json({ ok: true });
 });
 
 app.get('/api/projects/:id/icon', (req, res) => {

@@ -1,0 +1,705 @@
+#!/usr/bin/env node
+'use strict';
+
+// Plan prompt-type flow test: "(plan)" tasks run planQuestions → waitingAnswer
+// → (answer PUT) → planWrite → waitingConfirm → (plan-confirm) → analyze →
+// implement. Non-plan projects must stay on seed → analyze → implement.
+
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
+const { once } = require('node:events');
+const { setTimeout: delay } = require('node:timers/promises');
+
+const REPO_ROOT = path.resolve(__dirname, '..');
+// Keep the fixture workspace outside the repo: repo-side temp dirs can be
+// swept by maintenance cleanups mid-run.
+const os = require('node:os');
+const TEMP_DIR = path.join(os.tmpdir(), `looparr-plan-prompt-flow-${process.pid}`);
+const PROJECTS_ROOT = path.join(TEMP_DIR, 'projects');
+const CONFIG_PATH = path.join(TEMP_DIR, 'config.json');
+const FIXTURE_PATH = path.join(TEMP_DIR, 'fake-runner.js');
+// Unique port per run: an orphaned server from a killed earlier run must
+// never answer this run's API calls.
+const PORT = String(4300 + (process.pid % 500));
+const BASE_URL = `http://127.0.0.1:${PORT}`;
+
+process.env.PORT = PORT;
+process.env.HOST = '127.0.0.1';
+process.env.CONFIG_PATH = CONFIG_PATH;
+process.env.LOOPARR_PROJECTS_ROOT = PROJECTS_ROOT;
+process.env.HOSTNAME = 'test-host';
+delete process.env.LOOPARR_ALLOW_RESUME_INTENT;
+
+const configStore = require(path.join(REPO_ROOT, 'src/config.js'));
+const planLib = require(path.join(REPO_ROOT, 'src/plan.js'));
+const engineLib = require(path.join(REPO_ROOT, 'src/engine.js'));
+
+const servers = [];
+
+function assertEqual(actual, expected, label) {
+  assert.equal(actual, expected, `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+}
+
+// ---- fake runner -------------------------------------------------------- //
+// buildCommand logs every prompt, then spawns a node child that reacts to the
+// step phase and a per-project directive file in .looparr/fake-directive.json.
+// Children exit 0 after writing the required step artifacts.
+
+const CHILD_SCRIPT = `
+const fs = require('fs');
+const path = require('path');
+const phase = process.argv[process.argv.length - 1] || '';
+const cwd = process.cwd();
+const loop = path.join(cwd, '.looparr');
+fs.mkdirSync(loop, { recursive: true });
+const promptFile = path.join(loop, 'next_prompt.txt');
+const write = (text) => fs.writeFileSync(promptFile, text);
+let directive = {};
+try { directive = JSON.parse(fs.readFileSync(path.join(loop, 'fake-directive.json'), 'utf8')); } catch { }
+if (phase === 'planQuestions') {
+  if (directive.questions === 'empty') write('');
+  else write(directive.questions || 'Question 1: which files change? Question 2: any constraints?');
+  process.exit(0);
+}
+if (phase === 'planWrite') {
+  const mode = directive.planWrite || 'valid';
+  if (mode === 'empty') { write(''); process.exit(0); }
+  if (mode === 'meta') { write('Do not implement code yet; produce the prompt only.'); process.exit(0); }
+  if (mode === 'no-plan-doc') { write('Analysis: implement X in src/a.js. Risks: y. Next fresh agent must write the implementation prompt.'); process.exit(0); }
+  if (mode === 'no-new-tasks') {
+    fs.mkdirSync(path.join(cwd, '.project_documents'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.project_documents', 'PLAN-widget-launcher.md'), '# Plan\\n');
+    write('Analysis: implement X in src/a.js. Risks: y. Next fresh agent must write the implementation prompt.');
+    process.exit(0);
+  }
+  fs.mkdirSync(path.join(cwd, '.project_documents'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, '.project_documents', 'PLAN-widget-launcher.md'), '# Mapped plan\\n\\n- Step 1\\n- Step 2\\n');
+  const planPath = path.join(cwd, 'plan.md');
+  let plan = fs.readFileSync(planPath, 'utf8');
+  plan = plan.replace(/^\\s*[-*+]\\s+\\[[ xX]\\]\\s*\\(plan\\).*$/m, '- [ ] generated task one\\n- [ ] generated task two');
+  fs.writeFileSync(planPath, plan);
+  write('Analysis: implement the widget launcher plan in src/a.js. Files: src/a.js. Risks: y. Next fresh agent must write the implementation prompt.');
+  process.exit(0);
+}
+if (phase === 'seed') {
+  write(directive.seed || 'Analysis: task touches src/a.js and src/b.js. Risks: y. Next fresh agent must write the implementation prompt.');
+  process.exit(0);
+}
+if (phase === 'analyze') {
+  write(directive.analyze || 'Implementation prompt: edit src/a.js, add tests, run npm test, then mark the plan.md task [x]. Do not touch .looparr/next_prompt.txt.');
+  process.exit(0);
+}
+// implement and anything else: exit 0 without artifacts.
+process.exit(0);
+`.trim();
+
+function createFixture() {
+  const runnersPath = require.resolve(path.join(REPO_ROOT, 'src/runners/index.js'));
+  const source = `'use strict';
+const { registerRunner } = require(${JSON.stringify(runnersPath)});
+registerRunner({
+  id: 'opencode',
+  label: 'test runner',
+  description: 'deterministic plan-flow test runner',
+  ensureServer: async () => null,
+  buildCommand: ({ cwd, prompt, phase }) => {
+    require("fs").appendFileSync(
+      require("path").join(cwd, ".looparr", "fake-prompts.log"),
+      JSON.stringify({ at: new Date().toISOString(), phase: phase || '', prompt }) + "\\n"
+    );
+    return {
+      command: ${JSON.stringify(process.execPath)},
+      args: ['-e', ${JSON.stringify(CHILD_SCRIPT)}, phase || ''],
+      options: { cwd }
+    };
+  },
+  isRateLimit: () => false
+});
+`;
+  fs.writeFileSync(FIXTURE_PATH, source, 'utf8');
+}
+
+function serverEnv() {
+  const env = { ...process.env };
+  env.NODE_OPTIONS = env.NODE_OPTIONS ? `${env.NODE_OPTIONS} --require=${FIXTURE_PATH}` : `--require=${FIXTURE_PATH}`;
+  return env;
+}
+
+async function api(method, route, body) {
+  const options = { method, headers: {} };
+  if (body !== undefined) {
+    options.headers['content-type'] = 'application/json';
+    options.body = JSON.stringify(body);
+  }
+  const response = await fetch(`${BASE_URL}${route}`, options);
+  const text = await response.text();
+  let payload = text;
+  try { payload = text ? JSON.parse(text) : null; } catch { /* plain text */ }
+  return { status: response.status, body: payload, text };
+}
+
+async function waitForServer(child) {
+  let lastError;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (child && (child.exitCode !== null || child.signalCode !== null)) {
+      throw new Error(`Server exited early: ${child.testOutput || ''}`);
+    }
+    if (child && child.testOutput.includes('EADDRINUSE')) {
+      throw new Error(`Server port in use: ${child.testOutput}`);
+    }
+    try {
+      const response = await fetch(`${BASE_URL}/api/state`);
+      if (response.ok) return;
+      lastError = new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(100);
+  }
+  throw new Error(`Server did not start: ${lastError && lastError.message}`);
+}
+
+async function spawnServer() {
+  const child = spawn(process.execPath, ['server.js'], {
+    cwd: REPO_ROOT,
+    env: serverEnv(),
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  child.testOutput = '';
+  child.stdout.on('data', (chunk) => { child.testOutput += chunk.toString(); });
+  child.stderr.on('data', (chunk) => { child.testOutput += chunk.toString(); });
+  servers.push(child);
+  await waitForServer(child);
+  await delay(300);
+  return child;
+}
+
+async function killServer(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+  child.kill('SIGTERM');
+  await Promise.race([once(child, 'exit'), delay(3000).then(() => false)]);
+  if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+}
+
+async function getState() {
+  const response = await api('GET', '/api/state');
+  assertEqual(response.status, 200, 'GET /api/state status');
+  return response.body;
+}
+
+function findProject(state, id) {
+  const project = state.projects.find((entry) => entry.id === id);
+  assert.ok(project, `Project ${id} missing from state`);
+  return project;
+}
+
+async function waitFor(check, label, timeoutMs = 20000, intervalMs = 50) {
+  const deadline = Date.now() + timeoutMs;
+  let lastValue = null;
+  while (Date.now() < deadline) {
+    lastValue = await check();
+    if (lastValue) return lastValue;
+    await delay(intervalMs);
+  }
+  throw new Error(`Timed out waiting for ${label}; last value: ${JSON.stringify(lastValue)}`);
+}
+
+async function projectState(id) {
+  return findProject(await getState(), id);
+}
+
+async function stopAllProjects() {
+  const state = await getState();
+  for (const project of state.projects) {
+    if (project.active) {
+      const response = await api('POST', `/api/projects/${encodeURIComponent(project.id)}/stop`);
+      assertEqual(response.status, 200, `stop ${project.id}`);
+    }
+  }
+}
+
+function makeProjectDir(name, task) {
+  const dir = path.join(PROJECTS_ROOT, name);
+  fs.mkdirSync(path.join(dir, '.looparr'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'plan.md'), `# ${name}\n\n- [ ] ${task}\n`, 'utf8');
+  return dir;
+}
+
+async function createProject(name, task, extra = {}) {
+  const projectPath = makeProjectDir(name, task);
+  const response = await api('POST', '/api/projects', { name, path: projectPath, runner: 'opencode', ...extra });
+  assertEqual(response.status, 201, `create ${name}`);
+  return { id: response.body.project.id, path: projectPath, task };
+}
+
+function readPrompts(project) {
+  const file = path.join(project.path, '.looparr', 'fake-prompts.log');
+  if (!fs.existsSync(file)) return [];
+  return fs.readFileSync(file, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+function promptPhases(project) {
+  return readPrompts(project).map((entry) => entry.phase);
+}
+
+function readHandoff(project) {
+  const file = path.join(project.path, '.looparr', 'next_prompt.txt');
+  try { return fs.readFileSync(file, 'utf8'); } catch { return ''; }
+}
+
+// Holds for a while with no new runner spawns: proves a waiting project is
+// invisible to eligibleProjects/tick.
+async function assertNoSpawns(project, expectedCount, label) {
+  await delay(1200);
+  assert.equal(
+    readPrompts(project).length,
+    expectedCount,
+    `${label}: runner spawn count must stay at ${expectedCount}`
+  );
+}
+
+function writeIntent(project, overrides = {}) {
+  const intent = {
+    version: 1,
+    projectId: project.id,
+    capturedAt: new Date().toISOString(),
+    reason: 'planned-restart',
+    nextPhase: 'planQuestions',
+    status: 'idle',
+    currentTask: project.task,
+    resumeAt: null,
+    pid: process.pid,
+    hostname: 'looparr',
+    ...overrides
+  };
+  fs.writeFileSync(
+    path.join(project.path, '.looparr', 'auto-resume-state.json'),
+    `${JSON.stringify(intent, null, 2)}\n`,
+    'utf8'
+  );
+}
+
+/* ---- pure checks (config defaults, template registration) ---------------- */
+
+function testPlanHelpersAndConfig() {
+  assert.equal(engineLib.planDocSlug('(plan) Plan prompt type'), 'plan-prompt-type', 'planDocSlug strips marker');
+  assert.equal(engineLib.planDocSlug('(PLAN) Add Widget, v2!'), 'add-widget-v2', 'planDocSlug is slug-safe');
+  assert.ok(/^[a-z0-9-]+$/.test(engineLib.planDocSlug('(plan) Any odd "text"')), 'planDocSlug alphanumeric + hyphens only');
+  const defaults = configStore.DEFAULT_SETTINGS;
+  assert.equal(defaults.planModel, 'opencode/big-pickle', 'planModel concrete default (not omniroute/coding-safe)');
+  assert.equal(defaults.planRotation, false, 'planRotation default off');
+  const normalized = configStore.normalizeProject({
+    id: 'p', name: 'P', path: '/tmp/p', planModel: 'opencode/x,opencode/y', planRotation: true
+  });
+  assert.equal(normalized.planModel, 'opencode/x,opencode/y', 'normalizeProject keeps planModel');
+  assert.equal(normalized.planRotation, true, 'normalizeProject keeps planRotation');
+  const templateFields = configStore.PROMPT_TEMPLATE_FIELDS;
+  const questions = templateFields.find((entry) => entry.field === 'planQuestionsPromptTemplate');
+  const writeTpl = templateFields.find((entry) => entry.field === 'planWritePromptTemplate');
+  assert.ok(questions, 'planQuestionsPromptTemplate registered');
+  assert.deepEqual(questions.placeholders, ['{{task}}'], 'questions placeholders');
+  assert.ok(writeTpl, 'planWritePromptTemplate registered');
+  assert.deepEqual(writeTpl.placeholders, ['{{task}}', '{{handoff}}'], 'planWrite placeholders');
+  assert.ok(defaults.planQuestionsPromptTemplate.includes('{{task}}'), 'questions template default');
+  assert.ok(defaults.planWritePromptTemplate.includes('{{handoff}}'), 'write template default');
+  assert.ok(defaults.planWritePromptTemplate.includes('PLAN-<slug>'), 'write template names PLAN doc');
+  assert.equal(planLib.isPlanTask('(plan) Build widget launcher'), true, 'plan marker recognized');
+  assert.equal(planLib.isPlanTask('Ordinary task'), false, 'non-plan tasks not matched');
+}
+
+/* ---- served UI checks --------------------------------------------------- */
+
+async function testUiAssets() {
+  const index = await api('GET', '/index.html');
+  assertEqual(index.status, 200, 'index.html status');
+  for (const needle of [
+    'id="plan-model"',
+    'id="project-plan-model"',
+    'id="drawer-plan-model"',
+    'id="plan-questions-prompt-template"',
+    'id="plan-write-prompt-template"',
+    'id="confirm-plan"',
+    'data-rotate-for="plan-model"',
+    'data-rotate-for="project-plan-model"',
+    'data-rotate-for="drawer-plan-model"'
+  ]) {
+    assert.ok(index.text.includes(needle), `index.html contains ${needle}`);
+  }
+  const appJs = await api('GET', '/app.js');
+  assertEqual(appJs.status, 200, 'app.js status');
+  for (const needle of ['planRotation', 'plan-confirm', 'waitingConfirm', 'waitingAnswer', 'plan-questions-prompt-template']) {
+    assert.ok(appJs.text.includes(needle), `app.js contains ${needle}`);
+  }
+  const styles = await api('GET', '/styles.css');
+  for (const needle of ['badge.waiting-answer', 'badge.waiting-confirm', 'badge.plan-questions', 'badge.plan-write']) {
+    assert.ok(styles.text.includes(needle), `styles.css contains ${needle}`);
+  }
+}
+
+/* ---- settings + templates ------------------------------------------------ */
+
+async function testSettingsAndTemplates() {
+  let response = await api('PATCH', '/api/settings', { planModel: 'opencode/big-pickle', planRotation: true });
+  assertEqual(response.status, 200, 'settings plan model PATCH');
+  assert.equal(response.body.settings.planModel, 'opencode/big-pickle', 'settings planModel saved');
+  assert.equal(response.body.settings.planRotation, true, 'settings planRotation saved');
+
+  response = await api('PATCH', '/api/settings', { planModel: '--bad' });
+  assertEqual(response.status, 400, 'bad planModel rejected');
+
+  response = await api('PATCH', '/api/settings', { planQuestionsPromptTemplate: 'missing placeholder' });
+  assertEqual(response.status, 400, 'planQuestions template must include {{task}}');
+
+  response = await api('PATCH', '/api/settings', { planWritePromptTemplate: 'no handoff here' });
+  assertEqual(response.status, 400, 'planWrite template must include {{handoff}}');
+
+  response = await api('PATCH', '/api/settings', {
+    planQuestionsPromptTemplate: configStore.DEFAULT_SETTINGS.planQuestionsPromptTemplate,
+    planWritePromptTemplate: configStore.DEFAULT_SETTINGS.planWritePromptTemplate,
+    planRotation: false
+  });
+  assertEqual(response.status, 200, 'plan templates accept defaults back');
+
+  const realDir = makeProjectDir('settings-project', 'Task A');
+  const createdOk = await api('POST', '/api/projects', {
+    name: 'settings-project',
+    path: realDir,
+    runner: 'opencode',
+    planModel: 'opencode/tidepool-alpha-free',
+    planRotation: true
+  });
+  assertEqual(createdOk.status, 201, 'project create with plan fields');
+  assert.equal(createdOk.body.project.planModel, 'opencode/tidepool-alpha-free', 'project planModel stored');
+  assert.equal(createdOk.body.project.planRotation, true, 'project planRotation stored');
+  await api('DELETE', `/api/projects/${encodeURIComponent(createdOk.body.project.id)}`);
+}
+
+/* ---- flow ---------------------------------------------------------------- */
+
+// Test 1: non-plan seed → analyze → implement unchanged.
+async function testNonPlanFlowUnchanged() {
+  const project = await createProject('plain-project', 'Ordinary task alpha');
+  await api('POST', `/api/projects/${encodeURIComponent(project.id)}/start`);
+  await waitFor(
+    () => projectState(project.id).then((p) => (p.status === 'done' ? p : null)),
+    'plain project done',
+    30000
+  );
+  assert.deepEqual(promptPhases(project), ['seed', 'analyze', 'implement'], 'non-plan phase sequence unchanged');
+  const plan = planLib.readPlan(project.path);
+  assert.equal(plan.next, null, 'plain task completed');
+}
+
+// Tests 2, 3, 5, 6, 7: full plan flow through confirm and downstream.
+async function testPlanWaitAndConfirm() {
+  const PLAN_TASK = '(plan) Build widget launcher';
+  const project = await createProject('plan-project', PLAN_TASK);
+
+  const startResponse = await api('POST', `/api/projects/${encodeURIComponent(project.id)}/start`);
+  assertEqual(startResponse.status, 200, 'start plan project');
+
+  // Test 2: planQuestions runs, then stops in waitingAnswer with no auto-spawn.
+  await waitFor(
+    () => projectState(project.id).then((p) => (p.status === 'waitingAnswer' ? p : null)),
+    'plan project waitingAnswer'
+  );
+  const prompts = readPrompts(project);
+  assert.equal(prompts.length, 1, 'planQuestions spawned exactly once');
+  assert.equal(prompts[0].phase, 'planQuestions', 'planQuestions phase ran');
+  assert.ok(prompts[0].prompt.includes(PLAN_TASK), 'full task text with (plan) marker reaches the prompt');
+  const handoff = readHandoff(project);
+  assert.ok(handoff.includes('Question 1'), 'questions written to .looparr/next_prompt.txt');
+  await assertNoSpawns(project, prompts.length, 'waitingAnswer must not auto-spawn');
+  let state = await projectState(project.id);
+  assert.equal(state.nextPhase, 'planWrite', 'nextPhase planWrite while waiting');
+  assert.equal(state.currentTask, PLAN_TASK, 'currentTask kept');
+
+  // Test 8 (partial): Start must not clear the waiting state or spawn.
+  await api('POST', `/api/projects/${encodeURIComponent(project.id)}/start`);
+  await assertNoSpawns(project, prompts.length, 'Start keeps waitingAnswer parked');
+  assert.equal((await projectState(project.id)).status, 'waitingAnswer', 'Start does not clear waitingAnswer');
+  // Stop stays available.
+  const stopResponse = await api('POST', `/api/projects/${encodeURIComponent(project.id)}/stop`);
+  assertEqual(stopResponse.status, 200, 'stop available while waiting');
+  assert.equal((await projectState(project.id)).status, 'idle', 'stop reset to idle');
+
+  // Re-enter the plan flow and answer.
+  await api('POST', `/api/projects/${encodeURIComponent(project.id)}/start`);
+  await waitFor(
+    () => projectState(project.id).then((p) => (p.status === 'waitingAnswer' ? p : null)),
+    'plan project waitingAnswer again'
+  );
+  const answerFile = readHandoff(project);
+
+  // Test 3 (part 1): empty answer rejected while waiting.
+  const emptyPut = await api('PUT', `/api/projects/${encodeURIComponent(project.id)}/answer`, { content: '' });
+  assert.equal(emptyPut.status, 400, 'empty answer PUT rejected while waitingAnswer');
+  assert.equal((await projectState(project.id)).status, 'waitingAnswer', 'still waiting after rejected answer');
+
+  // plan-confirm while waitingAnswer → 409.
+  const earlyConfirm = await api('POST', `/api/projects/${encodeURIComponent(project.id)}/plan-confirm`);
+  assert.equal(earlyConfirm.status, 409, 'plan-confirm 409 while waitingAnswer');
+
+  const answer = `${answerFile}\nAnswer 1: only src/a.js. Answer 2: keep npm test.`;
+  const answerPut = await api('PUT', `/api/projects/${encodeURIComponent(project.id)}/answer`, { content: answer });
+  assertEqual(answerPut.status, 200, 'answer PUT accepted');
+
+  // Test 5: valid planWrite enters waitingConfirm with no extra spawns.
+  await waitFor(
+    () => projectState(project.id).then((p) => (p.status === 'waitingConfirm' ? p : null)),
+    'plan project waitingConfirm'
+  );
+  const writePrompts = readPrompts(project);
+  const planWriteEntry = writePrompts.find((entry) => entry.phase === 'planWrite');
+  assert.ok(planWriteEntry, 'planWrite spawned after answer');
+  assert.ok(planWriteEntry.prompt.includes('Answer 1: only src/a.js'), 'planWrite handoff carries questions + answers');
+  await assertNoSpawns(project, writePrompts.length, 'waitingConfirm must not auto-spawn');
+  state = await projectState(project.id);
+  assert.equal(state.nextPhase, 'analyze', 'nextPhase analyze while waitingConfirm');
+  assert.equal(state.currentTask, PLAN_TASK, 'currentTask kept through planWrite');
+
+  const planNow = planLib.readPlan(project.path);
+  assert.ok(
+    fs.existsSync(path.join(project.path, '.project_documents', 'PLAN-widget-launcher.md')),
+    'planWrite created the mapped PLAN doc'
+  );
+  assert.ok(planNow.tasks.every((task) => task.text !== PLAN_TASK || task.checked), 'original (plan) line replaced or removed');
+  assert.ok(planNow.tasks.some((task) => task.text === 'generated task one'), 'generated tasks present');
+
+  // Test 6: plan-confirm resumes analyze; wrong state returns 409.
+  const confirmResponse = await api('POST', `/api/projects/${encodeURIComponent(project.id)}/plan-confirm`);
+  assertEqual(confirmResponse.status, 200, 'plan-confirm accepted');
+  await waitFor(
+    () => projectState(project.id).then((p) => (promptPhases(project).includes('analyze') ? p : null)),
+    'analyze spawned after confirm'
+  );
+  state = await projectState(project.id);
+  assert.ok(['analyze', 'rateLimited'].includes(state.status) || state.currentTask, 'analyze running after confirm');
+  const duplicateConfirm = await api('POST', `/api/projects/${encodeURIComponent(project.id)}/plan-confirm`);
+  assert.equal(duplicateConfirm.status, 409, 'plan-confirm 409 outside waitingConfirm');
+
+  // Full downstream flow: analyze → implement, then generated tasks via seed.
+  await waitFor(
+    () => projectState(project.id).then((p) => (p.status === 'done' ? p : null)),
+    'plan project full flow done',
+    30000
+  );
+  const finalPlan = planLib.readPlan(project.path);
+  assert.equal(finalPlan.next, null, 'generated tasks all completed');
+  // Test 7: the original (plan) task must not be plan.next after confirm-flow.
+  assert.ok(planLib.isPlanTask(PLAN_TASK), 'marker recognizable');
+  assert.equal(finalPlan.tasks.some((task) => !task.checked && task.text === PLAN_TASK), false, 'original (plan) task not unchecked after flow');
+  const phases = promptPhases(project);
+  // The flow restarted once (stop/start), so two planQuestions runs precede
+  // the planWrite → analyze → implement sequence. Assert order, not counts.
+  const planWriteIndex = phases.indexOf('planWrite');
+  assert.notEqual(planWriteIndex, -1, 'planWrite appears in phase log');
+  assert.deepEqual(
+    phases.slice(planWriteIndex, planWriteIndex + 3),
+    ['planWrite', 'analyze', 'implement'],
+    'plan flow consumes planWrite/analyze/implement in order'
+  );
+  assert.ok(phases.slice(0, planWriteIndex).every((phase) => phase === 'planQuestions'), 'only planQuestions before planWrite');
+  assert.ok(!phases.slice(planWriteIndex).includes('planQuestions'), 'generated tasks run the normal flow');
+}
+
+// Test 4: bad/empty/meta planWrite outputs never enter waitingConfirm.
+async function testPlanWriteFailures() {
+  const cases = [
+    { name: 'plan-meta-project', directive: { planWrite: 'meta' }, error: /do not implement|meta-instruction|handoff rejected/i },
+    { name: 'plan-empty-project', directive: { planWrite: 'empty' }, error: /did not write|non-empty|handoff/i },
+    { name: 'plan-nodoc-project', directive: { planWrite: 'no-plan-doc' }, error: /plan|doc|PLAN/i },
+    { name: 'plan-notasks-project', directive: { planWrite: 'no-new-tasks' }, error: /task|plan\.md/i }
+  ];
+  for (const testCase of cases) {
+    const project = await createProject(testCase.name, `(plan) ${testCase.name} work`);
+    fs.writeFileSync(
+      path.join(project.path, '.looparr', 'fake-directive.json'),
+      JSON.stringify(testCase.directive),
+      'utf8'
+    );
+    await api('POST', `/api/projects/${encodeURIComponent(project.id)}/start`);
+    await waitFor(
+      () => projectState(project.id).then((p) => (p.status === 'waitingAnswer' ? p : null)),
+      `${testCase.name} waitingAnswer`
+    );
+    const before = readPrompts(project).length;
+    const answerPut = await api('PUT', `/api/projects/${encodeURIComponent(project.id)}/answer`, {
+      content: `${readHandoff(project)}\nAnswer: proceed.`
+    });
+    assertEqual(answerPut.status, 200, `${testCase.name} answer accepted`);
+    await waitFor(
+      () => projectState(project.id).then((p) => (p.status === 'error' ? p : null)),
+      `${testCase.name} planWrite rejected`
+    );
+    const state = await projectState(project.id);
+    assert.match(state.error || '', testCase.error, `${testCase.name} error message`);
+    assert.notEqual(state.status, 'waitingConfirm', `${testCase.name} never enters waitingConfirm`);
+    assert.equal(state.nextPhase, 'planWrite', `${testCase.name} keeps planWrite for retry`);
+    await assertNoSpawns(project, before + 1, `${testCase.name} halted after failed planWrite`);
+  }
+}
+
+// Test 9: restart resume preserves waiting states and degrades invalid planWrite.
+async function testRestartResume() {
+  // a) waitingAnswer preserved: intent planWrite + questions + provenance.
+  const answerProject = await createProject('resume-answer-project', '(plan) Resume waiting answer', { autoResumeOnStart: true });
+  // b) waitingConfirm preserved: intent analyze + analysis handoff + provenance.
+  const confirmProject = await createProject('resume-confirm-project', '(plan) Resume waiting confirm', { autoResumeOnStart: true });
+  // c) planWrite intent without usable handoff degrades to planQuestions.
+  const degradeProject = await createProject('resume-degrade-project', '(plan) Resume degrade', { autoResumeOnStart: true });
+
+  // Stop the old server first: a live server's watcher would rewrite the
+  // checkpoint intents below from its own runtime state.
+  await stopAllProjects();
+  await killServer(servers[servers.length - 1]);
+  const questions = 'Question 1: scope?';
+  fs.writeFileSync(path.join(answerProject.path, '.looparr', 'next_prompt.txt'), questions, 'utf8');
+  fs.writeFileSync(path.join(answerProject.path, '.looparr', 'handoff_task.txt'), answerProject.task, 'utf8');
+  writeIntent(answerProject, {
+    nextPhase: 'planWrite',
+    status: 'waitingAnswer',
+    currentTask: answerProject.task
+  });
+
+  fs.mkdirSync(path.join(confirmProject.path, '.project_documents'), { recursive: true });
+  fs.writeFileSync(
+    path.join(confirmProject.path, '.project_documents', 'PLAN-resume.md'),
+    '# Plan\n',
+    'utf8'
+  );
+  fs.writeFileSync(
+    path.join(confirmProject.path, 'plan.md'),
+    '# resume-confirm-project\n\n- [ ] generated resume task\n',
+    'utf8'
+  );
+  fs.writeFileSync(
+    path.join(confirmProject.path, '.looparr', 'next_prompt.txt'),
+    'Analysis: generated resume task touches src/r.js. Next fresh agent must write the implementation prompt.',
+    'utf8'
+  );
+  fs.writeFileSync(path.join(confirmProject.path, '.looparr', 'handoff_task.txt'), confirmProject.task, 'utf8');
+  writeIntent(confirmProject, {
+    nextPhase: 'analyze',
+    status: 'waitingConfirm',
+    currentTask: confirmProject.task
+  });
+
+  writeIntent(degradeProject, {
+    nextPhase: 'planWrite',
+    status: 'planWrite',
+    currentTask: degradeProject.task
+  });
+
+  await spawnServer();
+
+  const state = await getState();
+  const resumedAnswer = findProject(state, answerProject.id);
+  assert.equal(resumedAnswer.status, 'waitingAnswer', 'waitingAnswer survives restart');
+  assert.equal(resumedAnswer.nextPhase, 'planWrite', 'waitingAnswer resume keeps planWrite');
+  assert.equal(resumedAnswer.currentTask, answerProject.task, 'waitingAnswer resume keeps currentTask');
+
+  const resumedConfirm = findProject(state, confirmProject.id);
+  assert.equal(resumedConfirm.status, 'waitingConfirm', 'waitingConfirm survives restart');
+  assert.equal(resumedConfirm.nextPhase, 'analyze', 'waitingConfirm resume keeps analyze');
+
+  // No auto-spawn in either waiting state.
+  await delay(1200);
+  assert.equal(readPrompts(answerProject).length, 0, 'waitingAnswer resume spawns nothing');
+  assert.equal(readPrompts(confirmProject).length, 0, 'waitingConfirm resume spawns nothing');
+
+  // Degrade: planWrite without handoff restarts the flow at planQuestions.
+  await waitFor(
+    () => projectState(degradeProject.id).then((p) => (promptPhases(degradeProject).includes('planQuestions') ? p : null)),
+    'degraded project runs planQuestions'
+  );
+  await waitFor(
+    () => projectState(degradeProject.id).then((p) => (p.status === 'waitingAnswer' ? p : null)),
+    'degraded project reaches waitingAnswer'
+  );
+
+  // Answer the waiting project: planWrite spawns exactly once.
+  const put = await api('PUT', `/api/projects/${encodeURIComponent(answerProject.id)}/answer`, {
+    content: 'Question 1: scope? — Answer: api only.'
+  });
+  assertEqual(put.status, 200, 'resume answer PUT');
+  await waitFor(
+    () => projectState(answerProject.id).then((p) => (promptPhases(answerProject).includes('planWrite') ? p : null)),
+    'resumed waitingAnswer advances to planWrite'
+  );
+  assert.deepEqual(
+    readPrompts(answerProject).map((entry) => entry.phase),
+    ['planWrite'],
+    'resumed planWrite spawns exactly once'
+  );
+
+  // Confirm the waiting project: analyze spawns exactly once.
+  const confirm = await api('POST', `/api/projects/${encodeURIComponent(confirmProject.id)}/plan-confirm`);
+  assertEqual(confirm.status, 200, 'resumed waitingConfirm confirm');
+  await waitFor(
+    () => projectState(confirmProject.id).then((p) => (promptPhases(confirmProject).includes('analyze') ? p : null)),
+    'resumed waitingConfirm advances to analyze'
+  );
+  assert.deepEqual(
+    readPrompts(confirmProject).map((entry) => entry.phase),
+    ['analyze'],
+    'resumed analyze spawns exactly once'
+  );
+}
+
+async function killServerAndRestart() {
+  const current = servers[servers.length - 1];
+  await killServer(current);
+  return spawnServer();
+}
+
+async function debugDump(label) {
+  try {
+    const state = await getState();
+    for (const project of state.projects) {
+      console.error(`[debug:${label}]`, project.name, project.status, project.nextPhase, project.error || '');
+    }
+  } catch {
+    // Server may be gone already.
+  }
+}
+
+async function main() {
+  try {
+    testPlanHelpersAndConfig();
+
+    fs.rmSync(TEMP_DIR, { recursive: true, force: true });
+    fs.mkdirSync(PROJECTS_ROOT, { recursive: true });
+    fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+    createFixture();
+
+    await spawnServer();
+    await testUiAssets();
+    await testSettingsAndTemplates();
+    await testNonPlanFlowUnchanged();
+    await testPlanWaitAndConfirm();
+    await testPlanWriteFailures();
+    await testRestartResume();
+  } catch (error) {
+    await debugDump('failure');
+    throw error;
+  } finally {
+    for (const child of servers) {
+      await killServer(child);
+    }
+    if (!process.env.DEBUG_KEEP) fs.rmSync(TEMP_DIR, { recursive: true, force: true });
+  }
+  console.log('test-plan-prompt-flow: ok');
+}
+
+main().catch((error) => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exitCode = 1;
+});

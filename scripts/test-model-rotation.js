@@ -386,14 +386,14 @@ async function testServedMarkup() {
   assertEqual(htmlResponse.status, 200, 'GET /index.html status');
   const html = await htmlResponse.text();
   const targets = [...html.matchAll(/data-rotate-for="([^"]+)"/g)].map((match) => match[1]);
-  assertEqual(targets.length, 15, 'one rotation toggle per model and runner dropdown');
+  assertEqual(targets.length, 18, 'one rotation toggle per model and runner dropdown');
   for (const target of targets) {
     assert.ok(html.includes(`id="${target}"`), `rotation toggle ${target} maps to a real select`);
   }
   assert.ok(html.includes('id="icon-model-rotation"'), 'two-arrow rotation icon is served');
-  assertEqual((html.match(/title="Model Rotation"/g) || []).length, 12, 'every model toggle carries the Model Rotation tooltip');
+  assertEqual((html.match(/title="Model Rotation"/g) || []).length, 15, 'every model toggle carries the Model Rotation tooltip');
   assertEqual((html.match(/title="Runner Rotation"/g) || []).length, 3, 'every runner toggle carries the Runner Rotation tooltip');
-  assertEqual((html.match(/aria-pressed="false"/g) || []).length >= 15, true, 'every toggle exposes aria-pressed');
+  assertEqual((html.match(/aria-pressed="false"/g) || []).length >= 18, true, 'every toggle exposes aria-pressed');
 
   const appResponse = await fetch(`${BASE_URL}/app.js`);
   assertEqual(appResponse.status, 200, 'GET /app.js status');

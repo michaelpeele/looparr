@@ -19,7 +19,8 @@ function assertExcludes(text, fragment, label) {
 assertIncludes(source, "function startActionLabel(project) {", 'startActionLabel helper');
 assertIncludes(source, "return project.status === 'rateLimited' ? 'Retry' : 'Start';", 'rateLimited Retry label');
 assertIncludes(source, "const rateLimited = project.status === 'rateLimited';", 'controlDisabled rateLimited flag');
-assertIncludes(source, "start: !rateLimited && ((project.active && !project.paused) || (project.status === 'done' && !hasPending)),", 'rateLimited start exception');
+assertIncludes(source, "const waiting = project.status === 'waitingAnswer' || project.status === 'waitingConfirm';", 'controlDisabled waiting flag');
+assertIncludes(source, "start: !(rateLimited || waiting) && ((project.active && !project.paused) || (project.status === 'done' && !hasPending)),", 'rateLimited start exception');
 assertIncludes(source, "buttons[0].textContent = startActionLabel(project);", 'card button uses startActionLabel');
 assertIncludes(source, "buttons[0].textContent = startActionLabel(project);", 'label helper usage');
 assertIncludes(source, "Rate limit backoff active. Auto-retry pending; press Retry to start immediately.", 'rateLimited helper text');

@@ -245,10 +245,20 @@ function writePlan(projectDir, content) {
   fs.renameSync(temp, planPath);
 }
 
+// "(plan) Task text" — note `\b` never matches after ')' (non-word to
+// non-word), so anchor on whitespace or end-of-string instead.
+const PLAN_TASK_MARKER_RE = /^\(plan\)(?:\s|$)/i;
+
+function isPlanTask(task) {
+  return PLAN_TASK_MARKER_RE.test(String(task || '').trim());
+}
+
 module.exports = {
   TASK_RE,
+  PLAN_TASK_MARKER_RE,
   parseTasks,
   parseDependencySuffix,
+  isPlanTask,
   analyzeDependencies,
   firstUnchecked,
   nextUncheckedAfter,

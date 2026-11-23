@@ -125,32 +125,83 @@ const OLDER_IMPLEMENT_PROMPT_TEMPLATE = [
   'The engine clears .looparr/next_prompt.txt when this task completes; do not edit or delete it yourself.'
 ].join('\n');
 
-const MODEL_PHASE_FIELDS = ['seedModel', 'analyzeModel', 'implementModel'];
+const DEFAULT_PLAN_QUESTIONS_PROMPT_TEMPLATE = [
+  'Looparr PLAN QUESTIONS step. Fresh session. Work only inside the current project directory.',
+  'Task: "{{task}}"',
+  '',
+  'You are gathering requirements, not implementing. Ask only the necessary clarifying questions for this task:',
+  'ask only about anything ambiguous or missing that would change a mapped-out plan; never ask questions with obvious answers.',
+  'The user will not reply in chat: they will append their answers to the same file you write.',
+  '',
+  'Write ONLY those questions to .looparr/next_prompt.txt (overwrite it; create .looparr/ if needed).',
+  'Do not write any plan document. Do not write .project_documents/PLAN-*.md. Do not edit plan.md. Do not implement code.',
+  'Do not add any meta-instructions to the questions.',
+  'Keep output compact to protect the context budget: never echo file contents, logs, plan text, or diffs; report decisions and results only.'
+].join('\\n');
+
+const DEFAULT_PLAN_WRITE_PROMPT_TEMPLATE = [
+  'Looparr PLAN WRITE step. Fresh session. Work only inside the current project directory.',
+  'Task: "{{task}}"',
+  'The clarifying questions and the user\'s answers follow:',
+  '---',
+  '{{handoff}}',
+  '---',
+  '',
+  'Produce a fully mapped-out plan for this task from the questions and answers above:',
+  '1. Write the mapped plan document to .project_documents/PLAN-<slug>.md (slug derived from the task text:',
+  '   lowercase letters, digits and hyphens only). It must contain the design, a file map, ordered steps, tests,',
+  '   acceptance criteria, and risks.',
+  '2. In plan.md, replace the original "(plan)" task line with concrete generated checklist tasks (one "- [ ]" line each)',
+  '   that implement this plan. The original "(plan)" line must not remain unchecked: replace it, remove it, or mark it done.',
+  '3. Overwrite .looparr/next_prompt.txt with ONLY the concise analysis prompt for the next phase:',
+  '   restate the task, name the likely files, list risks, and direct the next fresh agent to produce a detailed implementation prompt.',
+  '',
+  'The analysis prompt in .looparr/next_prompt.txt must not contain meta-instructions such as',
+  '"do not implement code yet", "produce the prompt only", "write only a prompt", "do not implement", or "stop before coding".',
+  'Do not implement code.',
+  'Keep output compact to protect the context budget: never echo file contents, logs, plan text, or diffs; report decisions and results only.'
+].join('\\n');
+
+const MODEL_PHASE_FIELDS = ['seedModel', 'analyzeModel', 'implementModel', 'planModel'];
 const MODEL_SETTINGS_FIELDS = ['model', ...MODEL_PHASE_FIELDS];
 const MODEL_FIELD_LABELS = {
   model: 'Model',
   seedModel: 'Seed model',
   analyzeModel: 'Analyze model',
-  implementModel: 'Implement model'
+  implementModel: 'Implement model',
+  planModel: 'Plan model'
 };
 
 function modelFieldForPhase(phase) {
   if (phase === 'analyze') return 'analyzeModel';
   if (phase === 'implement') return 'implementModel';
+  if (phase === 'planQuestions' || phase === 'planWrite') return 'planModel';
   return 'seedModel';
 }
 
-const MODEL_ROTATION_FIELDS = ['modelRotation', 'seedRotation', 'analyzeRotation', 'implementRotation'];
+const MODEL_ROTATION_FIELDS = ['modelRotation', 'seedRotation', 'analyzeRotation', 'implementRotation', 'planRotation'];
 const ROTATION_FIELD_BY_MODEL_FIELD = {
   model: 'modelRotation',
   seedModel: 'seedRotation',
   analyzeModel: 'analyzeRotation',
-  implementModel: 'implementRotation'
+  implementModel: 'implementRotation',
+  planModel: 'planRotation'
 };
 
 function rotationFieldForModelField(field) {
   return ROTATION_FIELD_BY_MODEL_FIELD[field] || 'modelRotation';
 }
+
+// Shared with server.js: the editable prompt-template settings, their labels,
+// and the placeholders each one must keep. New entries need a DEFAULT_SETTINGS
+// template and a textarea in public/index.html.
+const PROMPT_TEMPLATE_FIELDS = [
+  { field: 'seedPromptTemplate', label: 'Seed prompt template', placeholders: ['{{task}}'] },
+  { field: 'analyzePromptTemplate', label: 'Analyze prompt template', placeholders: ['{{task}}', '{{handoff}}'] },
+  { field: 'implementPromptTemplate', label: 'Implement prompt template', placeholders: ['{{task}}', '{{handoff}}'] },
+  { field: 'planQuestionsPromptTemplate', label: 'Plan questions prompt template', placeholders: ['{{task}}'] },
+  { field: 'planWritePromptTemplate', label: 'Plan write prompt template', placeholders: ['{{task}}', '{{handoff}}'] }
+];
 
 const DEFAULT_SETTINGS = {
   maxConcurrent: 2,
@@ -161,10 +212,12 @@ const DEFAULT_SETTINGS = {
   seedModel: 'opencode/big-pickle',
   analyzeModel: 'opencode/big-pickle',
   implementModel: 'opencode/big-pickle',
+  planModel: 'opencode/big-pickle',
   modelRotation: false,
   seedRotation: false,
   analyzeRotation: false,
   implementRotation: false,
+  planRotation: false,
   rateLimitPauseSeconds: 60,
   blockThreshold: 2,
   cooloffSeconds: 0,
@@ -174,7 +227,9 @@ const DEFAULT_SETTINGS = {
   stickyAddTaskRow: false,
   seedPromptTemplate: DEFAULT_SEED_PROMPT_TEMPLATE,
   analyzePromptTemplate: DEFAULT_ANALYZE_PROMPT_TEMPLATE,
-  implementPromptTemplate: DEFAULT_IMPLEMENT_PROMPT_TEMPLATE
+  implementPromptTemplate: DEFAULT_IMPLEMENT_PROMPT_TEMPLATE,
+  planQuestionsPromptTemplate: DEFAULT_PLAN_QUESTIONS_PROMPT_TEMPLATE,
+  planWritePromptTemplate: DEFAULT_PLAN_WRITE_PROMPT_TEMPLATE
 };
 
 const LEGACY_PROMPT_TEMPLATES = {
@@ -238,10 +293,12 @@ function normalizeProject(project) {
     seedModel: normalizedModel(project.seedModel, '', MODEL_FIELD_LABELS.seedModel),
     analyzeModel: normalizedModel(project.analyzeModel, '', MODEL_FIELD_LABELS.analyzeModel),
     implementModel: normalizedModel(project.implementModel, '', MODEL_FIELD_LABELS.implementModel),
+    planModel: normalizedModel(project.planModel, '', MODEL_FIELD_LABELS.planModel),
     modelRotation: normalizedRotation(project.modelRotation),
     seedRotation: normalizedRotation(project.seedRotation),
     analyzeRotation: normalizedRotation(project.analyzeRotation),
     implementRotation: normalizedRotation(project.implementRotation),
+    planRotation: normalizedRotation(project.planRotation),
     blockThreshold: normalizedBlockThreshold(project.blockThreshold, null),
     cooloffSeconds: normalizedCooloff(project.cooloffSeconds, null),
     temporaryLiftScope: normalizedLiftScope(project.temporaryLiftScope, ''),
@@ -352,6 +409,9 @@ module.exports = {
   LEGACY_IMPLEMENT_PROMPT_TEMPLATE,
   LEGACY_PROMPT_TEMPLATES,
   CURRENT_PROMPT_TEMPLATES,
+  PROMPT_TEMPLATE_FIELDS,
+  DEFAULT_PLAN_QUESTIONS_PROMPT_TEMPLATE,
+  DEFAULT_PLAN_WRITE_PROMPT_TEMPLATE,
   MODEL_PHASE_FIELDS,
   MODEL_ROTATION_FIELDS,
   modelFieldForPhase,

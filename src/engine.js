@@ -19,6 +19,11 @@ const runtime = new Map();
 const watchers = new Map();
 const LOG_LIMIT = 400;
 const CHECKPOINT_INTERVAL_MS = 30_000;
+// Plan prompt-type waiting states: the loop is parked until a human acts
+// (answer PUT advances planQuestions→planWrite; plan-confirm advances to analyze).
+const WAITING_STATUSES = new Set(['waitingAnswer', 'waitingConfirm']);
+const PROJECT_DOCS_DIR = '.project_documents';
+const PLAN_DOC_BASENAME_RE = /^PLAN-[^/\\]+\.md$/;
 let logSeq = 0;
 let tickTimer = null;
 let roundRobinCursor = 0;
@@ -237,27 +242,33 @@ function getState() {
         seedModel: project.seedModel || '',
         analyzeModel: project.analyzeModel || '',
         implementModel: project.implementModel || '',
+        planModel: project.planModel || '',
         modelRotation: project.modelRotation ?? null,
         seedRotation: project.seedRotation ?? null,
         analyzeRotation: project.analyzeRotation ?? null,
         implementRotation: project.implementRotation ?? null,
+        planRotation: project.planRotation ?? null,
         effectiveRotations: {
           model: effectiveRotation(project, 'model'),
           seed: effectiveRotation(project, 'seedModel'),
           analyze: effectiveRotation(project, 'analyzeModel'),
-          implement: effectiveRotation(project, 'implementModel')
+          implement: effectiveRotation(project, 'implementModel'),
+          plan: effectiveRotation(project, 'planModel')
         },
         effectiveModel: effectiveModel(project),
         effectiveModels: {
           seed: effectiveModel(project, 'seed'),
           analyze: effectiveModel(project, 'analyze'),
-          implement: effectiveModel(project, 'implement')
+          implement: effectiveModel(project, 'implement'),
+          planQuestions: effectiveModel(project, 'planQuestions'),
+          planWrite: effectiveModel(project, 'planWrite')
         },
         effectiveModelLists: {
           model: joinModelList(modelList(project.model || config.settings.model || '')),
           seed: joinModelList(effectiveModelList(project, 'seed')),
           analyze: joinModelList(effectiveModelList(project, 'analyze')),
-          implement: joinModelList(effectiveModelList(project, 'implement'))
+          implement: joinModelList(effectiveModelList(project, 'implement')),
+          plan: joinModelList(effectiveModelList(project, 'planQuestions'))
         },
         blockPolicy: blockPolicyFor(project),
         status,
@@ -351,10 +362,12 @@ function addProject(input) {
     seedModel: configStore.normalizedModel(input.seedModel, ''),
     analyzeModel: configStore.normalizedModel(input.analyzeModel, ''),
     implementModel: configStore.normalizedModel(input.implementModel, ''),
+    planModel: configStore.normalizedModel(input.planModel, ''),
     modelRotation: input.modelRotation,
     seedRotation: input.seedRotation,
     analyzeRotation: input.analyzeRotation,
     implementRotation: input.implementRotation,
+    planRotation: input.planRotation,
     blockThreshold: input.blockThreshold ?? null,
     cooloffSeconds: input.cooloffSeconds ?? null,
     temporaryLiftScope: input.temporaryLiftScope || '',
@@ -493,7 +506,8 @@ function handoffTaskPath(project) {
 // refuse to run an implement/analyze handoff written for a different task.
 function readHandoffTask(project) {
   try {
-    return fs.readFileSync(handoffTaskPath(project), 'utf8').trim();
+    const [taskText] = fs.readFileSync(handoffTaskPath(project), 'utf8').split(/\r?\n/);
+    return (taskText || '').trim();
   } catch {
     return '';
   }
@@ -502,7 +516,9 @@ function readHandoffTask(project) {
 function stampHandoffTask(project, taskText) {
   try {
     fs.mkdirSync(path.join(project.path, '.looparr'), { recursive: true });
-    fs.writeFileSync(handoffTaskPath(project), `${taskText}\n`);
+    const now = new Date();
+    const stampedAt = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    fs.writeFileSync(handoffTaskPath(project), `${taskText}\n${stampedAt}\n`);
     return true;
   } catch {
     return false;
@@ -616,6 +632,94 @@ function hasHandoff(project) {
   }
 }
 
+// Deterministic slug for the PLAN-<slug>.md doc the planWrite agent should
+// author: alphanumeric and single hyphens only, no whitespace or path parts.
+function planDocSlug(taskText) {
+  const slug = String(taskText || '')
+    .toLowerCase()
+    .replace(/^\(plan\)\s*/, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80)
+    .replace(/-+$/g, '');
+  return slug || 'plan';
+}
+
+function planDocsDir(project) {
+  return path.join(project.path, PROJECT_DOCS_DIR);
+}
+
+function listPlanDocs(project) {
+  try {
+    return fs.readdirSync(planDocsDir(project))
+      .filter((name) => PLAN_DOC_BASENAME_RE.test(name))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+// Snapshot taken when the planWrite step spawns: task texts of every checklist
+// line in plan.md plus the existing PLAN-*.md files. planWrite's output is
+// validated against this snapshot after the agent exits.
+function snapshotPlanForPlanWrite(project, taskText) {
+  const plan = planLib.readPlan(project.path);
+  return {
+    taskText,
+    planOk: plan.ok,
+    taskTexts: plan.ok ? plan.tasks.map((task) => task.text) : [],
+    planDocs: listPlanDocs(project)
+  };
+}
+
+// planWrite's output is only usable when the agent:
+//   1. produced (or refreshed) a PLAN-*.md document,
+//   2. appended at least one new unchecked "- [ ]" task to plan.md,
+//   3. did not leave the original "(plan)" line unchecked (it must be
+//      replaced, removed, or marked done).
+function verifyPlanWriteOutput(project, rt, taskText) {
+  const snapshot = rt.planPhaseSnapshot;
+  if (!snapshot) throw new Error('planWrite step lost its plan snapshot; re-run planQuestions.');
+  const expectedDoc = `PLAN-${planDocSlug(taskText)}.md`;
+  const docs = listPlanDocs(project);
+  const newDoc = docs.find((name) => !snapshot.planDocs.includes(name));
+  const hasExpected = docs.includes(expectedDoc);
+  if (!hasExpected && !newDoc) {
+    throw new Error(
+      `planWrite step did not create ${PROJECT_DOCS_DIR}/${expectedDoc} (expected doc slug: ${planDocSlug(taskText)}).`
+    );
+  }
+  const plan = planLib.readPlan(project.path);
+  if (!plan.ok) throw new Error(`plan.md disappeared after planWrite: ${plan.error}`);
+  const known = new Set(snapshot.taskTexts);
+  const newTasks = plan.tasks.filter((task) => task.text !== taskText && !known.has(task.text));
+  const newUnchecked = newTasks.filter((task) => !task.checked);
+  if (!newTasks.length || !newUnchecked.length) {
+    throw new Error('planWrite step did not append new unchecked tasks to plan.md.');
+  }
+  const originalStillOpen = plan.tasks.some((task) => !task.checked && task.text === taskText);
+  if (originalStillOpen) {
+    throw new Error(
+      'planWrite step left the original "(plan)" task unchecked; it must replace or remove that line in plan.md.'
+    );
+  }
+  return true;
+}
+
+// Belt-and-braces for plan confirm: if the original "(plan)" line somehow
+// survived, mark that exact line done so it can never come back as plan.next.
+function ensureOriginalPlanLineDone(project, rt) {
+  const snapshot = rt.planPhaseSnapshot;
+  const originalText = snapshot && snapshot.taskText;
+  if (!originalText) return;
+  const plan = planLib.readPlan(project.path);
+  if (!plan.ok) return;
+  const openOriginal = plan.tasks.find((task) => !task.checked && task.text === originalText);
+  if (!openOriginal) return;
+  const result = planLib.setChecked(plan.content, openOriginal.index, true);
+  if (result.ok) planLib.writePlan(project.path, result.content);
+}
+
 function shouldReseedOnStart(rt, hasHandoffFile) {
   return Boolean(
     rt &&
@@ -657,6 +761,57 @@ function writeAnswer(id, content) {
   }
 }
 
+function isWaitingState(rt) {
+  return Boolean(rt && WAITING_STATUSES.has(rt.status));
+}
+
+function isWaitingForAnswer(id) {
+  const project = findProject(id);
+  if (!project) return false;
+  return ensureRuntime(project).status === 'waitingAnswer';
+}
+
+// After a successful answer PUT: while the engine parks in waitingAnswer for
+// the plan flow, the saved answer becomes the planWrite handoff and the loop
+// may resume. Any other state keeps the pre-plan write-only behavior.
+function onAnswerSaved(id) {
+  const project = findProject(id);
+  if (!project) return { ok: false, status: 404, error: 'Project not found' };
+  const rt = ensureRuntime(project);
+  if (rt.status !== 'waitingAnswer') return { ok: true, advanced: false };
+  if (rt.nextPhase !== 'planWrite') return { ok: true, advanced: false };
+  const answer = getAnswer(id);
+  if (!answer.ok) return { ok: false, status: 400, error: answer.error || 'Could not read answer' };
+  if (!answer.content || !answer.content.trim()) {
+    return { ok: false, status: 400, error: 'Answer cannot be empty while the plan questions wait for an answer' };
+  }
+  rt.status = 'idle';
+  rt.error = '';
+  appendLog(project.id, 'system', '✓ Answer saved; running plan write step.');
+  emitState();
+  scheduleTick();
+  return { ok: true, advanced: true };
+}
+
+// Human confirmation after the planWrite step parks the project in
+// waitingConfirm. Only this endpoint may advance the plan task to analyze.
+function confirmPlan(id) {
+  const project = findProject(id);
+  if (!project) return { ok: false, status: 404, error: 'Project not found' };
+  const rt = ensureRuntime(project);
+  if (rt.status !== 'waitingConfirm' || (rt.nextPhase || '') !== 'analyze') {
+    return { ok: false, status: 409, error: 'Project is not waiting for plan confirmation' };
+  }
+  ensureOriginalPlanLineDone(project, rt);
+  rt.planPhaseSnapshot = null;
+  rt.status = 'idle';
+  rt.error = '';
+  appendLog(project.id, 'system', '✓ Plan confirmed; running analyze.');
+  emitState();
+  scheduleTick();
+  return { ok: true };
+}
+
 function maxWorkers() {
   const value = Number(config.settings.maxConcurrent);
   if (!Number.isFinite(value) || value <= 0) return Infinity;
@@ -684,7 +839,9 @@ function start(id) {
   rt.cooloffUntil = null;
   rt.error = '';
   rt.currentTask = rt.currentTask || '';
-  if (!rt.child) rt.status = 'idle';
+  // Waiting states survive Start: only a real answer PUT (planWrite) or POST
+  // plan-confirm (analyze) may advance a waiting plan project.
+  if (!rt.child && !isWaitingState(rt)) rt.status = 'idle';
   emitState();
   scheduleTick();
   return true;
@@ -721,6 +878,7 @@ function stop(id) {
   rt.error = '';
   rt.nextPhase = 'seed';
   rt.stepTask = null;
+  rt.planPhaseSnapshot = null;
   if (fs.existsSync(autoResume.statePath(project))) {
     autoResume.clearIntent(project);
     autoResume.appendAudit(project, 'resume-cancelled', {
@@ -944,6 +1102,59 @@ async function spawnRunnerAttempt(project, rt, runner, options) {
   });
 }
 
+// Plan prompt-type close: park in waitingAnswer (after planQuestions) or
+// waitingConfirm (after planWrite, once the produced plan passes validation).
+// Never auto-spawns: a human advances these states.
+function handlePlanPromptClose(project, rt, task, phase) {
+  const promptFile = path.join(project.path, '.looparr', 'next_prompt.txt');
+  const failStep = (message) => {
+    rt.nextPhase = phase;
+    rt.status = 'error';
+    rt.active = false;
+    rt.error = message;
+    appendLog(project.id, 'system', `✖ ${message}`);
+    emitState();
+  };
+  let handoff = '';
+  try { handoff = fs.readFileSync(promptFile, 'utf8').trim(); } catch { /* missing */ }
+  if (!handoff) return failStep(`${phase} step did not write .looparr/next_prompt.txt`);
+  if (phase === 'planWrite') {
+    const metaCheck = isMetaPromptHandoff(handoff);
+    if (metaCheck.poisoned) {
+      appendLog(project.id, 'system', '✖ Plan write produced meta-prompt handoff; retrying plan write.');
+      return failStep(
+        `Plan write handoff rejected (${metaCheck.reason}); meta-instruction handoffs cannot advance to Analyze. Re-run the plan write step.`
+      );
+    }
+    try {
+      verifyPlanWriteOutput(project, rt, task.text);
+    } catch (error) {
+      return failStep(error.message);
+    }
+  }
+  stampHandoffTask(project, task.text);
+  rt.nextPhase = phase === 'planQuestions' ? 'planWrite' : 'analyze';
+  rt.status = phase === 'planQuestions' ? 'waitingAnswer' : 'waitingConfirm';
+  rt.stepTask = null;
+  rt.stepOutput = '';
+  advanceRotationCursor(project, rt, phase, stateRunnerFor(project, rt));
+  appendLog(
+    project.id,
+    'system',
+    phase === 'planQuestions'
+      ? '✓ Questions ready; waiting for the user\'s answer.'
+      : '✓ Plan ready; waiting for user confirmation.'
+  );
+  emitState();
+  scheduleTick();
+}
+
+// The runner that ran the closing step; rotation cursor bookkeeping needs it.
+function stateRunnerFor(project, rt) {
+  return getRunner(rt.activeRunner || '');
+}
+
+
 function handleClose(project, rt, code, task, phase, runner) {
   try {
     if (code !== 0 && runner && runner.isRateLimit && runner.isRateLimit(rt.stepOutput)) {
@@ -967,6 +1178,10 @@ function handleClose(project, rt, code, task, phase, runner) {
       return;
     }
 
+    if (phase === 'planQuestions' || phase === 'planWrite') {
+      handlePlanPromptClose(project, rt, task, phase);
+      return;
+    }
     const promptFile = path.join(project.path, '.looparr', 'next_prompt.txt');
     if (phase === 'seed' || phase === 'analyze') {
       let handoff = '';
@@ -1023,6 +1238,9 @@ function handleClose(project, rt, code, task, phase, runner) {
 async function startStep(project) {
   const rt = ensureRuntime(project);
   if (rt.child || rt.starting || !rt.active || rt.paused) return;
+  // A waiting plan project must never spawn from the loop: only an answer PUT
+  // or plan-confirm advance it.
+  if (WAITING_STATUSES.has(rt.status)) return;
   rt.starting = true;
   let runner;
   try {
@@ -1046,7 +1264,15 @@ async function startStep(project) {
     if (taskDependency?.blocked) {
       throw new Error(`Cannot start task ${task.index + 1}: ${taskDependency.reason}`);
     }
-    const phase = rt.nextPhase || 'seed';
+    let phase = rt.nextPhase || 'seed';
+    // Plan prompt-type branch: when the engine is about to run the initial
+    // seed step for a "(plan)" task, run the planQuestions phase instead. The
+    // marker stays in the task text for the agent. Analyze/implement on later
+    // tasks keep the normal flow untouched.
+    if (phase === 'seed' && planLib.isPlanTask(task.text)) {
+      phase = 'planQuestions';
+      rt.nextPhase = 'planQuestions';
+    }
     const runKey = runKeyFor(project, phase, task.text);
     const runnerList = effectiveRunnerList(project);
     const runnerRotating = runnerList.length > 1 && effectiveRunnerRotation(project);
@@ -1076,11 +1302,20 @@ async function startStep(project) {
     const promptFile = path.join(loopDir, 'next_prompt.txt');
     let prompt;
     let files = [];
-    if (phase === 'seed') {
-      prompt = renderPrompt('seedPromptTemplate', { task: task.text, planPath: plan.planPath });
-      files = [];
-      try { fs.unlinkSync(promptFile); } catch { /* no stale handoff */ }
-      try { fs.unlinkSync(handoffTaskPath(project)); } catch { /* no stale handoff */ }
+    if (phase === 'seed' || phase === 'planQuestions') {
+      if (phase === 'seed') {
+        prompt = renderPrompt('seedPromptTemplate', { task: task.text, planPath: plan.planPath });
+        files = [];
+        try { fs.unlinkSync(promptFile); } catch { /* no stale handoff */ }
+        try { fs.unlinkSync(handoffTaskPath(project)); } catch { /* no stale handoff */ }
+      } else {
+        // planQuestions: fresh session, stale handoffs cleared, questions land
+        // in .looparr/next_prompt.txt for the Question handoff UI.
+        prompt = renderPrompt('planQuestionsPromptTemplate', { task: task.text, planPath: plan.planPath });
+        files = [];
+        try { fs.unlinkSync(promptFile); } catch { /* no stale handoff */ }
+        try { fs.unlinkSync(handoffTaskPath(project)); } catch { /* no stale handoff */ }
+      }
     } else {
       let handoff = '';
       try { handoff = fs.readFileSync(promptFile, 'utf8').trim(); } catch { /* missing */ }
@@ -1097,10 +1332,20 @@ async function startStep(project) {
           return;
         }
       }
+      if (phase === 'analyze') rt.planPhaseSnapshot = null;
       prompt = renderPrompt(
-        phase === 'analyze' ? 'analyzePromptTemplate' : 'implementPromptTemplate',
+        phase === 'analyze'
+          ? 'analyzePromptTemplate'
+          : phase === 'planWrite'
+            ? 'planWritePromptTemplate'
+            : 'implementPromptTemplate',
         { task: task.text, handoff }
       );
+      if (phase === 'planWrite') {
+        // Snapshot plan.md/PLAN docs for exit validation before the fresh
+        // plan write session starts.
+        rt.planPhaseSnapshot = snapshotPlanForPlanWrite(project, task.text);
+      }
     }
 
     let continuationMessage = '';
@@ -1203,6 +1448,8 @@ function scheduleTick() {
 function eligibleProjects() {
   return config.projects.filter((project) => {
     const rt = ensureRuntime(project);
+    // Waiting plan states are only advanced by an answer PUT or plan-confirm.
+    if (WAITING_STATUSES.has(rt.status)) return false;
     return rt.active && !rt.paused && !rt.child && !rt.starting && !rt.resumeAt && rt.status !== 'done' && rt.status !== 'error' && (!rt.cooloffUntil || Date.now() >= rt.cooloffUntil);
   });
 }
@@ -1414,6 +1661,11 @@ async function resumeOnStart() {
       continue;
     }
     let phase = autoResume.PHASES.has(intent.nextPhase) ? intent.nextPhase : 'seed';
+    // Waiting plan states are not PHASES phases: they ride the checkpointed
+    // status field and are restored only after the intent validates.
+    const waitingStatus = intent.status === 'waitingAnswer' || intent.status === 'waitingConfirm'
+      ? intent.status
+      : '';
     let taskText = '';
     try {
       const plan = planLib.readPlan(project.path);
@@ -1421,11 +1673,37 @@ async function resumeOnStart() {
         auditStaleIntent(project, intent);
         continue;
       }
-      taskText = plan.next.text;
-      if (phase !== 'seed') {
-        let handoff = '';
-        try { handoff = fs.readFileSync(answerPath(project), 'utf8').trim(); } catch { /* absent */ }
-        if (!handoff) {
+      // waitingConfirm parks the project after the original "(plan)" line was
+      // replaced or marked done, so plan.next is a generated task: the
+      // checkpointed task text, not plan.next, owns the resume.
+      taskText = waitingStatus === 'waitingConfirm' ? intent.currentTask : plan.next.text;
+      if (!taskText) {
+        auditStaleIntent(project, intent);
+        continue;
+      }
+      // Plan prompt-type intents resolve before the seed/analyze/implement
+      // checks: planQuestions needs no handoff, and planWrite without a usable
+      // handoff or provenance degrades to a fresh planQuestions run.
+      const isPlanPhaseIntent = intent.nextPhase === 'planQuestions' || intent.nextPhase === 'planWrite';
+      const resumeHandoffPresent = (() => {
+        try { return Boolean(fs.readFileSync(answerPath(project), 'utf8').trim()); } catch { return false; }
+      })();
+      if (isPlanPhaseIntent) {
+        phase = intent.nextPhase;
+        if (intent.nextPhase === 'planWrite' && !resumeHandoffPresent) {
+          phase = 'planQuestions';
+          autoResume.appendAudit(project, 'resume-degraded', {
+            phase, task: taskText, reason: intent.reason, cause: 'plan-handoff-missing'
+          });
+        } else if (resumeHandoffPresent && readHandoffTask(project) !== taskText) {
+          clearHandoff(project);
+          phase = 'planQuestions';
+          autoResume.appendAudit(project, 'resume-degraded', {
+            phase, task: taskText, reason: intent.reason, cause: 'handoff-provenance-mismatch'
+          });
+        }
+      } else if (phase !== 'seed') {
+        if (!resumeHandoffPresent) {
           phase = 'seed';
           autoResume.appendAudit(project, 'resume-degraded', {
             phase, task: taskText, reason: intent.reason
@@ -1436,7 +1714,7 @@ async function resumeOnStart() {
       // task into analyze/implement: the run would execute a stale or wrong
       // implementation prompt. Old checkpoints and unknown provenance degrade
       // to a fresh seed, which also clears the stale handoff.
-      if (phase !== 'seed' && readHandoffTask(project) !== taskText) {
+      if (!isPlanPhaseIntent && phase !== 'seed' && readHandoffTask(project) !== taskText) {
         phase = 'seed';
         clearHandoff(project);
         autoResume.appendAudit(project, 'resume-degraded', {
@@ -1488,7 +1766,13 @@ async function resumeOnStart() {
       rt.nextPhase = phase;
       rt.restartContinuePending = phase !== 'seed';
       appendLog(project.id, 'system', `↻ Auto-resume after restart (phase ${phase}).`);
-      if (intent.status === 'paused') {
+      if (waitingStatus && (phase === 'planWrite' || phase === 'analyze')) {
+        // Restore the human-gated state instead of spawning: an answer PUT
+        // (planWrite) or POST plan-confirm (analyze) resumes the flow.
+        rt.resumeAt = null;
+        rt.status = waitingStatus;
+        emitState();
+      } else if (intent.status === 'paused') {
         // A project paused before restart must not wake up running: honor the
         // user's pause across restarts.
         rt.paused = true;
@@ -1552,6 +1836,11 @@ module.exports = {
   getIcon,
   getAnswer,
   writeAnswer,
+  isWaitingForAnswer,
+  onAnswerSaved,
+  confirmPlan,
+  planDocSlug,
+  WAITING_STATUSES,
   hasHandoff,
   shouldReseedOnStart,
   start,

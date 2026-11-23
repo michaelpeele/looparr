@@ -172,6 +172,13 @@
                 <button type="button" class="icon-button model-rotate-button" data-rotate-for="implement-model" aria-pressed="false" aria-label="Model Rotation" title="Model Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
               </div>
             </label>
+            <label class="field">
+              <span>Plan model <small>plan questions + plan write</small></span>
+              <div class="model-field-row">
+                <select id="plan-model" multiple size="4"><option value="">Inherit default model</option></select>
+                <button type="button" class="icon-button model-rotate-button" data-rotate-for="plan-model" aria-pressed="false" aria-label="Model Rotation" title="Model Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
+              </div>
+            </label>
             <small class="field-hint">Select one or more models in configured order. No selection or the blank option means inherit/default. The first model is tried first; later models are fallbacks on rate limit. Press the arrows to rotate through the selection each step; rotation is off by default.</small>
             <label class="field">
               <span>Rate-limit pause <small>seconds</small></span>
@@ -197,6 +204,14 @@
                 <label class="field grow">
                   <span>Implement prompt</span>
                   <textarea id="implement-prompt-template" rows="7" spellcheck="false" placeholder="{{task}} and {{handoff}}"></textarea>
+                </label>
+                <label class="field grow">
+                  <span>Plan questions prompt</span>
+                  <textarea id="plan-questions-prompt-template" rows="7" spellcheck="false" placeholder="{{task}}"></textarea>
+                </label>
+                <label class="field grow">
+                  <span>Plan write prompt</span>
+                  <textarea id="plan-write-prompt-template" rows="7" spellcheck="false" placeholder="{{task}} and {{handoff}}"></textarea>
                 </label>
               </div>
             </details>
@@ -314,6 +329,13 @@
               <div class="model-field-row">
                 <select id="project-implement-model" multiple size="4"><option value="">Inherit default model</option></select>
                 <button type="button" class="icon-button model-rotate-button" data-rotate-for="project-implement-model" aria-pressed="false" aria-label="Model Rotation" title="Model Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
+              </div>
+            </label>
+            <label class="field">
+              <span>Plan model <small>optional</small></span>
+              <div class="model-field-row">
+                <select id="project-plan-model" multiple size="4"><option value="">Inherit default model</option></select>
+                <button type="button" class="icon-button model-rotate-button" data-rotate-for="project-plan-model" aria-pressed="false" aria-label="Model Rotation" title="Model Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
               </div>
             </label>
             <small class="field-hint">Select one or more models in configured order. No selection or the blank option means inherit/default. The first model is tried first; later models are fallbacks on rate limit. Press the arrows to rotate through the selection each step; the toggle is saved on the new project.</small>
@@ -452,6 +474,10 @@
               <select id="drawer-implement-model" aria-label="Project implement model override" multiple size="4"><option value="">Inherit default model</option></select>
               <button type="button" class="icon-button model-rotate-button" data-rotate-for="drawer-implement-model" aria-pressed="false" aria-label="Model Rotation" title="Model Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
             </div>
+            <div class="model-field-row">
+              <select id="drawer-plan-model" aria-label="Project plan model override" multiple size="4"><option value="">Inherit default model</option></select>
+              <button type="button" class="icon-button model-rotate-button" data-rotate-for="drawer-plan-model" aria-pressed="false" aria-label="Model Rotation" title="Model Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
+            </div>
             <button class="button small" id="save-project-model" type="button">Save models</button>
           </div>
           <small class="field-hint">Select one or more models in configured order. No selection or the blank option means inherit/default. The first model is tried first; later models are fallbacks on rate limit. Press the arrows to rotate through the selection each step; saving pins that toggle to this project instead of the global default.</small>
@@ -479,6 +505,8 @@
           <div class="editor-actions">
             <button class="button small" id="refresh-answer" type="button">Refresh</button>
             <button class="button primary small" id="save-answer" type="button">Save answer</button>
+            <button class="button primary small" id="confirm-plan" type="button" hidden>Confirm plan</button>
+            <span class="muted small-text" id="plan-confirm-status" aria-live="polite"></span>
             <span class="muted small-text">Saves the project's .looparr/next_prompt.txt</span>
           </div>
         </div>

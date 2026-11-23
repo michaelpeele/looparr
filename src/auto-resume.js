@@ -9,7 +9,7 @@ const LOG_MAX_BYTES = 64 * 1024;
 const TASK_MAX_CHARS = 240;
 const STATE_TASK_MAX_CHARS = 2000;
 const INTENT_TTL_MS = 24 * 60 * 60 * 1000;
-const PHASES = new Set(['seed', 'analyze', 'implement']);
+const PHASES = new Set(['seed', 'analyze', 'implement', 'planQuestions', 'planWrite']);
 const REASONS = new Set(['planned-restart', 'container-shutdown', 'checkpoint']);
 
 function shouldCaptureResumeIntent() {

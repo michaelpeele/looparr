@@ -18,6 +18,7 @@
     seedModel: $('seed-model'),
     analyzeModel: $('analyze-model'),
     implementModel: $('implement-model'),
+    planModel: $('plan-model'),
     rateLimitSeconds: $('rate-limit-seconds'),
     cooloffSeconds: $('cooloff-seconds'),
     blockThreshold: $('block-threshold'),
@@ -26,6 +27,8 @@
     seedPromptTemplate: $('seed-prompt-template'),
     analyzePromptTemplate: $('analyze-prompt-template'),
     implementPromptTemplate: $('implement-prompt-template'),
+    planQuestionsPromptTemplate: $('plan-questions-prompt-template'),
+    planWritePromptTemplate: $('plan-write-prompt-template'),
     promptCliToolsNote: $('prompt-cli-tools-note'),
     stickyAddTaskRow: $('sticky-add-task-row'),
     settingsStatus: $('settings-status'),
@@ -66,6 +69,7 @@
     projectSeedModel: $('project-seed-model'),
     projectAnalyzeModel: $('project-analyze-model'),
     projectImplementModel: $('project-implement-model'),
+    projectPlanModel: $('project-plan-model'),
     projectBlockThreshold: $('project-block-threshold'),
     projectCooloffSeconds: $('project-cooloff-seconds'),
     projectTemporaryLiftScope: $('project-temporary-lift-scope'),
@@ -92,6 +96,7 @@
     drawerSeedModel: $('drawer-seed-model'),
     drawerAnalyzeModel: $('drawer-analyze-model'),
     drawerImplementModel: $('drawer-implement-model'),
+    drawerPlanModel: $('drawer-plan-model'),
     projectModelStatus: $('project-model-status'),
     saveProjectModel: $('save-project-model'),
     drawerAutoResume: $('drawer-auto-resume'),
@@ -102,6 +107,8 @@
     answerEditor: $('answer-editor'),
     refreshAnswer: $('refresh-answer'),
     saveAnswer: $('save-answer'),
+    confirmPlan: $('confirm-plan'),
+    planConfirmStatus: $('plan-confirm-status'),
     taskInput: $('task-input'),
     addTask: $('add-task'),
     taskStatus: $('task-status'),
@@ -137,6 +144,10 @@
   const STATUS = {
     idle: ['Idle', 'idle'],
     seed: ['Seed', 'seed'],
+    planQuestions: ['Plan Questions', 'plan-questions'],
+    planWrite: ['Plan Write', 'plan-write'],
+    waitingAnswer: ['Waiting for Answer', 'waiting-answer'],
+    waitingConfirm: ['Plan ready for review', 'waiting-confirm'],
     analyze: ['Analyze', 'analyze'],
     implement: ['Implement', 'implement'],
     paused: ['Paused', 'paused'],
@@ -210,21 +221,32 @@
     { select: 'seed-model', field: 'seedRotation' },
     { select: 'analyze-model', field: 'analyzeRotation' },
     { select: 'implement-model', field: 'implementRotation' },
+    { select: 'plan-model', field: 'planRotation' },
     { select: 'project-model', field: 'modelRotation' },
     { select: 'project-seed-model', field: 'seedRotation' },
     { select: 'project-analyze-model', field: 'analyzeRotation' },
     { select: 'project-implement-model', field: 'implementRotation' },
+    { select: 'project-plan-model', field: 'planRotation' },
     { select: 'drawer-model-input', field: 'modelRotation' },
     { select: 'drawer-seed-model', field: 'seedRotation' },
     { select: 'drawer-analyze-model', field: 'analyzeRotation' },
     { select: 'drawer-implement-model', field: 'implementRotation' },
+    { select: 'drawer-plan-model', field: 'planRotation' },
     { select: 'global-runner', field: 'runnerRotation' },
     { select: 'project-runner', field: 'runnerRotation' },
     { select: 'drawer-runner', field: 'runnerRotation' }
   ];
-  const GLOBAL_ROTATION_TARGETS = MODEL_ROTATION_TARGETS.slice(0, 5);
-  const PROJECT_SETUP_ROTATION_TARGETS = MODEL_ROTATION_TARGETS.slice(5, 10);
-  const DRAWER_ROTATION_TARGETS = MODEL_ROTATION_TARGETS.slice(10, 15);
+  // Explicit groups (not index slices) so a new plan field never leaks into
+  // the wrong form: global settings, add-project, drawer.
+  const GLOBAL_ROTATION_TARGETS = MODEL_ROTATION_TARGETS.filter((target) =>
+    ['model', 'seed-model', 'analyze-model', 'implement-model', 'plan-model'].includes(target.select)
+  );
+  const PROJECT_SETUP_ROTATION_TARGETS = MODEL_ROTATION_TARGETS.filter((target) =>
+    ['project-model', 'project-seed-model', 'project-analyze-model', 'project-implement-model', 'project-plan-model'].includes(target.select)
+  );
+  const DRAWER_ROTATION_TARGETS = MODEL_ROTATION_TARGETS.filter((target) =>
+    ['drawer-model-input', 'drawer-seed-model', 'drawer-analyze-model', 'drawer-implement-model', 'drawer-plan-model', 'drawer-runner'].includes(target.select)
+  );
 
   // Local mirrors of src/model-list.js; browser code cannot use Node modules.
   function modelList(value) {
@@ -544,6 +566,15 @@
         : (app.logs.get(key)?.entries.length || 0) === 0;
       setSectionDomOpen(sectionKey, !empty);
     });
+    // Plan waiting states keep their sections visible even while fields are
+    // still empty, so the human gate is impossible to miss.
+    const project = projectById(key);
+    if (project?.status === 'waitingAnswer' && !Object.prototype.hasOwnProperty.call(sections, 'questions')) {
+      setSectionDomOpen('questions', true);
+    }
+    if (project?.status === 'waitingConfirm' && !Object.prototype.hasOwnProperty.call(sections, 'plan')) {
+      setSectionDomOpen('plan', true);
+    }
   }
 
   function restoreUiStateForProject(id) {
@@ -1124,14 +1155,16 @@
       model: settings.modelRotation === true,
       seed: settings.seedRotation === true,
       analyze: settings.analyzeRotation === true,
-      implement: settings.implementRotation === true
+      implement: settings.implementRotation === true,
+      plan: settings.planRotation === true
     };
     if (!project) return flags;
     const fields = {
       model: 'modelRotation',
       seed: 'seedRotation',
       analyze: 'analyzeRotation',
-      implement: 'implementRotation'
+      implement: 'implementRotation',
+      plan: 'planRotation'
     };
     for (const [key, field] of Object.entries(fields)) {
       if (typeof project[field] === 'boolean') flags[key] = project[field];
@@ -1141,7 +1174,7 @@
 
   function rotationSummary(project) {
     const flags = effectiveRotationFlags(project);
-    const on = [['default', flags.model], ['seed', flags.seed], ['analyze', flags.analyze], ['implement', flags.implement]]
+    const on = [['default', flags.model], ['seed', flags.seed], ['analyze', flags.analyze], ['implement', flags.implement], ['plan', flags.plan]]
       .filter(([, enabled]) => enabled)
       .map(([label]) => label);
     return on.length ? `on (${on.join(', ')})` : 'off';
@@ -1184,6 +1217,7 @@
     appendModelSummary(modelParts, 'seed', settingsLists.seed ?? settings.seedModel);
     appendModelSummary(modelParts, 'analyze', settingsLists.analyze ?? settings.analyzeModel);
     appendModelSummary(modelParts, 'implement', settingsLists.implement ?? settings.implementModel);
+    appendModelSummary(modelParts, 'plan', settingsLists.plan ?? settings.planModel);
     const projects = state.projects || [];
     for (const project of projects) {
       const name = project.name || project.id || 'project';
@@ -1193,6 +1227,7 @@
       appendModelSummary(modelParts, `${name} seed`, lists.seed ?? fallback);
       appendModelSummary(modelParts, `${name} analyze`, lists.analyze ?? fallback);
       appendModelSummary(modelParts, `${name} implement`, lists.implement ?? fallback);
+      appendModelSummary(modelParts, `${name} plan`, lists.plan ?? fallback);
     }
     const detail = runner?.description || 'Server-side executor';
     dom.hostRunnerDetail.textContent = modelParts.length
@@ -1347,9 +1382,12 @@
     const completed = Number(project.progress?.completed) || 0;
     const hasPending = Boolean(project.nextTask) || completed < total;
     const rateLimited = project.status === 'rateLimited';
+    // A waiting plan project advances only via its answer or plan-confirm;
+    // Start/Pause cannot bypass the human gate. Stop stays available.
+    const waiting = project.status === 'waitingAnswer' || project.status === 'waitingConfirm';
     return {
-      start: !rateLimited && ((project.active && !project.paused) || (project.status === 'done' && !hasPending)),
-      pause: !project.active || project.paused || project.pauseRequested,
+      start: !(rateLimited || waiting) && ((project.active && !project.paused) || (project.status === 'done' && !hasPending)),
+      pause: !project.active || project.paused || project.pauseRequested || waiting,
       stop: !project.active
     };
   }
@@ -1613,7 +1651,8 @@
         model: lists.model ?? project.effectiveModel ?? project.model ?? '',
         seed: lists.seed ?? project.effectiveModel ?? '',
         analyze: lists.analyze ?? project.effectiveModel ?? '',
-        implement: lists.implement ?? project.effectiveModel ?? ''
+        implement: lists.implement ?? project.effectiveModel ?? '',
+        plan: lists.plan ?? project.effectiveModel ?? ''
       };
     }
     const fallback = project.effectiveModel || '';
@@ -1622,7 +1661,8 @@
       model: project.effectiveModel || project.model || '',
       seed: models.seed || fallback || '',
       analyze: models.analyze || fallback || '',
-      implement: models.implement || fallback || ''
+      implement: models.implement || fallback || '',
+      plan: models.planQuestions || models.plan || fallback || ''
     };
   }
 
@@ -1635,6 +1675,7 @@
       ['Seed model', displayModelList(effective.seed || settings.seedModel || settings.model, 'OpenCode default')],
       ['Analyze model', displayModelList(effective.analyze || settings.analyzeModel || settings.model, 'OpenCode default')],
       ['Implement model', displayModelList(effective.implement || settings.implementModel || settings.model, 'OpenCode default')],
+      ['Plan model', displayModelList(effective.plan || settings.planModel || settings.model, 'OpenCode default')],
       ['Project default override', displayModelList(override, 'global')],
       ['Rotation', rotationSummary(project)]
     ];
@@ -1650,12 +1691,14 @@
     fillModelSelect(dom.drawerSeedModel, project.seedModel, 'Inherit default model', drawerModelRunner);
     fillModelSelect(dom.drawerAnalyzeModel, project.analyzeModel, 'Inherit default model', drawerModelRunner);
     fillModelSelect(dom.drawerImplementModel, project.implementModel, 'Inherit default model', drawerModelRunner);
+    fillModelSelect(dom.drawerPlanModel, project.planModel, 'Inherit default model', drawerModelRunner);
     const rotationFlags = effectiveRotationFlags(project);
     applyRotationButtons(DRAWER_ROTATION_TARGETS, {
       modelRotation: rotationFlags.model,
       seedRotation: rotationFlags.seed,
       analyzeRotation: rotationFlags.analyze,
-      implementRotation: rotationFlags.implement
+      implementRotation: rotationFlags.implement,
+      planRotation: rotationFlags.plan
     });
     dom.projectModelStatus.textContent = '';
   }
@@ -1678,6 +1721,17 @@
     buttons[0].disabled = disabled.start;
     buttons[1].disabled = disabled.pause;
     buttons[2].disabled = disabled.stop;
+    const waitingConfirm = project.status === 'waitingConfirm';
+    if (dom.confirmPlan) dom.confirmPlan.hidden = !waitingConfirm;
+    if (dom.planConfirmStatus) {
+      dom.planConfirmStatus.textContent = waitingConfirm
+        ? 'Plan ready for review. Open the PLAN file, then confirm.'
+        : '';
+    }
+    const waitingAnswer = project.status === 'waitingAnswer';
+    if (waitingAnswer && dom.answerStatus && dom.answerStatus.textContent === 'No handoff loaded') {
+      dom.answerStatus.textContent = 'questions ready — add your answers, then Save answer';
+    }
   }
 
   function updateDrawerHeader(project) {
@@ -1735,6 +1789,8 @@
     dom.planEditor.value = '';
     dom.answerEditor.value = '';
     dom.answerStatus.textContent = 'No handoff loaded';
+    dom.confirmPlan.hidden = true;
+    dom.planConfirmStatus.textContent = '';
     dom.drawerControlStatus.hidden = true;
     dom.drawerControlStatus.textContent = '';
     dom.blockPolicyStatus.textContent = '';
@@ -2350,6 +2406,7 @@
           seedModel: readModelSelect(dom.drawerSeedModel),
           analyzeModel: readModelSelect(dom.drawerAnalyzeModel),
           implementModel: readModelSelect(dom.drawerImplementModel),
+          planModel: readModelSelect(dom.drawerPlanModel),
           ...readRotationButtons(DRAWER_ROTATION_TARGETS)
         })
       });
@@ -2440,11 +2497,13 @@
     fillModelSelect(dom.seedModel, settings.seedModel, 'Inherit default model', settings.globalRunner);
     fillModelSelect(dom.analyzeModel, settings.analyzeModel, 'Inherit default model', settings.globalRunner);
     fillModelSelect(dom.implementModel, settings.implementModel, 'Inherit default model', settings.globalRunner);
+    fillModelSelect(dom.planModel, settings.planModel, 'Inherit default model', settings.globalRunner);
     const setupRunner = readRunnerSelect(dom.projectRunner) || settings.globalRunner || '';
     fillModelSelect(dom.projectModel, '', 'Inherit global', setupRunner);
     fillModelSelect(dom.projectSeedModel, '', 'Inherit default model', setupRunner);
     fillModelSelect(dom.projectAnalyzeModel, '', 'Inherit default model', setupRunner);
     fillModelSelect(dom.projectImplementModel, '', 'Inherit default model', setupRunner);
+    fillModelSelect(dom.projectPlanModel, '', 'Inherit default model', setupRunner);
     applyRotationButtons(GLOBAL_ROTATION_TARGETS, settings);
     applyRotationButtons(PROJECT_SETUP_ROTATION_TARGETS, settings);
     setIfIdle(dom.rateLimitSeconds, settings.rateLimitPauseSeconds);
@@ -2455,6 +2514,8 @@
     setIfIdle(dom.seedPromptTemplate, settings.seedPromptTemplate);
     setIfIdle(dom.analyzePromptTemplate, settings.analyzePromptTemplate);
     setIfIdle(dom.implementPromptTemplate, settings.implementPromptTemplate);
+    setIfIdle(dom.planQuestionsPromptTemplate, settings.planQuestionsPromptTemplate);
+    setIfIdle(dom.planWritePromptTemplate, settings.planWritePromptTemplate);
     if (document.activeElement !== dom.promptCliToolsNote) {
       dom.promptCliToolsNote.checked = settings.promptCliToolsNote === true;
     }
@@ -2471,7 +2532,7 @@
       app.runnerTouched ? readRunnerSelect(dom.projectRunner) : settings.globalRunner
     );
     refillModelSelectsForRunner(
-      [dom.projectModel, dom.projectSeedModel, dom.projectAnalyzeModel, dom.projectImplementModel],
+      [dom.projectModel, dom.projectSeedModel, dom.projectAnalyzeModel, dom.projectImplementModel, dom.projectPlanModel],
       readRunnerSelect(dom.projectRunner) || settings.globalRunner || ''
     );
     renderCards(state.projects || []);
@@ -2510,6 +2571,7 @@
           seedModel: readModelSelect(dom.seedModel),
           analyzeModel: readModelSelect(dom.analyzeModel),
           implementModel: readModelSelect(dom.implementModel),
+          planModel: readModelSelect(dom.planModel),
           ...readRotationButtons(GLOBAL_ROTATION_TARGETS),
           rateLimitPauseSeconds: Number(dom.rateLimitSeconds.value),
           cooloffSeconds: Number(dom.cooloffSeconds.value),
@@ -2519,6 +2581,8 @@
           seedPromptTemplate: dom.seedPromptTemplate.value,
           analyzePromptTemplate: dom.analyzePromptTemplate.value,
           implementPromptTemplate: dom.implementPromptTemplate.value,
+          planQuestionsPromptTemplate: dom.planQuestionsPromptTemplate.value,
+          planWritePromptTemplate: dom.planWritePromptTemplate.value,
           promptCliToolsNote: dom.promptCliToolsNote.checked,
           stickyAddTaskRow: dom.stickyAddTaskRow.checked
         })
@@ -2696,6 +2760,7 @@
           seedModel: readModelSelect(dom.projectSeedModel),
           analyzeModel: readModelSelect(dom.projectAnalyzeModel),
           implementModel: readModelSelect(dom.projectImplementModel),
+          planModel: readModelSelect(dom.projectPlanModel),
           ...readRotationButtons(PROJECT_SETUP_ROTATION_TARGETS),
           blockThreshold: dom.projectBlockThreshold.value.trim() === ''
             ? ''
@@ -2709,7 +2774,7 @@
       });
       dom.projectPath.value = '';
       dom.projectName.value = '';
-      [dom.projectModel, dom.projectSeedModel, dom.projectAnalyzeModel, dom.projectImplementModel].forEach((select) => {
+      [dom.projectModel, dom.projectSeedModel, dom.projectAnalyzeModel, dom.projectImplementModel, dom.projectPlanModel].forEach((select) => {
         Array.from(select.options).forEach((option) => { option.selected = option.value === ''; });
       });
       applyRotationButtons(PROJECT_SETUP_ROTATION_TARGETS, app.state?.settings || {});
@@ -3020,13 +3085,13 @@
   dom.projectRunner.addEventListener('change', () => {
     app.runnerTouched = true;
     refillModelSelectsForRunner(
-      [dom.projectModel, dom.projectSeedModel, dom.projectAnalyzeModel, dom.projectImplementModel],
+      [dom.projectModel, dom.projectSeedModel, dom.projectAnalyzeModel, dom.projectImplementModel, dom.projectPlanModel],
       readRunnerSelect(dom.projectRunner)
     );
   });
   dom.globalRunner.addEventListener('change', () => {
     refillModelSelectsForRunner(
-      [dom.model, dom.seedModel, dom.analyzeModel, dom.implementModel],
+      [dom.model, dom.seedModel, dom.analyzeModel, dom.implementModel, dom.planModel],
       readRunnerSelect(dom.globalRunner)
     );
   });
@@ -3226,6 +3291,21 @@
   });
   dom.refreshAnswer.addEventListener('click', () => loadAnswer());
   dom.saveAnswer.addEventListener('click', saveAnswer);
+  dom.confirmPlan?.addEventListener('click', async () => {
+    const id = app.drawerId;
+    if (!id) return;
+    dom.confirmPlan.disabled = true;
+    dom.planConfirmStatus.textContent = 'confirming…';
+    try {
+      await api(`/api/projects/${encodeURIComponent(id)}/plan-confirm`, { method: 'POST' });
+      await refreshState();
+      dom.planConfirmStatus.textContent = 'plan confirmed';
+    } catch (error) {
+      dom.planConfirmStatus.textContent = error.message;
+    } finally {
+      dom.confirmPlan.disabled = false;
+    }
+  });
   dom.answerEditor.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();

@@ -517,6 +517,10 @@ input[type="number"] { max-width: 130px; }
 .badge.done { color: #bbf7d0; background: rgba(34, 197, 94, 0.14); border-color: rgba(34, 197, 94, 0.42); }
 .badge.error { color: #fecaca; background: rgba(248, 113, 113, 0.13); border-color: rgba(248, 113, 113, 0.42); }
 .badge.setup { color: #fde68a; background: rgba(251, 191, 36, 0.14); border-color: rgba(251, 191, 36, 0.45); }
+.badge.plan-questions { color: #a5f3fc; background: rgba(6, 182, 212, 0.13); border-color: rgba(6, 182, 212, 0.4); }
+.badge.plan-write { color: #99f6e4; background: rgba(20, 184, 166, 0.13); border-color: rgba(20, 184, 166, 0.4); }
+.badge.waiting-answer { color: #fde68a; background: rgba(245, 158, 11, 0.14); border-color: rgba(245, 158, 11, 0.45); }
+.badge.waiting-confirm { color: #bfdbfe; background: rgba(59, 130, 246, 0.14); border-color: rgba(59, 130, 246, 0.45); }
 .badge.active::before {
   content: "";
   width: 6px;
