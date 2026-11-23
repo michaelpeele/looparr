@@ -303,6 +303,10 @@ async function testServedModelOptions() {
     text.includes('for (const id of modelList(runnerId))'),
     'served app.js unions model ids across every selected runner'
   );
+  assert.ok(
+    text.includes('model-owner-hint'),
+    'served app.js shows which selected ids belong to each runner'
+  );
   assert.ok(text.includes('effectiveModelListsFor'), 'served app.js reads effectiveModelLists');
   const savePaths = [
     ['global default', 'model', 'dom.model'],

@@ -220,7 +220,14 @@ function getAttachFlag() {
 }
 
 async function ensureServer() {
-  if (serverPromise) return serverPromise;
+  if (serverPromise) {
+    try {
+      const cached = await serverPromise;
+      if (await probeUrl(cached)) return cached;
+      process.stderr.write('[opencode] cached server is unreachable; starting a new one\n');
+    } catch { /* the cached start failed; retry below */ }
+    serverPromise = null;
+  }
   serverPromise = (async () => {
     let lastError = null;
     for (let offset = 0; offset < OPENCODE_PORT_ATTEMPTS; offset += 1) {
@@ -246,7 +253,13 @@ async function ensureServer() {
         process.stderr.write(`[opencode] ${chunk.toString()}`);
       });
       child.once('exit', (code, signal) => {
-        if (managedServer === child) managedServer = null;
+        if (managedServer === child) {
+          managedServer = null;
+          // Drop the cached URL with the process: otherwise the next run keeps
+          // retrying this closed port (ECONNREFUSED) instead of starting a new
+          // server.
+          serverPromise = null;
+        }
         process.stderr.write(`[opencode] serve exited (code=${code}, signal=${signal || 'none'}, port=${candidate})\n`);
       });
       try {

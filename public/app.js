@@ -1014,6 +1014,44 @@
     return ids;
   }
 
+  // Attribute each selected model to the runner that can actually resolve it.
+  // Ids no runner claims (custom providers/BYOK) stay available to every
+  // selected runner, matching runnerSupportsModel on the server.
+  function runnerModelAssignments(runnerId, selected) {
+    const chosen = modelList(selected);
+    const catalogues = new Map(
+      (app.state?.runners || []).map((runner) => [runner.id, Array.isArray(runner.models) ? runner.models : []])
+    );
+    const claimed = new Set();
+    for (const models of catalogues.values()) for (const id of models) claimed.add(id);
+    return modelList(runnerId).map((id) => {
+      const own = catalogues.get(id) || MODEL_OPTIONS_BY_RUNNER[id] || [];
+      return {
+        id,
+        label: (app.state?.runners || []).find((runner) => runner.id === id)?.label || id,
+        models: chosen.filter((modelId) => own.includes(modelId) || !claimed.has(modelId))
+      };
+    });
+  }
+
+  function updateModelOwnerHint(select, runnerId, selected) {
+    const row = select.closest('.model-field-row');
+    if (!row || !row.parentElement) return;
+    const assignments = runnerModelAssignments(runnerId, selected);
+    const parts = assignments.filter((entry) => entry.models.length)
+      .map((entry) => `${entry.label}: ${entry.models.join(', ')}`);
+    const hint = row.parentElement.querySelector(':scope > .model-owner-hint');
+    if (assignments.length < 2 || !parts.length) {
+      if (hint) hint.remove();
+      return;
+    }
+    const target = hint || Object.assign(document.createElement('small'), {
+      className: 'field-hint model-owner-hint'
+    });
+    target.textContent = parts.join(' · ');
+    if (!hint) row.insertAdjacentElement('afterend', target);
+  }
+
   function modelOptions(selected, placeholder, runnerId) {
     const blank = placeholder || 'Runner default';
     const allowed = runnerModelIds(runnerId);
@@ -1041,6 +1079,7 @@
     Array.from(select.options).forEach((option) => {
       option.selected = option.value ? selectedIds.has(option.value) : ids.length === 0;
     });
+    updateModelOwnerHint(select, runnerId, joinModelList(ids));
   }
 
   // Rebuild model selects when their runner changes so a stale id from the
@@ -1187,8 +1226,8 @@
         <span class="badge idle"></span>
       </div>
       <p class="card-task task-detail-wrap" data-task-field="current" data-project-id="${esc(project.id)}" data-fallback="true"><span class="task-detail-text task-detail-clamped" id="${currentTextId}"></span><button class="task-expand-toggle" type="button" aria-controls="${currentTextId}" aria-expanded="false" aria-label="Expand current task" title="Expand current task" hidden>▼</button></p>
-      <div class="card-up task-detail-wrap" data-task-field="next" data-project-id="${esc(project.id)}" data-fallback="true"><strong>Up next:</strong> <span class="task-detail-text task-detail-clamped" id="${nextTextId}"></span><button class="task-expand-toggle" type="button" aria-controls="${nextTextId}" aria-expanded="false" aria-label="Expand up next" title="Expand up next" hidden>▼</button></div>
       <div class="card-model mono"></div>
+      <div class="card-up task-detail-wrap" data-task-field="next" data-project-id="${esc(project.id)}" data-fallback="true"><strong>Up next:</strong> <span class="task-detail-text task-detail-clamped" id="${nextTextId}"></span><button class="task-expand-toggle" type="button" aria-controls="${nextTextId}" aria-expanded="false" aria-label="Expand up next" title="Expand up next" hidden>▼</button></div>
       <div class="progress-row">
         <span>Progress</span>
         <span class="progress-count"></span>

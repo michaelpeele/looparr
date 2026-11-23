@@ -106,6 +106,37 @@ function modelsFor(project, phase, runner) {
   return effectiveModelList(project, phase).filter((id) => runnerSupportsModel(runner, id));
 }
 
+// Runner rotation needs the same cooldown awareness as model rotation: a runner
+// whose every model is cooling is not a candidate while another runner is ready.
+// When all runners are cooling, report the earliest model readyAt.
+function pickRunner(project, phase, list) {
+  const start = rotationStore.getCursor(list);
+  const now = Date.now();
+  let earliest = Infinity;
+  for (let offset = 0; offset < list.length; offset += 1) {
+    const index = (start + offset) % list.length;
+    const runner = getRunner(list[index]);
+    if (!runner) continue;
+    const models = modelsFor(project, phase, runner);
+    if (!models.length) return { id: list[index], index, waitMs: 0 };
+    let ready = false;
+    let runnerEarliest = Infinity;
+    for (const id of models) {
+      const until = rotationStore.readyAt(id);
+      if (!until) { ready = true; break; }
+      if (until < runnerEarliest) runnerEarliest = until;
+    }
+    if (ready) return { id: list[index], index, waitMs: 0 };
+    if (runnerEarliest < earliest) earliest = runnerEarliest;
+    appendLog(
+      project.id,
+      'system',
+      `Skipping ${runner.label}: models cooling (${models.join(', ')}) for another ${Math.ceil((runnerEarliest - now) / 1000)}s.`
+    );
+  }
+  return { id: list[start], index: start, waitMs: earliest === Infinity ? 0 : earliest - now };
+}
+
 function effectiveModelList(project, phase = 'seed') {
   const field = configStore.modelFieldForPhase(phase);
   const selected = project[field] || project.model || config.settings[field] || config.settings.model || '';
@@ -770,7 +801,14 @@ function tryNextCandidate(project, rt, runner, phase, code) {
     const index = (rt.modelIndex + step) % models.length;
     const id = models[index] || '';
     if (rt.tried.has(`${runner.id}:${id}`)) continue;
-    if (isRate && rotationStore.readyAt(id) > now) continue;
+    if (isRate && rotationStore.readyAt(id) > now) {
+      appendLog(
+        project.id,
+        'system',
+        `Skipping ${runner.label} model ${id || 'default'}: cooling for another ${Math.ceil((rotationStore.readyAt(id) - now) / 1000)}s.`
+      );
+      continue;
+    }
     rt.modelIndex = index;
     return commitRetry(
       project,
@@ -964,7 +1002,7 @@ async function startStep(project) {
       rt.runnerIndex = Math.max(0, runnerList.indexOf(runner ? runner.id : ''));
     } else {
       const runnerPick = runnerRotating
-        ? rotationStore.pick(runnerList)
+        ? pickRunner(project, phase, runnerList)
         : { id: runnerList[0], index: 0, waitMs: 0 };
       if (runnerPick.waitMs > 0) {
         rt.status = 'rateLimited';

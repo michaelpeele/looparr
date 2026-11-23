@@ -1,6 +1,6 @@
 // looparr-widget
 // Project card widget for Looparr. Tap to open the dashboard.
-// v7 — runner · model line, right status light, visible full-width progress line, PNG icon endpoint
+// v8 — card order current task → runner · model → up next, rate-limit retry countdown
 
 const BASE_URL = 'https://looparr.tail0307d.ts.net';
 const CACHE_PATH = FileManager.local().documentsDirectory() + 'looparr-widget.json';
@@ -148,9 +148,10 @@ function addStatusBadge(parent, info) {
 }
 
 // "opencode · omniroute/auto/coding". The engine sets activeRunner/activeModel
-// while a step runs; idle cards fall back to what the next step would use.
+// while a step runs; idle cards fall back to the configured runner list and
+// effective model, matching the dashboard card.
 function runnerModelText(project) {
-  const runners = String(project.activeRunner || project.effectiveRunners || project.runner || '')
+  const runners = String(project.activeRunner || project.runner || project.effectiveRunners || '')
     .split(',')
     .map(s => s.trim())
     .filter(Boolean);
@@ -273,6 +274,14 @@ async function renderCard(w, project, offline) {
   statusCol.layoutVertically();
   statusCol.spacing = 3;
   addStatusBadge(statusCol, statusInfo(project));
+
+  if (project.status === 'rateLimited' && project.resumeAt) {
+    const wait = Math.max(0, Math.ceil((project.resumeAt - Date.now()) / 1000));
+    const retry = statusCol.addText('Retry ' + wait + 's');
+    retry.font = Font.mediumSystemFont(9);
+    retry.textColor = new Color('#FF9F0A');
+    retry.lineLimit = 1;
+  }
 
   if (offline) {
     const off = statusCol.addText('Offline');

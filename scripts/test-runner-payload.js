@@ -66,12 +66,12 @@ function testKiloArgs() {
     'json',
     '--model',
     'kilo/kilo-auto/free',
+    'implement the task',
     '--file',
     '/project/plan.md',
     '--file',
-    '/project/.looparr/next_prompt.txt',
-    'implement the task'
-  ], 'kilo invocation is autonomous JSON with model and file attachments');
+    '/project/.looparr/next_prompt.txt'
+  ], 'kilo invocation puts the prompt before the greedy --file array');
 
   assert.deepEqual(buildKiloArgs({ prompt: 'go' }), ['run', '--auto', '--format', 'json', 'go'], 'model is optional');
   assert.throws(() => buildKiloArgs({ prompt: '   ' }), /prompt is required/, 'blank prompt is rejected');

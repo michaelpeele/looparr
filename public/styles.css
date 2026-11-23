@@ -531,6 +531,12 @@ input[type="number"] { max-width: 130px; }
 .card-task { margin: 0; font-size: 13px; min-height: 19px; min-width: 0; overflow-wrap: anywhere; }
 .card-task.empty { color: var(--muted); font-style: italic; }
 .card-up { font-size: 12px; color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.model-owner-hint {
+  color: #8b98ab;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .card-model { font-size: 11px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-up strong { color: #b6c4da; font-weight: 600; }
 

@@ -9,6 +9,7 @@ const bus = require('./src/events');
 const envSettings = require('./src/env-settings');
 const iconLib = require('./src/icon');
 const iconPngLib = require('./src/icon-png');
+const widgetPayload = require('./src/widget-payload');
 const { getRunner, listRunners } = require('./src/runners');
 const { parseModelList } = require('./src/model-list');
 
@@ -286,6 +287,18 @@ const PROMPT_TEMPLATE_FIELDS = [
 app.get('/api/state', (req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json(engine.getState());
+});
+
+// Card payload for native clients (the iOS Scriptable widget). Labels, colors
+// and the retry countdown are built here so an installed widget follows card
+// changes without a script re-copy.
+app.get('/api/widget', (req, res) => {
+  const raw = req.query?.project ?? req.query?.name ?? req.query?.path ?? '';
+  const needle = typeof raw === 'string' ? raw : '';
+  const payload = widgetPayload.buildPayload(engine.getState().projects, { project: needle });
+  if (!payload.project && needle.trim()) return fail(res, 404, 'Project not found');
+  res.set('Cache-Control', 'no-store');
+  return res.json(payload);
 });
 
 app.get('/api/events', (req, res) => {
