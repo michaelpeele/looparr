@@ -90,11 +90,13 @@ Projects and settings persist in `config.json` next to `server.js`. That file is
 
 ## Workflow
 
-For every unchecked task, Looparr runs three isolated, fresh-session steps via the selected runner:
+For every unchecked task, Looparr runs isolated, fresh-session steps via the selected runner. A `(plan)` task runs two extra phases first:
 
-1. **Seed**: names the plan file at `{{planPath}}`, finds the first unchecked item, and writes a concise analysis prompt to `.looparr/next_prompt.txt`.
-2. **Analyze**: executes that prompt and writes a detailed implementation prompt to `.looparr/next_prompt.txt`.
-3. **Implement**: executes the implementation prompt, verifies the work, and exits. Looparr marks the item `- [x]` in `plan.md` on successful close.
+1. **Plan questions**: names the plan file at `{{planPath}}` and drafts clarifying questions for the next phase.
+2. **Plan write**: writes `.project_documents/PLAN-<slug>.md`, replaces the `(plan)` task with checklist tasks in `plan.md`, and drafts the analysis-prompt handoff.
+3. **Seed**: names the plan file at `{{planPath}}`, finds the first unchecked item, and writes a concise analysis prompt to `.looparr/next_prompt.txt`.
+4. **Analyze**: executes that prompt and writes a detailed implementation prompt to `.looparr/next_prompt.txt`.
+5. **Implement**: executes the implementation prompt, verifies the work, and exits. Looparr marks the item `- [x]` in `plan.md` on successful close.
 
 Each step runs in the project directory. Seed passes the plan path in the prompt text instead of `--file` attachments; Analyze and Implement pass the handoff text inline in the prompt. Logs stream live to the project card drawer.
 
@@ -106,13 +108,15 @@ Looparr is headless: agents exchange prompts through files, not a chat transcrip
 
 The phase contract is:
 
+- **Plan questions question**: built-in Plan questions prompt naming the plan file at `{{planPath}}`. **Answer**: draft clarifying questions for the plan agent.
+- **Plan write question**: current `.looparr/next_prompt.txt` from Plan questions. **Answer**: write the mapped plan and checklist tasks, then draft the analysis-prompt handoff.
 - **Seed question**: built-in Seed prompt naming the plan file at `{{planPath}}`. **Answer**: write only a concise analysis prompt to `.looparr/next_prompt.txt`. Do not edit `plan.md`.
 - **Analyze question**: current `.looparr/next_prompt.txt` from Seed. **Answer**: overwrite `.looparr/next_prompt.txt` with a detailed implementation prompt. Do not implement code.
 - **Implement question**: current `.looparr/next_prompt.txt` from Analyze. **Answer**: implement the task, run verification, commit safe tracked modified files, and leave `.looparr/next_prompt.txt` untouched. Leave the plan marker unchanged until verification passes; Looparr marks the item `- [x]` in `plan.md` on successful close.
 
-Analyze handoffs are validated before Implement. A handoff containing meta-instructions such as "do not implement code yet" or "produce the prompt only" is rejected. Looparr keeps the phase at Analyze, sets a visible error, and requires a manual retry. The Implement prompt also ignores that wording if it reaches a custom template. The default Implement prompt directs the agent to stage explicit paths, skip untracked files, and skip files containing secrets, tokens, passwords, API keys, or credentials.
+Seed, Analyze, and Plan write handoffs get pre-write validation. Agents draft to `.looparr/next_prompt.handoff.tmp`, run `node scripts/validate-handoff.js <draft>` (or `npm run check:handoff -- <draft>`), correct the reported phrasing, rerun until clean, then move the clean draft to `.looparr/next_prompt.txt`. The validator uses the same `isMetaPromptHandoff` rules as the engine. The post-write guard still rejects poisoned Analyze and Plan write handoffs, keeps the phase, sets a visible error, and requires a manual retry. The Implement prompt also ignores that wording if it reaches a custom template. The default Implement prompt directs the agent to stage explicit paths, skip untracked files, and skip files containing secrets, tokens, passwords, API keys, or credentials.
 
-Settings > Prompt templates edits the Seed, Analyze, and Implement prompt templates. The Seed prompt uses `{{task}}` for the current task text and `{{planPath}}` for the plan file path; Analyze and Implement also use `{{handoff}}` for the current `.looparr/next_prompt.txt` content. Defaults live in `config.json` under `settings` and are saved through `PATCH /api/settings`. Saved settings equal to the previous default Implement template are upgraded once on load; custom templates are preserved.
+Settings > Prompt templates edits the Seed, Analyze, Implement, Plan questions, and Plan write prompt templates. The Seed and Plan questions prompts use `{{task}}` for the current task text and Seed also uses `{{planPath}}` for the plan file path; Analyze, Implement, and Plan write also use `{{handoff}}` for the current `.looparr/next_prompt.txt` content. Defaults live in `config.json` under `settings` and are saved through `PATCH /api/settings`. Saved settings matching a known legacy default template are upgraded once on load; custom templates are preserved.
 
 To keep a markdown question/answer archive:
 
@@ -180,8 +184,9 @@ These fields record agent and user guidance. Looparr stores and displays them, b
 Auto-resume restores an active project after the Looparr container restarts. In-memory runtime state is not durable, so Looparr stages a short-lived intent before a graceful shutdown or planned rebuild and consumes it once on startup.
 
 - Opt in per project in the drawer **Startup** section. There is no global master switch.
-- Before a graceful container shutdown or a planned restart, Looparr writes `<project.path>/.looparr/auto-resume-state.json` and appends an `about-to-resume` line to `<project.path>/.looparr/auto-resume.log`. The intent records the current phase, task, and rate-limit timer only. It never records child processes, tokens, prompts, answers, executor URLs, headers, or environment values. On resume, a checkpoint whose phase is `analyze` or `implement` must also match the handoff provenance sidecar `<project.path>/.looparr/handoff_task.txt` (written when the Seed or Analyze step validates a handoff for the current task). A missing or mismatched sidecar — for example a handoff left over from a completed task — degrades the resume to a fresh Seed and clears the stale handoff. A paused checkpoint (`status: "paused"`) stays paused after the restart instead of waking the project.
-- On startup, Looparr consumes the intent once, restores the saved phase, reads the first unchecked task from `plan.md`, and writes a visible `↻ Auto-resume after restart (phase ...).` line to the project log. Analyze and Implement fall back to Seed when `.looparr/next_prompt.txt` is missing or empty. A completed plan, stale intent older than 24 hours, invalid schema, opt-out, or **Stop** prevents resume.
+- Before a graceful container shutdown or a planned restart, Looparr writes `<project.path>/.looparr/auto-resume-state.json` and appends an `about-to-resume` line to `<project.path>/.looparr/auto-resume.log`. The intent records the current phase, task, rate-limit timer, and an optional validated OpenCode session ID (`opencodeSessionId`). It never records child processes, tokens, prompts, answers, executor URLs, headers, or environment values. On resume, a checkpoint whose phase is `analyze` or `implement` must also match the handoff provenance sidecar `<project.path>/.looparr/handoff_task.txt` (written when the Seed or Analyze step validates a handoff for the current task). A missing or mismatched sidecar — for example a handoff left over from a completed task — degrades the resume to a fresh Seed and clears the stale handoff. A paused checkpoint (`status: "paused"`) stays paused after the restart instead of waking the project.
+- Same-session resume applies only to a Looparr container restart while the host executor and OpenCode session store survive. The executor verifies a saved session ID in the project cwd with `opencode session list --format json --standalone` before passing explicit `--session <id>`. Missing, invalid, foreign-cwd, stale, or nonexistent IDs fall back to a fresh OpenCode run. Loss of the host executor or OpenCode data also falls back to a fresh run. Old intents without `opencodeSessionId` stay valid and start fresh.
+- On startup, Looparr consumes the intent once, restores the saved phase and session ID when valid, reads the first unchecked task from `plan.md`, and writes a visible `↻ Auto-resume after restart (phase ...).` line to the project log. Analyze and Implement fall back to Seed when `.looparr/next_prompt.txt` is missing or empty. A completed plan, stale intent older than 24 hours, invalid schema, opt-out, or **Stop** prevents resume.
 - Pending intents are written only when `HOSTNAME=looparr` or when tests set `LOOPARR_ALLOW_RESUME_INTENT=1`. Local `npm start` and `npm run dev` sessions do not stage intents. Docker Compose sets `HOSTNAME=looparr` for the `looparr` service.
 - The audit log is append-only JSON lines, capped at 64 KiB with one `.log.1` rotation. It contains only timestamps, event names, project identity, safe phase/task snapshots, reason, PID, and hostname. No endpoint exposes the audit log.
 
@@ -298,7 +303,7 @@ curl -fsS https://looparr.tail0307d.ts.net/
 
 SSE output must include `Content-Type: text/event-stream`, `retry: 3000`, and an initial `event: state`. `tailscale funnel status` must not show a Funnel for `looparr`.
 
-For a planned app rebuild, use the restart helper. It checks `/api/state`, stages opt-in intents through `/api/auto-resume/prepare`, aborts if the app is ungated, then rebuilds and recreates only the `looparr` service:
+For a planned app rebuild, use the restart helper. It checks `/api/state`, writes the host-side `.looparr/restart-continue.json` marker for opted-in projects, aborts if the app is ungated, then rebuilds and recreates only the `looparr` service:
 
 ```bash
 npm run restart:looparr -- --dry-run

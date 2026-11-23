@@ -6,6 +6,88 @@ const { normalizeModelList } = require('./model-list');
 
 const CONFIG_PATH = path.resolve(process.env.CONFIG_PATH || path.join(__dirname, '..', 'config.json'));
 
+const HANDOFF_DRAFT_PATH = '.looparr/next_prompt.handoff.tmp';
+const HANDOFF_VALIDATOR_PATH = JSON.stringify(path.join(__dirname, '..', 'scripts', 'validate-handoff.js'));
+const HANDOFF_VALIDATION_STEPS = [
+  `Draft the handoff to ${HANDOFF_DRAFT_PATH} (create .looparr/ if needed).`,
+  `Run node ${HANDOFF_VALIDATOR_PATH} ${HANDOFF_DRAFT_PATH}.`,
+  'If validation fails, correct only the reported phrasing in the draft and rerun until it passes.',
+  'Move the clean draft to .looparr/next_prompt.txt (overwrite it).'
+];
+
+const LEGACY_STORED_SEED_PROMPT_TEMPLATE = [
+  'Looparr SEED step. Fresh session. Work only inside the current project directory.',
+  'Read @plan.md (attached; also available as plan.md on disk).',
+  'First unchecked task: "{{task}}"',
+  '',
+  'Write a concise analysis prompt for the next AI agent.',
+  'The prompt must restate the task, name the likely files, list risks, and ask for a detailed implementation prompt.',
+  'Write ONLY that prompt to .looparr/next_prompt.txt (create .looparr/ if needed).',
+  'Do not edit plan.md. Do not implement code.'
+].join('\n');
+
+const LEGACY_STORED_ANALYZE_PROMPT_TEMPLATE = [
+  'Looparr ANALYZE step. Fresh session. Work only inside the current project directory.',
+  'Task: "{{task}}"',
+  'Execute this analysis prompt:',
+  '---',
+  '{{handoff}}',
+  '---',
+  '',
+  'Produce a detailed implementation prompt for the next fresh agent.',
+  'Include exact files to change, concrete steps, tests, and acceptance criteria.',
+  'The text you write to `.looparr/next_prompt.txt` is for the next IMPLEMENT agent.',
+  'That prompt must direct the IMPLEMENT agent to make the code and documentation changes required by the task, run relevant checks and tests, and follow all project constraints.',
+  'That prompt must tell the IMPLEMENT agent to change the "- [ ]" marker for this task to "- [x]" in plan.md only after implementation and verification are complete.',
+  'Do not edit plan.md. Do not implement code.',
+  'Never write meta-instructions into .looparr/next_prompt.txt.',
+  'The implementation prompt must not contain "do not implement code yet", "produce the prompt only", "write only a prompt", "do not implement", "stop before coding", or "produce a detailed implementation prompt for the next AI agent" as the deliverable.',
+  'Write ONLY that implementation prompt to .looparr/next_prompt.txt (overwrite it).'
+].join('\n');
+
+const LEGACY_DEFAULT_ANALYZE_PROMPT_TEMPLATE = [
+  'Looparr ANALYZE step. Fresh session. Work only inside the current project directory.',
+  'Task: "{{task}}"',
+  'Execute this analysis prompt:',
+  '---',
+  '{{handoff}}',
+  '---',
+  '',
+  'Produce a detailed implementation prompt for the next fresh agent.',
+  'Include exact files to change, concrete steps, tests, and acceptance criteria.',
+  'The text you write to `.looparr/next_prompt.txt` is for the next IMPLEMENT agent.',
+  'That prompt must direct the IMPLEMENT agent to make the code and documentation changes required by the task, run relevant checks and tests, and follow all project constraints.',
+  'That prompt must tell the IMPLEMENT agent to change the "- [ ]" marker for this task to "- [x]" in plan.md only after implementation and verification are complete.',
+  'Do not edit plan.md. Do not implement code.',
+  'Never write meta-instructions into .looparr/next_prompt.txt.',
+  'The implementation prompt must not contain "do not implement code yet", "produce the prompt only", "write only a prompt", "do not implement", "stop before coding", or "produce a detailed implementation prompt for the next AI agent" as the deliverable.',
+  'Write ONLY that implementation prompt to .looparr/next_prompt.txt (overwrite it).',
+  'Keep output compact to protect the context budget: never echo file contents, logs, plan text, or diffs; report decisions and results only.'
+].join('\n');
+
+const LEGACY_PLAN_WRITE_PROMPT_TEMPLATE = [
+  'Looparr PLAN WRITE step. Fresh session. Work only inside the current project directory.',
+  'Task: "{{task}}"',
+  'The clarifying questions and the user\'s answers follow:',
+  '---',
+  '{{handoff}}',
+  '---',
+  '',
+  'Produce a fully mapped-out plan for this task from the questions and answers above:',
+  '1. Write the mapped plan document to .project_documents/PLAN-<slug>.md (slug derived from the task text:',
+  '   lowercase letters, digits and hyphens only). It must contain the design, a file map, ordered steps, tests,',
+  '   acceptance criteria, and risks.',
+  '2. In plan.md, replace the original "(plan)" task line with concrete generated checklist tasks (one "- [ ]" line each)',
+  '   that implement this plan. The original "(plan)" line must not remain unchecked: replace it, remove it, or mark it done.',
+  '3. Overwrite .looparr/next_prompt.txt with ONLY the concise analysis prompt for the next phase:',
+  '   restate the task, name the likely files, list risks, and direct the next fresh agent to produce a detailed implementation prompt.',
+  '',
+  'The analysis prompt in .looparr/next_prompt.txt must not contain meta-instructions such as',
+  '"do not implement code yet", "produce the prompt only", "write only a prompt", "do not implement", or "stop before coding".',
+  'Do not implement code.',
+  'Keep output compact to protect the context budget: never echo file contents, logs, plan text, or diffs; report decisions and results only.'
+].join('\\n');
+
 const LEGACY_SEED_PROMPT_TEMPLATE = [
   'Looparr SEED step. Fresh session. Work only inside the current project directory.',
   'Read the plan file at {{planPath}} if you need full plan context; the first unchecked task is already provided below.',
@@ -45,7 +127,17 @@ const LEGACY_IMPLEMENT_PROMPT_TEMPLATE = [
   'Do not touch .looparr/next_prompt.txt.'
 ].join('\n');
 
-const DEFAULT_SEED_PROMPT_TEMPLATE = LEGACY_SEED_PROMPT_TEMPLATE;
+const DEFAULT_SEED_PROMPT_TEMPLATE = [
+  'Looparr SEED step. Fresh session. Work only inside the current project directory.',
+  'Read the plan file at {{planPath}} if you need full plan context; the first unchecked task is already provided below.',
+  'First unchecked task: "{{task}}"',
+  '',
+  'Draft a concise analysis prompt for the next AI agent.',
+  'Make the draft restate the task, name the likely files, list risks, and include verification steps and commit scope.',
+  ...HANDOFF_VALIDATION_STEPS,
+  'Do not edit plan.md. Do not implement code.',
+  'Keep output compact to protect the context budget: never echo file contents, logs, plan text, or diffs; report decisions and results only.'
+].join('\n');
 
 const DEFAULT_ANALYZE_PROMPT_TEMPLATE = [
   'Looparr ANALYZE step. Fresh session. Work only inside the current project directory.',
@@ -55,15 +147,16 @@ const DEFAULT_ANALYZE_PROMPT_TEMPLATE = [
   '{{handoff}}',
   '---',
   '',
-  'Produce a detailed implementation prompt for the next fresh agent.',
-  'Include exact files to change, concrete steps, tests, and acceptance criteria.',
+  'Draft an implementation prompt for the next fresh agent.',
+  'Include exact files to change, concrete steps, tests, acceptance criteria, verification steps, and commit scope.',
   'The text you write to `.looparr/next_prompt.txt` is for the next IMPLEMENT agent.',
   'That prompt must direct the IMPLEMENT agent to make the code and documentation changes required by the task, run relevant checks and tests, and follow all project constraints.',
   'That prompt must tell the IMPLEMENT agent to change the "- [ ]" marker for this task to "- [x]" in plan.md only after implementation and verification are complete.',
-  'Do not edit plan.md. Do not implement code.',
   'Never write meta-instructions into .looparr/next_prompt.txt.',
-  'The implementation prompt must not contain "do not implement code yet", "produce the prompt only", "write only a prompt", "do not implement", "stop before coding", or "produce a detailed implementation prompt for the next AI agent" as the deliverable.',
-  'Write ONLY that implementation prompt to .looparr/next_prompt.txt (overwrite it).',
+  'The validator rejects meta-instructions such as "do not implement code yet".',
+  'Draft the implementation prompt before writing any handoff file.',
+  ...HANDOFF_VALIDATION_STEPS,
+  'Do not edit plan.md. Do not implement code.',
   'Keep output compact to protect the context budget: never echo file contents, logs, plan text, or diffs; report decisions and results only.'
 ].join('\n');
 
@@ -139,6 +232,8 @@ const DEFAULT_PLAN_QUESTIONS_PROMPT_TEMPLATE = [
   'Keep output compact to protect the context budget: never echo file contents, logs, plan text, or diffs; report decisions and results only.'
 ].join('\\n');
 
+const LEGACY_PLAN_QUESTIONS_PROMPT_TEMPLATE = DEFAULT_PLAN_QUESTIONS_PROMPT_TEMPLATE;
+
 const DEFAULT_PLAN_WRITE_PROMPT_TEMPLATE = [
   'Looparr PLAN WRITE step. Fresh session. Work only inside the current project directory.',
   'Task: "{{task}}"',
@@ -153,11 +248,10 @@ const DEFAULT_PLAN_WRITE_PROMPT_TEMPLATE = [
   '   acceptance criteria, and risks.',
   '2. In plan.md, replace the original "(plan)" task line with concrete generated checklist tasks (one "- [ ]" line each)',
   '   that implement this plan. The original "(plan)" line must not remain unchecked: replace it, remove it, or mark it done.',
-  '3. Overwrite .looparr/next_prompt.txt with ONLY the concise analysis prompt for the next phase:',
-  '   restate the task, name the likely files, list risks, and direct the next fresh agent to produce a detailed implementation prompt.',
-  '',
-  'The analysis prompt in .looparr/next_prompt.txt must not contain meta-instructions such as',
-  '"do not implement code yet", "produce the prompt only", "write only a prompt", "do not implement", or "stop before coding".',
+  '3. Make the handoff a concise analysis prompt for the next phase: restate the task, name the likely files,',
+  '   list risks, verification steps, and commit scope.',
+  '4. Validate the analysis prompt before it reaches .looparr/next_prompt.txt:',
+  ...HANDOFF_VALIDATION_STEPS,
   'Do not implement code.',
   'Keep output compact to protect the context budget: never echo file contents, logs, plan text, or diffs; report decisions and results only.'
 ].join('\\n');
@@ -233,15 +327,35 @@ const DEFAULT_SETTINGS = {
 };
 
 const LEGACY_PROMPT_TEMPLATES = {
-  seedPromptTemplate: LEGACY_SEED_PROMPT_TEMPLATE,
-  analyzePromptTemplate: LEGACY_ANALYZE_PROMPT_TEMPLATE,
-  implementPromptTemplate: LEGACY_IMPLEMENT_PROMPT_TEMPLATE
+  seedPromptTemplate: [
+    LEGACY_SEED_PROMPT_TEMPLATE,
+    LEGACY_STORED_SEED_PROMPT_TEMPLATE
+  ],
+  analyzePromptTemplate: [
+    LEGACY_ANALYZE_PROMPT_TEMPLATE,
+    LEGACY_DEFAULT_ANALYZE_PROMPT_TEMPLATE,
+    LEGACY_STORED_ANALYZE_PROMPT_TEMPLATE
+  ],
+  implementPromptTemplate: [
+    LEGACY_IMPLEMENT_PROMPT_TEMPLATE
+  ]
+};
+
+const LEGACY_PLAN_PROMPT_TEMPLATES = {
+  planQuestionsPromptTemplate: [
+    LEGACY_PLAN_QUESTIONS_PROMPT_TEMPLATE
+  ],
+  planWritePromptTemplate: [
+    LEGACY_PLAN_WRITE_PROMPT_TEMPLATE
+  ]
 };
 
 const CURRENT_PROMPT_TEMPLATES = {
   seedPromptTemplate: DEFAULT_SEED_PROMPT_TEMPLATE,
   analyzePromptTemplate: DEFAULT_ANALYZE_PROMPT_TEMPLATE,
-  implementPromptTemplate: DEFAULT_IMPLEMENT_PROMPT_TEMPLATE
+  implementPromptTemplate: DEFAULT_IMPLEMENT_PROMPT_TEMPLATE,
+  planQuestionsPromptTemplate: DEFAULT_PLAN_QUESTIONS_PROMPT_TEMPLATE,
+  planWritePromptTemplate: DEFAULT_PLAN_WRITE_PROMPT_TEMPLATE
 };
 
 function normalizedBlockThreshold(value, fallback) {
@@ -323,8 +437,11 @@ function normalizeSettings(settings) {
     normalized[field] = normalized[field] === true;
   }
   normalized.cooloffSeconds = normalizedCooloff(normalized.cooloffSeconds, DEFAULT_SETTINGS.cooloffSeconds);
-  for (const [field, legacy] of Object.entries(LEGACY_PROMPT_TEMPLATES)) {
-    if (normalized[field] === legacy) normalized[field] = CURRENT_PROMPT_TEMPLATES[field];
+  for (const [field, legacyValues] of Object.entries(LEGACY_PROMPT_TEMPLATES)) {
+    if (legacyValues.includes(normalized[field])) normalized[field] = CURRENT_PROMPT_TEMPLATES[field];
+  }
+  for (const [field, legacyValues] of Object.entries(LEGACY_PLAN_PROMPT_TEMPLATES)) {
+    if (legacyValues.includes(normalized[field])) normalized[field] = CURRENT_PROMPT_TEMPLATES[field];
   }
   if (
     normalized.implementPromptTemplate === PREVIOUS_IMPLEMENT_PROMPT_TEMPLATE
@@ -407,7 +524,13 @@ module.exports = {
   LEGACY_SEED_PROMPT_TEMPLATE,
   LEGACY_ANALYZE_PROMPT_TEMPLATE,
   LEGACY_IMPLEMENT_PROMPT_TEMPLATE,
+  LEGACY_STORED_SEED_PROMPT_TEMPLATE,
+  LEGACY_STORED_ANALYZE_PROMPT_TEMPLATE,
+  LEGACY_DEFAULT_ANALYZE_PROMPT_TEMPLATE,
+  LEGACY_PLAN_QUESTIONS_PROMPT_TEMPLATE,
+  LEGACY_PLAN_WRITE_PROMPT_TEMPLATE,
   LEGACY_PROMPT_TEMPLATES,
+  LEGACY_PLAN_PROMPT_TEMPLATES,
   CURRENT_PROMPT_TEMPLATES,
   PROMPT_TEMPLATE_FIELDS,
   DEFAULT_PLAN_QUESTIONS_PROMPT_TEMPLATE,
