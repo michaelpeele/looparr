@@ -712,11 +712,17 @@ function rateLimitRetry(project, rt, pauseMs) {
   }, pauseMs + 200);
 }
 
+// A blank model means "whatever the selected runner uses by default", so the
+// log names that runner instead of always saying OpenCode.
+function defaultModelLabel(runner) {
+  return `${runner?.label || 'Runner'} default`;
+}
+
 function scheduleModelFallback(project, rt, runner, phase, models) {
   if (!runner || !runner.isRateLimit || !runner.isRateLimit(rt.stepOutput)) return false;
   if (rt.modelIndex + 1 >= models.length) return false;
-  const currentModel = models[rt.modelIndex] || 'OpenCode default';
-  const nextModel = models[rt.modelIndex + 1] || 'OpenCode default';
+  const currentModel = models[rt.modelIndex] || defaultModelLabel(runner);
+  const nextModel = models[rt.modelIndex + 1] || defaultModelLabel(runner);
   const pauseMs = rateLimitPauseMs();
   rt.modelFallbackPending = true;
   appendLog(project.id, 'system', `Rate limited on ${currentModel}; retrying with ${nextModel}.`);
@@ -959,7 +965,7 @@ async function startStep(project) {
     let positionNote = '';
     if (rotating) positionNote = ` (rotation ${rt.modelIndex + 1}/${models.length})`;
     else if (models.length > 1) positionNote = ` (fallback ${rt.modelIndex + 1}/${models.length})`;
-    appendLog(project.id, 'system', `Model: ${model || 'OpenCode default'}${positionNote}`);
+    appendLog(project.id, 'system', `Model: ${model || defaultModelLabel(runner)}${positionNote}`);
     await spawnRunnerAttempt(project, rt, runner, {
       prompt,
       url,

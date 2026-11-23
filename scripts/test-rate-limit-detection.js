@@ -12,7 +12,10 @@ const falsePositives = [
   'throttle the throughput to stay under budget',
   'Output containing 429, rate limit, quota, usage limit, or throttle pauses only that project.',
   'status rateLimited',
-  'rate limit detected'
+  'rate limit detected',
+  'Tokens per minute is a budget metric, not an error',
+  'We track tokens per minute usage in the dashboard',
+  'The plan mentions tokens per minute and 429 handling as prose'
 ];
 
 const truePositives = [
@@ -27,7 +30,10 @@ const truePositives = [
   'rate limit error',
   'API rate limit exceeded',
   'throttling error',
-  'throttled request'
+  'throttled request',
+  'SessionError: [429]: Tokens per minute limit exceeded - too many tokens processed. (reset after 1m)',
+  'Tokens per minute limit exceeded',
+  '[429]: Tokens per minute limit exceeded'
 ];
 
 for (const text of falsePositives) {

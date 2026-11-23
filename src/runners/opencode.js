@@ -152,7 +152,7 @@ function buildCommand({ prompt, cwd, url = SERVER_URL, files = [], model = '', r
   };
 }
 
-const RATE_LIMIT_PATTERN = /\b(?:HTTP(?:\/[\d.]+)?|status|code)[\s:=]+429\b|\b429[\s:.+-]+(?:too\s+many\s+requests|rate[\s-]?limit|quota|usage\s+limit|throttl)|\b(?:too\s+many\s+requests|quota\s+(?:exceeded|reached)|usage\s+limit\s+(?:exceeded|reached)|rate[\s-]?limit\s+(?:exceeded|reached|error)|throttl(?:e|ed|ing)\s+(?:error|limit|request))\b/i;
+const RATE_LIMIT_PATTERN = /\b(?:HTTP(?:\/[\d.]+)?|status|code)[\s:=]+429\b|\b429[\s\]:.+-]+(?:too\s+many\s+requests|rate[\s-]?limit|quota|usage\s+limit|tokens\s+per\s+minute|throttl)|\b(?:too\s+many\s+requests|quota\s+(?:exceeded|reached)|usage\s+limit\s+(?:exceeded|reached)|rate[\s-]?limit\s+(?:exceeded|reached|error)|tokens\s+per\s+minute\s+limit\s+(?:exceeded|reached)|throttl(?:e|ed|ing)\s+(?:error|limit|request))\b/i;
 
 function isRateLimit(text) {
   return RATE_LIMIT_PATTERN.test(String(text));

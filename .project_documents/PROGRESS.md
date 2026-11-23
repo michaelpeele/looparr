@@ -706,3 +706,17 @@ Verification:
 - `npm test` passes (19 scripts); `git diff --check` clean.
 - Production rebuilt and recreated: healthy on image `sha256:a75d1c65c79e129a98994eefe9aefa7eb21abea010bd1dea56634b8ec79544fe`; container `public/app.js` hash `265644bea270416842cd727b410dac16e04c0556c4179f61267f94fa6097f275` matches local; `/api/state` reports `opencode:25, kilo:12, vibe:2`.
 - No host executor restart was needed: the executor already forwards `--model`, and these ids only change what the picker offers.
+
+## Qoder removal and live Vibe task run (2026-11-23)
+
+Qoder removal:
+- `npm uninstall -g @qoder-ai/qodercli --prefix "$HOME/.local"` removed 12 packages and `rm -rf ~/.qoder` cleared the login state.
+- Verified afterwards: `command -v qodercli` finds nothing, `~/.qoder` is gone, no `qoder*` entry remains in `~/.local/bin`, and `~/.local/lib` lists only `@kilocode/cli@7.8.32`. The `kilo` and `vibe` CLIs were untouched.
+
+Live Vibe task through production:
+- Added a throwaway project through the prod API (`POST /api/projects` on `127.0.0.1:4188`) at `/home/michaelpeele/ai-projects/vibe-live-test` with `runner: "vibe"` and every model field blank, wrote one task (`Create notes.txt with the single line vibe-ok`), and started it.
+- Phase timeline from `/api/state`: `seed` at 5s, `analyze` at 20s, `implement` at 35s, `idle` at 45s, `done` at 105s. The final `All tasks complete.` was delayed by the 60s global Cooloff after the implement step.
+- Every step logged `Skipped model ids not valid for Mistral Vibe: omniroute/auto/coding, opencode/big-pickle` (the inherited global default) and then `Model: OpenCode default`, proving the per-runner filter runs before dispatch and that a blank selection reaches Vibe as its active model. Each step ran `/app/scripts/bridge-client.js` and streamed Vibe NDJSON to the log.
+- Result: `notes.txt` contains `vibe-ok`, the task is `- [x]` in `plan.md`, state reports `progress 1/1`, `error: ""`, and `.looparr/next_prompt.txt` was cleared on completion.
+- Cleanup: the throwaway project was deleted from config (`DELETE /api/projects/:id`) and its directory removed, so prod's project list is back to what it was.
+- Cosmetic gap found and fixed (2026-11-23): the pre-step log hardcoded `Model: OpenCode default` for a blank model on every runner, so a Vibe step read as if OpenCode were involved. `src/engine.js` now derives the label from the selected runner via `defaultModelLabel`, and the rate-limit fallback messages (`Rate limited on ...; retrying with ...`) use the same helper. Verified live after the rebuild: a Vibe project started on prod logged `Model: Mistral Vibe default`, and no OpenCode label appeared. Production image `sha256:bba7fc63a99e95c51977143bed4c7e4929297742f96f51cbcc85e57ddb5d89c7`, healthy, container `src/engine.js` hash matches local. The throwaway project was stopped, deleted, and its directory removed.
