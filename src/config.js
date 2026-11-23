@@ -14,6 +14,7 @@ const LEGACY_SEED_PROMPT_TEMPLATE = [
   'Write a concise analysis prompt for the next AI agent.',
   'The prompt must restate the task, name the likely files, list risks, and ask for a detailed implementation prompt.',
   'Write ONLY that prompt to .looparr/next_prompt.txt (create .looparr/ if needed).',
+  'Keep output compact to protect the context budget: never echo file contents, logs, plan text, or diffs; report decisions and results only.',
   'Do not edit plan.md. Do not implement code.'
 ].join('\n');
 
@@ -28,6 +29,7 @@ const LEGACY_ANALYZE_PROMPT_TEMPLATE = [
   'Produce a detailed implementation prompt for the next fresh agent.',
   'Include exact files to change, concrete steps, tests, and acceptance criteria.',
   'Write ONLY the implementation prompt to .looparr/next_prompt.txt (overwrite it).',
+  'Keep output compact to protect the context budget: never echo file contents, logs, plan text, or diffs; report decisions and results only.',
   'Do not edit plan.md. Do not implement code.'
 ].join('\n');
 
@@ -61,7 +63,8 @@ const DEFAULT_ANALYZE_PROMPT_TEMPLATE = [
   'Do not edit plan.md. Do not implement code.',
   'Never write meta-instructions into .looparr/next_prompt.txt.',
   'The implementation prompt must not contain "do not implement code yet", "produce the prompt only", "write only a prompt", "do not implement", "stop before coding", or "produce a detailed implementation prompt for the next AI agent" as the deliverable.',
-  'Write ONLY that implementation prompt to .looparr/next_prompt.txt (overwrite it).'
+  'Write ONLY that implementation prompt to .looparr/next_prompt.txt (overwrite it).',
+  'Keep output compact to protect the context budget: never echo file contents, logs, plan text, or diffs; report decisions and results only.'
 ].join('\n');
 
 const DEFAULT_IMPLEMENT_PROMPT_TEMPLATE = [
@@ -76,6 +79,7 @@ const DEFAULT_IMPLEMENT_PROMPT_TEMPLATE = [
   'After all implementation and verification steps pass, change the "- [ ]" marker for this task to "- [x]" in plan.md.',
   'The engine clears .looparr/next_prompt.txt when this task completes; do not edit or delete it yourself.',
   '',
+  'Keep output compact to protect the context budget: never echo file contents, logs, plan text, or diffs; report decisions and results only.',
   'Git commit step (after implementation and verification):',
   '1. Run `git status --porcelain` and `git diff --name-only`. Consider only tracked modified files.',
   '2. Stage with explicit paths: `git add -- <path> ...`. Never use `git add -A`, `git add .`, or `git add -u` across the repository. Do not stage untracked files.',
