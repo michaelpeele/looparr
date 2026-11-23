@@ -152,6 +152,7 @@ const DEFAULT_SETTINGS = {
   maxConcurrent: 2,
   mode: 'parallel',
   globalRunner: 'opencode',
+  runnerRotation: false,
   model: 'opencode/big-pickle',
   seedModel: 'opencode/big-pickle',
   analyzeModel: 'opencode/big-pickle',
@@ -214,10 +215,21 @@ function normalizedModel(value, fallback, label = 'Model') {
   }
 }
 
+function normalizedRunner(value, fallback) {
+  if (value === undefined || value === null) return fallback;
+  try {
+    return normalizeModelList(String(value), fallback, 'Runner');
+  } catch {
+    return fallback;
+  }
+}
+
 function normalizeProject(project) {
   if (!project || typeof project !== 'object') return project;
   return {
     ...project,
+    runner: normalizedRunner(project.runner, ''),
+    runnerRotation: normalizedRotation(project.runnerRotation),
     model: normalizedModel(project.model, '', MODEL_FIELD_LABELS.model),
     seedModel: normalizedModel(project.seedModel, '', MODEL_FIELD_LABELS.seedModel),
     analyzeModel: normalizedModel(project.analyzeModel, '', MODEL_FIELD_LABELS.analyzeModel),
@@ -244,6 +256,8 @@ function normalizeSettings(settings) {
   }
   normalized.promptCliToolsNote = normalized.promptCliToolsNote === true;
   normalized.stickyAddTaskRow = normalized.stickyAddTaskRow === true;
+  normalized.runnerRotation = normalized.runnerRotation === true;
+  normalized.globalRunner = normalizedRunner(normalized.globalRunner, DEFAULT_SETTINGS.globalRunner);
   for (const field of MODEL_ROTATION_FIELDS) {
     normalized[field] = normalized[field] === true;
   }

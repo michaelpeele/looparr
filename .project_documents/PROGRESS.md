@@ -720,3 +720,42 @@ Live Vibe task through production:
 - Result: `notes.txt` contains `vibe-ok`, the task is `- [x]` in `plan.md`, state reports `progress 1/1`, `error: ""`, and `.looparr/next_prompt.txt` was cleared on completion.
 - Cleanup: the throwaway project was deleted from config (`DELETE /api/projects/:id`) and its directory removed, so prod's project list is back to what it was.
 - Cosmetic gap found and fixed (2026-11-23): the pre-step log hardcoded `Model: OpenCode default` for a blank model on every runner, so a Vibe step read as if OpenCode were involved. `src/engine.js` now derives the label from the selected runner via `defaultModelLabel`, and the rate-limit fallback messages (`Rate limited on ...; retrying with ...`) use the same helper. Verified live after the rebuild: a Vibe project started on prod logged `Model: Mistral Vibe default`, and no OpenCode label appeared. Production image `sha256:bba7fc63a99e95c51977143bed4c7e4929297742f96f51cbcc85e57ddb5d89c7`, healthy, container `src/engine.js` hash matches local. The throwaway project was stopped, deleted, and its directory removed.
+
+## Provider-error fallback, persisted rotation, runner rotation (2026-11-23)
+
+- `src/rotation-store.js` persists cursors and cooldowns in `data/rotation-state.json`
+  (`LOOPARR_ROTATION_STATE` override). Cursors are keyed by joined list content, so inherited
+  projects share the global cursor and a project-specific list gets its own; the cursor survives
+  restarts and only resets when the list changes.
+- `src/failure.js` classifies failed steps: 429/400-schema/5xx/timeout advance to the next
+  candidate, while 401/403/billing/entitlement stop immediately. `tryNextCandidate()` in
+  `src/engine.js` tries the next model, then (with `runnerRotation`) the next runner and its
+  models, at most once per `runner:model` pair per step, logging `Model failure on …` /
+  `Runner failure on …`.
+- Runner fields accept ordered lists globally and per project with `runnerRotation`
+  (project nullable, global boolean, default off); `server.js` validates every id in a list.
+- `/api/state` exposes `effectiveRunners`, `runnerRotation`, `effectiveRunnerRotation`,
+  `activeRunner` and `activeModel`; the project card renders `runner · model`.
+- UI: global/add-project/drawer runner pickers are multi-selects with rotation toggles
+  (15 `data-rotate-for` targets total).
+- Tests: new `scripts/test-rotation-store.js` and `scripts/test-failure-classification.js`;
+  `scripts/test-model-rotation.js` gained the 400-fallback case, the terminal-auth case, runner
+  list validation and the 15-toggle assertions. `npm test` passes.
+- Production rebuilt and recreated, healthy, container source hashes match local, served HTML
+  carries 15 toggles, and the container runs both new test scripts.
+
+## OmniRoute coding-safe combo (2026-11-23)
+
+- Created the OmniRoute combo `coding-safe` (id `df0155a6-b0c2-4439-be32-f507074617d4`, strategy
+  `priority`) with targets `agnes/agnes-3.0-flash` then `agnes/agnes-2.5-flash`, after probing with a
+  tools payload: every `opencode-zen/*` id and `ds/deepseek-v4-pro` are rejected by the key's live
+  catalogue even though `/v1/models` lists them, and `auto/*` cannot be a combo target.
+- Blocked `cerebras/gpt-oss-120b` on the `opencode cli` key via `PATCH /api/keys/{id}`. Direct
+  requests are blocked, but `auto/*` still selects it in this build, so the combo is the reliable path.
+- Added `coding-safe` to `providers.omniroute.models` in `~/.config/opencode/opencode.json` (backup
+  kept beside it); OpenCode now lists `omniroute/coding-safe`.
+- Added `omniroute/coding-safe` to `src/runners/opencode.js`, `public/app.js`, the README model list,
+  and the served-app.js assertion in `scripts/test-model-selector.js`. Rebuilt/redeployed looparr and
+  confirmed the served picker contains it.
+- Verified `POST /v1/chat/completions` with `model: coding-safe` (tools payload) returns 200 and
+  `opencode run -m omniroute/coding-safe` prints OK. `npm test` passes.

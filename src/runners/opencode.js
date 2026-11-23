@@ -20,6 +20,10 @@ const BRIDGE_CLIENT = path.join(__dirname, '..', '..', 'scripts', 'bridge-client
 const MODELS = [
   'omniroute/auto',
   'omniroute/auto/coding',
+  // OmniRoute combo (priority: opencode-zen/big-pickle -> ds/deepseek-v4-pro ->
+  // opencode-zen/kimi-k2.7-code). One picker entry, provider fallback inside
+  // OmniRoute; kimi and deepseek are not reachable directly from OpenCode.
+  'omniroute/coding-safe',
   'opencode/big-pickle',
   'opencode/tidepool-alpha-free',
   'opencode/hy4-flash-free',
@@ -152,10 +156,39 @@ function buildCommand({ prompt, cwd, url = SERVER_URL, files = [], model = '', r
   };
 }
 
-const RATE_LIMIT_PATTERN = /\b(?:HTTP(?:\/[\d.]+)?|status|code)[\s:=]+429\b|\b429[\s\]:.+-]+(?:too\s+many\s+requests|rate[\s-]?limit|quota|usage\s+limit|tokens\s+per\s+minute|throttl)|\b(?:too\s+many\s+requests|quota\s+(?:exceeded|reached)|usage\s+limit\s+(?:exceeded|reached)|rate[\s-]?limit\s+(?:exceeded|reached|error)|tokens\s+per\s+minute\s+limit\s+(?:exceeded|reached)|throttl(?:e|ed|ing)\s+(?:error|limit|request))\b/i;
+const RATE_LIMIT_PATTERN = /\b(?:HTTP(?:\/[\d.]+)?|status|code)["']?[\s:=]+429\b|\b429[\s\]:.+-]+(?:too\s+many\s+requests|rate[\s-]?limit|quota|usage\s+limit|tokens\s+per\s+minute|throttl)|\b(?:too\s+many\s+requests|quota\s+(?:exceeded|reached)|usage\s+limit\s+(?:exceeded|reached)|rate[\s-]?limit\s+(?:exceeded|reached|error)|tokens\s+per\s+minute\s+limit\s+(?:exceeded|reached)|throttl(?:e|ed|ing)\s+(?:error|limit|request))\b/i;
+
+// Git metadata is not runner output: an agent that commits (or diffs) inside a
+// step prints commit messages and hunks to stderr, and those can quote 429
+// wording -- for example the commit that widens this very pattern. Diff lines
+// and commit bodies must never be read as provider errors.
+const RATE_LIMIT_TAIL_LINES = 200;
+const GIT_BLOCK_START_RE = /^(?:commit\s+[0-9a-f]{7,40}\b|Author:\s|Date:\s|diff --git\s|index\s+[0-9a-f]{4,}\.\.[0-9a-f]{4,}\b|new file mode\s|deleted file mode\s|similarity index\s|rename\s+(?:from|to)\s)/;
+const GIT_BLOCK_BODY_RE = /^(?:@@\s|[ +\-])/;
+
+function rateLimitSignalText(text) {
+  const lines = String(text).split(/\r?\n/).filter((line) => line.trim());
+  const kept = [];
+  let inGitBlock = false;
+  for (const line of lines.slice(-RATE_LIMIT_TAIL_LINES)) {
+    // Unified-diff content (`+`/`-`/context) is never a runner error line.
+    if (/^[+\-] /.test(line)) continue;
+    if (GIT_BLOCK_START_RE.test(line)) {
+      inGitBlock = true;
+      continue;
+    }
+    if (inGitBlock) {
+      // Commit bodies are indented four spaces; hunks start with +, - or a space.
+      if (GIT_BLOCK_BODY_RE.test(line)) continue;
+      inGitBlock = false;
+    }
+    kept.push(line);
+  }
+  return kept.join('\n');
+}
 
 function isRateLimit(text) {
-  return RATE_LIMIT_PATTERN.test(String(text));
+  return RATE_LIMIT_PATTERN.test(rateLimitSignalText(text));
 }
 
 function requestExecutor(pathname, payload) {
@@ -277,6 +310,7 @@ module.exports = {
     ? 'Host-side opencode executor via HTTP bridge; fresh opencode run per step.'
     : 'Shared opencode serve on port 4096; fresh opencode run per step.',
   models: MODELS,
+  rateLimitSignalText,
   ensureServer,
   buildCommand,
   isRateLimit,

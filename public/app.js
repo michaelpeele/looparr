@@ -62,6 +62,7 @@
     folderBrowserStatus: $('folder-browser-status'),
     projectName: $('project-name'),
     projectRunner: $('project-runner'),
+    drawerRunner: $('drawer-runner'),
     projectModel: $('project-model'),
     projectSeedModel: $('project-seed-model'),
     projectAnalyzeModel: $('project-analyze-model'),
@@ -159,6 +160,7 @@
     opencode: [
       'omniroute/auto',
       'omniroute/auto/coding',
+      'omniroute/coding-safe',
       'opencode/big-pickle',
       'opencode/tidepool-alpha-free',
       'opencode/hy4-flash-free',
@@ -217,11 +219,14 @@
     { select: 'drawer-model-input', field: 'modelRotation' },
     { select: 'drawer-seed-model', field: 'seedRotation' },
     { select: 'drawer-analyze-model', field: 'analyzeRotation' },
-    { select: 'drawer-implement-model', field: 'implementRotation' }
+    { select: 'drawer-implement-model', field: 'implementRotation' },
+    { select: 'global-runner', field: 'runnerRotation' },
+    { select: 'project-runner', field: 'runnerRotation' },
+    { select: 'drawer-runner', field: 'runnerRotation' }
   ];
-  const GLOBAL_ROTATION_TARGETS = MODEL_ROTATION_TARGETS.slice(0, 4);
-  const PROJECT_SETUP_ROTATION_TARGETS = MODEL_ROTATION_TARGETS.slice(4, 8);
-  const DRAWER_ROTATION_TARGETS = MODEL_ROTATION_TARGETS.slice(8, 12);
+  const GLOBAL_ROTATION_TARGETS = MODEL_ROTATION_TARGETS.slice(0, 5);
+  const PROJECT_SETUP_ROTATION_TARGETS = MODEL_ROTATION_TARGETS.slice(5, 10);
+  const DRAWER_ROTATION_TARGETS = MODEL_ROTATION_TARGETS.slice(10, 15);
 
   // Local mirrors of src/model-list.js; browser code cannot use Node modules.
   function modelList(value) {
@@ -955,25 +960,58 @@
   }
 
   function runnerOptions(runners, selected) {
+    const chosen = new Set(modelList(selected));
     return (runners || []).map((runner) =>
-      `<option value="${esc(runner.id)}">${esc(runner.label)}</option>`
+      `<option value="${esc(runner.id)}"${chosen.has(runner.id) ? ' selected' : ''}>${esc(runner.label)}</option>`
     ).join('');
   }
 
+  function readRunnerSelect(select) {
+    if (!select) return '';
+    return joinModelList(
+      Array.from(select.selectedOptions).map((option) => option.value).filter(Boolean)
+    );
+  }
+
   function fillRunnerSelect(select, runners, selected) {
+    if (!select) return;
     const markup = runnerOptions(runners, selected);
     if (select.dataset.runnerMarkup !== markup) {
       select.innerHTML = markup;
       select.dataset.runnerMarkup = markup;
     }
-    const exists = [...select.options].some((option) => option.value === selected);
-    if (exists && document.activeElement !== select) select.value = selected;
+    if (document.activeElement === select) return;
+    const options = [...select.options];
+    if (!options.length) return;
+    const chosen = new Set(modelList(selected));
+    if (!chosen.size) chosen.add(options[0].value);
+    options.forEach((option) => { option.selected = chosen.has(option.value); });
   }
 
+  function runnerLabel(value) {
+    const ids = modelList(value);
+    if (!ids.length) return 'runner';
+    return ids.map((id) => (app.state?.runners || []).find((entry) => entry.id === id)?.label || id).join(' + ');
+  }
+
+  // A picker can cover several runners at once. Union their catalogues in the
+  // selected order so Vibe's two ids appear alongside OpenCode and Kilo ids when
+  // all three runners are selected, instead of only the first runner's models.
   function runnerModelIds(runnerId) {
-    const runner = (app.state?.runners || []).find((entry) => entry.id === runnerId);
-    if (runner && Array.isArray(runner.models)) return runner.models;
-    return MODEL_OPTIONS_BY_RUNNER[runnerId] || [];
+    const ids = [];
+    const seen = new Set();
+    for (const id of modelList(runnerId)) {
+      const runner = (app.state?.runners || []).find((entry) => entry.id === id);
+      const models = runner && Array.isArray(runner.models)
+        ? runner.models
+        : (MODEL_OPTIONS_BY_RUNNER[id] || []);
+      for (const modelId of models) {
+        if (seen.has(modelId)) continue;
+        seen.add(modelId);
+        ids.push(modelId);
+      }
+    }
+    return ids;
   }
 
   function modelOptions(selected, placeholder, runnerId) {
@@ -1150,6 +1188,7 @@
       </div>
       <p class="card-task task-detail-wrap" data-task-field="current" data-project-id="${esc(project.id)}" data-fallback="true"><span class="task-detail-text task-detail-clamped" id="${currentTextId}"></span><button class="task-expand-toggle" type="button" aria-controls="${currentTextId}" aria-expanded="false" aria-label="Expand current task" title="Expand current task" hidden>▼</button></p>
       <div class="card-up task-detail-wrap" data-task-field="next" data-project-id="${esc(project.id)}" data-fallback="true"><strong>Up next:</strong> <span class="task-detail-text task-detail-clamped" id="${nextTextId}"></span><button class="task-expand-toggle" type="button" aria-controls="${nextTextId}" aria-expanded="false" aria-label="Expand up next" title="Expand up next" hidden>▼</button></div>
+      <div class="card-model mono"></div>
       <div class="progress-row">
         <span>Progress</span>
         <span class="progress-count"></span>
@@ -1313,6 +1352,13 @@
     const completed = Number(project.progress?.completed) || 0;
     card.querySelector('.progress-count').textContent = `${completed} / ${total}`;
     card.querySelector('.progress-fill').style.width = total ? `${(completed / total) * 100}%` : '0%';
+
+    const modelLine = card.querySelector('.card-model');
+    if (modelLine) {
+      const modelName = project.activeModel || project.effectiveModel || '';
+      modelLine.textContent = `${runnerLabel(project.activeRunner || project.runner)}${modelName ? ` · ${modelName}` : ' · default'}`;
+      modelLine.title = modelLine.textContent;
+    }
 
     const buttons = card.querySelectorAll('.card-controls button');
     const disabled = controlDisabled(project);
@@ -1563,10 +1609,12 @@
         <span>${esc(value)}</span>
       </div>`).join('');
     const drawerRunner = project.runner || app.state?.settings?.globalRunner || '';
-    fillModelSelect(dom.drawerModelInput, project.model, 'Inherit global', drawerRunner);
-    fillModelSelect(dom.drawerSeedModel, project.seedModel, 'Inherit default model', drawerRunner);
-    fillModelSelect(dom.drawerAnalyzeModel, project.analyzeModel, 'Inherit default model', drawerRunner);
-    fillModelSelect(dom.drawerImplementModel, project.implementModel, 'Inherit default model', drawerRunner);
+    fillRunnerSelect(dom.drawerRunner, app.state?.runners || [], drawerRunner);
+    const drawerModelRunner = drawerRunner;
+    fillModelSelect(dom.drawerModelInput, project.model, 'Inherit global', drawerModelRunner);
+    fillModelSelect(dom.drawerSeedModel, project.seedModel, 'Inherit default model', drawerModelRunner);
+    fillModelSelect(dom.drawerAnalyzeModel, project.analyzeModel, 'Inherit default model', drawerModelRunner);
+    fillModelSelect(dom.drawerImplementModel, project.implementModel, 'Inherit default model', drawerModelRunner);
     const rotationFlags = effectiveRotationFlags(project);
     applyRotationButtons(DRAWER_ROTATION_TARGETS, {
       modelRotation: rotationFlags.model,
@@ -2262,6 +2310,7 @@
       await api(`/api/projects/${encodeURIComponent(id)}`, {
         method: 'PATCH',
         body: JSON.stringify({
+          runner: readRunnerSelect(dom.drawerRunner),
           model: readModelSelect(dom.drawerModelInput),
           seedModel: readModelSelect(dom.drawerSeedModel),
           analyzeModel: readModelSelect(dom.drawerAnalyzeModel),
@@ -2356,7 +2405,7 @@
     fillModelSelect(dom.seedModel, settings.seedModel, 'Inherit default model', settings.globalRunner);
     fillModelSelect(dom.analyzeModel, settings.analyzeModel, 'Inherit default model', settings.globalRunner);
     fillModelSelect(dom.implementModel, settings.implementModel, 'Inherit default model', settings.globalRunner);
-    const setupRunner = dom.projectRunner.value || settings.globalRunner;
+    const setupRunner = readRunnerSelect(dom.projectRunner) || settings.globalRunner || '';
     fillModelSelect(dom.projectModel, '', 'Inherit global', setupRunner);
     fillModelSelect(dom.projectSeedModel, '', 'Inherit default model', setupRunner);
     fillModelSelect(dom.projectAnalyzeModel, '', 'Inherit default model', setupRunner);
@@ -2384,11 +2433,11 @@
     fillRunnerSelect(
       dom.projectRunner,
       state.runners,
-      app.runnerTouched ? dom.projectRunner.value : settings.globalRunner
+      app.runnerTouched ? readRunnerSelect(dom.projectRunner) : settings.globalRunner
     );
     refillModelSelectsForRunner(
       [dom.projectModel, dom.projectSeedModel, dom.projectAnalyzeModel, dom.projectImplementModel],
-      dom.projectRunner.value || settings.globalRunner
+      readRunnerSelect(dom.projectRunner) || settings.globalRunner || ''
     );
     renderCards(state.projects || []);
 
@@ -2421,7 +2470,7 @@
         body: JSON.stringify({
           maxConcurrent: Number(dom.maxConcurrent.value),
           mode: dom.mode.value,
-          globalRunner: dom.globalRunner.value,
+          globalRunner: readRunnerSelect(dom.globalRunner),
           model: readModelSelect(dom.model),
           seedModel: readModelSelect(dom.seedModel),
           analyzeModel: readModelSelect(dom.analyzeModel),
@@ -2607,7 +2656,7 @@
         body: JSON.stringify({
           path,
           name: dom.projectName.value.trim(),
-          runner: dom.projectRunner.value,
+          runner: readRunnerSelect(dom.projectRunner),
           model: readModelSelect(dom.projectModel),
           seedModel: readModelSelect(dom.projectSeedModel),
           analyzeModel: readModelSelect(dom.projectAnalyzeModel),
@@ -2937,13 +2986,13 @@
     app.runnerTouched = true;
     refillModelSelectsForRunner(
       [dom.projectModel, dom.projectSeedModel, dom.projectAnalyzeModel, dom.projectImplementModel],
-      dom.projectRunner.value
+      readRunnerSelect(dom.projectRunner)
     );
   });
   dom.globalRunner.addEventListener('change', () => {
     refillModelSelectsForRunner(
       [dom.model, dom.seedModel, dom.analyzeModel, dom.implementModel],
-      dom.globalRunner.value
+      readRunnerSelect(dom.globalRunner)
     );
   });
   dom.drawerClose.addEventListener('click', closeDrawer);

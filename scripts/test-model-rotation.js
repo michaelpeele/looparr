@@ -22,6 +22,9 @@ const AN_B = 'opencode/rotation-analyze-b';
 const RL_MODEL = 'opencode/rotation-limited';
 const RL_OK = 'opencode/rotation-ok';
 const RL_THIRD = 'opencode/rotation-third';
+const ERR_MODEL = 'opencode/error-model';
+const ERR_OK = 'opencode/error-ok';
+const AUTH_MODEL = 'opencode/auth-model';
 
 process.env.PORT = '4201';
 process.env.HOST = '127.0.0.1';
@@ -124,7 +127,13 @@ async function startFakeExecutor() {
       });
 
       const frames = [];
-      if (payload.model === RL_MODEL) {
+      if (payload.model === ERR_MODEL) {
+        frames.push({ stream: 'err', text: 'Error: provider returned [400]: unsupported property reasoning_details\n' });
+        frames.push({ exit: 1 });
+      } else if (payload.model === AUTH_MODEL) {
+        frames.push({ stream: 'err', text: 'Error: 401 invalid api key\n' });
+        frames.push({ exit: 1 });
+      } else if (payload.model === RL_MODEL) {
         frames.push({ stream: 'out', text: 'HTTP 429 rate limit exceeded\n' });
         frames.push({ exit: 1 });
       } else {
@@ -274,18 +283,76 @@ async function testRotationAfterRateLimit() {
   );
 }
 
+async function testProviderErrorFallback() {
+  const project = await createProject('provider-error', ['error task'], {
+    implementModel: `${ERR_MODEL},${ERR_OK}`,
+    implementRotation: true
+  });
+  const run = await runProject(project, 1);
+  assert.deepEqual(
+    modelsFor(run, 'implement'),
+    [ERR_MODEL, ERR_OK],
+    'a provider 400 advances to the next model instead of stopping'
+  );
+  const logs = findProject(await getState(), project.id).logs.map((entry) => entry.text);
+  assert.ok(
+    logs.some((line) => line.startsWith('Model failure on')),
+    `the model switch is logged; got: ${logs.filter((line) => line.startsWith('Model failure')).join(' | ') || 'no line'}`
+  );
+}
+
+async function testTerminalAuthError() {
+  const project = await createProject('auth-error', ['auth task'], {
+    implementModel: AUTH_MODEL,
+    implementRotation: false
+  });
+  attempts.length = 0;
+  const started = await api('POST', `/api/projects/${encodeURIComponent(project.id)}/start`);
+  assertEqual(started.status, 200, 'start auth project');
+  await waitFor(async () => {
+    const state = await getState();
+    return findProject(state, project.id).status === 'error' ? true : null;
+  }, 'auth error stop', 20000);
+  assert.deepEqual(
+    modelsFor(attempts, 'implement'),
+    [AUTH_MODEL],
+    'auth failures are terminal and do not switch models'
+  );
+}
+
+async function testRunnerListValidation() {
+  const badRotation = await api('PATCH', '/api/settings', { runnerRotation: 'yes' });
+  assertEqual(badRotation.status, 400, 'settings rejects non-boolean runner rotation');
+
+  const badRunner = await api('POST', '/api/projects', {
+    name: 'bad-runner',
+    path: PROJECTS_ROOT,
+    runner: 'opencode,nope'
+  });
+  assertEqual(badRunner.status, 400, 'runner lists reject unknown ids');
+  assert.ok(String(badRunner.body?.error || '').includes('nope'), 'the rejected id is named');
+
+  const accepted = await api('PATCH', '/api/settings', { globalRunner: 'opencode,kilo', runnerRotation: true });
+  assertEqual(accepted.status, 200, 'a runner list is accepted');
+  const state = await getState();
+  assertEqual(state.settings.globalRunner, 'opencode,kilo', 'the runner list is stored joined');
+  assertEqual(state.settings.runnerRotation, true, 'runner rotation is stored');
+  await api('PATCH', '/api/settings', { globalRunner: 'opencode', runnerRotation: false });
+}
+
 async function testServedMarkup() {
   const htmlResponse = await fetch(`${BASE_URL}/index.html`);
   assertEqual(htmlResponse.status, 200, 'GET /index.html status');
   const html = await htmlResponse.text();
   const targets = [...html.matchAll(/data-rotate-for="([^"]+)"/g)].map((match) => match[1]);
-  assertEqual(targets.length, 12, 'one rotation toggle per model dropdown');
+  assertEqual(targets.length, 15, 'one rotation toggle per model and runner dropdown');
   for (const target of targets) {
     assert.ok(html.includes(`id="${target}"`), `rotation toggle ${target} maps to a real select`);
   }
   assert.ok(html.includes('id="icon-model-rotation"'), 'two-arrow rotation icon is served');
-  assertEqual((html.match(/title="Model Rotation"/g) || []).length, 12, 'every toggle carries the Model Rotation tooltip');
-  assertEqual((html.match(/aria-pressed="false"/g) || []).length >= 12, true, 'every toggle exposes aria-pressed');
+  assertEqual((html.match(/title="Model Rotation"/g) || []).length, 12, 'every model toggle carries the Model Rotation tooltip');
+  assertEqual((html.match(/title="Runner Rotation"/g) || []).length, 3, 'every runner toggle carries the Runner Rotation tooltip');
+  assertEqual((html.match(/aria-pressed="false"/g) || []).length >= 15, true, 'every toggle exposes aria-pressed');
 
   const appResponse = await fetch(`${BASE_URL}/app.js`);
   assertEqual(appResponse.status, 200, 'GET /app.js status');
@@ -338,6 +405,9 @@ async function main() {
     await testRotationOn();
     await testRotationPerField();
     await testRotationAfterRateLimit();
+    await testProviderErrorFallback();
+    await testTerminalAuthError();
+    await testRunnerListValidation();
     await testServedMarkup();
 
     console.log('model rotation smoke tests passed');

@@ -226,6 +226,18 @@ function parseModel(value, fallback, label) {
   return parseModelList(value, fallback, label);
 }
 
+// Runner fields accept one id or an ordered comma list; every id must be a
+// registered runner so a stale id cannot be stored.
+function parseRunner(value, fallback) {
+  const parsed = parseModelList(value, fallback, 'Runner');
+  if (!parsed.ok) return parsed;
+  const ids = String(parsed.value || '').split(',').map((id) => id.trim()).filter(Boolean);
+  for (const id of ids) {
+    if (!getRunner(id)) return { ok: false, error: `Unknown runner: ${id}` };
+  }
+  return { ok: true, value: ids.join(',') };
+}
+
 const MODEL_PHASE_FIELDS = [
   { field: 'seedModel', label: 'Seed model' },
   { field: 'analyzeModel', label: 'Analyze model' },
@@ -245,7 +257,8 @@ const MODEL_ROTATION_FIELDS = [
   { field: 'modelRotation', label: 'Model rotation' },
   { field: 'seedRotation', label: 'Seed rotation' },
   { field: 'analyzeRotation', label: 'Analyze rotation' },
-  { field: 'implementRotation', label: 'Implement rotation' }
+  { field: 'implementRotation', label: 'Implement rotation' },
+  { field: 'runnerRotation', label: 'Runner rotation' }
 ];
 
 function applyRotationFields(body, target, allowNull = false) {
@@ -324,9 +337,9 @@ app.post('/api/projects', (req, res) => {
   }
   if (!stats.isDirectory()) return fail(res, 400, `Not a directory: ${projectPath}`);
 
-  const runner = String(body.runner || '').trim();
-  const selected = runner || engine.getState().settings.globalRunner;
-  if (!getRunner(selected)) return fail(res, 400, `Unknown runner: ${selected}`);
+  const runnerParsed = parseRunner(body.runner, engine.getState().settings.globalRunner);
+  if (!runnerParsed.ok) return fail(res, 400, runnerParsed.error);
+  const selected = runnerParsed.value;
 
   const model = parseModel(body.model, '', 'Model');
   if (!model.ok) return fail(res, 400, model.error);
@@ -463,9 +476,9 @@ app.patch('/api/projects/:id', (req, res) => {
   const rotations = applyRotationFields(body, patch, true);
   if (!rotations.ok) return fail(res, 400, rotations.error);
   if (body.runner !== undefined) {
-    const runner = String(body.runner).trim();
-    if (!getRunner(runner)) return fail(res, 400, `Unknown runner: ${runner}`);
-    patch.runner = runner;
+    const runner = parseRunner(body.runner, '');
+    if (!runner.ok) return fail(res, 400, runner.error);
+    patch.runner = runner.value;
   }
   if (body.autoResumeOnStart !== undefined) {
     if (typeof body.autoResumeOnStart !== 'boolean') {
@@ -525,9 +538,9 @@ app.patch('/api/settings', (req, res) => {
     patch.mode = body.mode;
   }
   if (body.globalRunner !== undefined) {
-    const globalRunner = String(body.globalRunner);
-    if (!getRunner(globalRunner)) return fail(res, 400, `Unknown runner: ${globalRunner}`);
-    patch.globalRunner = globalRunner;
+    const globalRunner = parseRunner(body.globalRunner, current.globalRunner);
+    if (!globalRunner.ok) return fail(res, 400, globalRunner.error);
+    patch.globalRunner = globalRunner.value;
   }
   const model = parseModel(body.model, '', 'Model');
   if (!model.ok) return fail(res, 400, model.error);

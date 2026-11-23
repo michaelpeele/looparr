@@ -139,8 +139,11 @@
               </select>
             </label>
             <label class="field">
-              <span>Global runner</span>
-              <select id="global-runner"></select>
+              <span>Global runner <small>one or more, rotate optional</small></span>
+              <div class="model-field-row">
+                <select id="global-runner" multiple size="3"></select>
+                <button type="button" class="icon-button model-rotate-button" data-rotate-for="global-runner" aria-pressed="false" aria-label="Runner Rotation" title="Runner Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
+              </div>
             </label>
             <label class="field">
               <span>Default model <small>fallback</small></span>
@@ -281,8 +284,11 @@
               <input type="text" id="project-name" placeholder="folder name" autocomplete="off">
             </label>
             <label class="field">
-              <span>Runner</span>
-              <select id="project-runner"></select>
+              <span>Runner <small>one or more, rotate optional</small></span>
+              <div class="model-field-row">
+                <select id="project-runner" multiple size="3"></select>
+                <button type="button" class="icon-button model-rotate-button" data-rotate-for="project-runner" aria-pressed="false" aria-label="Runner Rotation" title="Runner Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
+              </div>
             </label>
             <label class="field">
               <span>Default model <small>optional fallback</small></span>
@@ -428,6 +434,10 @@
         <div class="section-body" id="section-runner-body">
           <div class="policy-summary mono" id="drawer-model">—</div>
           <div class="editor-actions">
+            <div class="model-field-row">
+              <select id="drawer-runner" aria-label="Project runners" multiple size="3"></select>
+              <button type="button" class="icon-button model-rotate-button" data-rotate-for="drawer-runner" aria-pressed="false" aria-label="Runner Rotation" title="Runner Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
+            </div>
             <div class="model-field-row">
               <select id="drawer-model-input" aria-label="Project default model override" multiple size="4"><option value="">Inherit global</option></select>
               <button type="button" class="icon-button model-rotate-button" data-rotate-for="drawer-model-input" aria-pressed="false" aria-label="Model Rotation" title="Model Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>

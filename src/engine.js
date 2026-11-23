@@ -74,7 +74,9 @@ function ensureRuntime(project) {
       stepTask: null,
       stepOutput: '',
       icon: null,
-      iconVersion: null
+      iconVersion: null,
+      activeRunner: '',
+      activeModel: ''
     };
     runtime.set(project.id, rt);
     applyRuntimeIcon(rt, iconLib.findIcon(project.path));
@@ -84,6 +86,24 @@ function ensureRuntime(project) {
 
 function findProject(id) {
   return config.projects.find((project) => project.id === id) || null;
+}
+
+const rotationStore = require('./rotation-store');
+const { classifyFailure } = require('./failure');
+
+function effectiveRunnerList(project) {
+  const raw = project.runner || config.settings.globalRunner || 'opencode';
+  const ids = modelList(raw).filter((id) => getRunner(id));
+  return ids.length ? ids : ['opencode'];
+}
+
+function effectiveRunnerRotation(project) {
+  if (typeof project.runnerRotation === 'boolean') return project.runnerRotation;
+  return config.settings.runnerRotation === true;
+}
+
+function modelsFor(project, phase, runner) {
+  return effectiveModelList(project, phase).filter((id) => runnerSupportsModel(runner, id));
 }
 
 function effectiveModelList(project, phase = 'seed') {
@@ -100,22 +120,16 @@ function effectiveRotation(project, modelField = 'model') {
   return configStore.resolveRotation(project, config.settings, modelField);
 }
 
-function rotationStartIndex(rt, field, models) {
-  const key = joinModelList(models);
-  if (rt.rotationLists[field] !== key) {
-    rt.rotationLists[field] = key;
-    rt.rotationCursor[field] = 0;
-  }
-  const cursor = Number.isInteger(rt.rotationCursor[field]) ? rt.rotationCursor[field] : 0;
-  return ((cursor % models.length) + models.length) % models.length;
-}
-
-function advanceRotationCursor(project, rt, phase) {
+function advanceRotationCursor(project, rt, phase, runner) {
   const field = configStore.modelFieldForPhase(phase);
-  if (!configStore.resolveRotation(project, config.settings, field)) return;
-  const models = effectiveModelList(project, phase);
-  if (models.length < 2) return;
-  rt.rotationCursor[field] = (rt.modelIndex + 1) % models.length;
+  const models = runner ? modelsFor(project, phase, runner) : effectiveModelList(project, phase);
+  if (configStore.resolveRotation(project, config.settings, field) && models.length > 1) {
+    rotationStore.advance(models, Math.min(Math.max(rt.modelIndex, 0), models.length - 1));
+  }
+  const runnerList = effectiveRunnerList(project);
+  if (runnerList.length > 1 && effectiveRunnerRotation(project)) {
+    rotationStore.advance(runnerList, Math.max(rt.runnerIndex || 0, 0));
+  }
 }
 
 function blockPolicyFor(project) {
@@ -183,6 +197,11 @@ function getState() {
         name: project.name,
         path: project.path,
         runner: project.runner || config.settings.globalRunner,
+        runnerRotation: project.runnerRotation ?? null,
+        effectiveRunnerRotation: effectiveRunnerRotation(project),
+        effectiveRunners: joinModelList(effectiveRunnerList(project)),
+        activeRunner: rt.activeRunner || '',
+        activeModel: rt.activeModel || '',
         model: project.model || '',
         seedModel: project.seedModel || '',
         analyzeModel: project.analyzeModel || '',
@@ -718,22 +737,68 @@ function defaultModelLabel(runner) {
   return `${runner?.label || 'Runner'} default`;
 }
 
-function scheduleModelFallback(project, rt, runner, phase, models) {
-  if (!runner || !runner.isRateLimit || !runner.isRateLimit(rt.stepOutput)) return false;
-  if (rt.modelIndex + 1 >= models.length) return false;
-  const currentModel = models[rt.modelIndex] || defaultModelLabel(runner);
-  const nextModel = models[rt.modelIndex + 1] || defaultModelLabel(runner);
-  const pauseMs = rateLimitPauseMs();
-  rt.modelFallbackPending = true;
-  appendLog(project.id, 'system', `Rate limited on ${currentModel}; retrying with ${nextModel}.`);
-  rt.modelIndex += 1;
-  rt.status = 'rateLimited';
-  rt.resumeAt = Date.now() + pauseMs;
-  rt.nextPhase = phase;
+function commitRetry(project, rt, runner, phase, message) {
+  appendLog(project.id, 'system', message);
+  rt.status = 'idle';
   rt.stepOutput = '';
-  rateLimitRetry(project, rt, pauseMs);
+  rt.resumeAt = null;
+  rt.nextPhase = phase;
+  rt.modelFallbackPending = true;
+  rt.modelAttemptRunKey = runKeyFor(project, phase, rt.currentTask || '');
   emitState();
+  scheduleTick();
   return true;
+}
+
+// A failed step first tries another candidate: the next model for this runner,
+// then (when runner rotation is on) the next runner and its models. Auth,
+// entitlement and billing failures are terminal, and every candidate is tried
+// at most once per step so a broken list cannot loop.
+function tryNextCandidate(project, rt, runner, phase, code) {
+  if (!runner || !runner.isRateLimit) return false;
+  const isRate = runner.isRateLimit(rt.stepOutput) === true;
+  if (code === 0 && !isRate) return false;
+  const verdict = classifyFailure(rt.stepOutput, { isRateLimit: (text) => runner.isRateLimit(text) });
+  if (verdict !== 'advance') return false;
+  const models = modelsFor(project, phase, runner);
+  if (!rt.tried) rt.tried = new Set();
+  const currentModel = models[rt.modelIndex] || '';
+  rt.tried.add(`${runner.id}:${currentModel}`);
+  if (isRate && currentModel) rotationStore.markCooling(currentModel, Date.now() + rateLimitPauseMs());
+  const now = Date.now();
+  for (let step = 1; step <= models.length; step += 1) {
+    const index = (rt.modelIndex + step) % models.length;
+    const id = models[index] || '';
+    if (rt.tried.has(`${runner.id}:${id}`)) continue;
+    if (isRate && rotationStore.readyAt(id) > now) continue;
+    rt.modelIndex = index;
+    return commitRetry(
+      project,
+      rt,
+      runner,
+      phase,
+      `Model failure on ${currentModel || defaultModelLabel(runner)}; retrying with ${id || defaultModelLabel(runner)}.`
+    );
+  }
+  if (!effectiveRunnerRotation(project)) return false;
+  for (const id of effectiveRunnerList(project)) {
+    if (id === runner.id) continue;
+    const nextRunner = getRunner(id);
+    if (!nextRunner) continue;
+    const nextModels = modelsFor(project, phase, nextRunner);
+    const nextModel = nextModels.find((model) => !rt.tried.has(`${id}:${model}`));
+    if (nextModel === undefined) continue;
+    rt.modelIndex = Math.max(0, nextModels.indexOf(nextModel));
+    rt.forcedRunnerId = id;
+    return commitRetry(
+      project,
+      rt,
+      nextRunner,
+      phase,
+      `Runner failure on ${runner.label}; retrying with ${nextRunner.label}.`
+    );
+  }
+  return false;
 }
 
 async function spawnRunnerAttempt(project, rt, runner, options) {
@@ -783,18 +848,21 @@ async function spawnRunnerAttempt(project, rt, runner, options) {
   child.on('close', (code) => {
     if (rt.token !== token) return;
     rt.child = null;
-    if (scheduleModelFallback(project, rt, runner, phase, models)) return;
+    if (tryNextCandidate(project, rt, runner, phase, code)) return;
     handleClose(project, rt, code, task, phase, runner);
   });
 }
 
 function handleClose(project, rt, code, task, phase, runner) {
   try {
-    const pauseMs = rateLimitPauseMs();
     if (runner && runner.isRateLimit && runner.isRateLimit(rt.stepOutput)) {
+      const pauseMs = rateLimitPauseMs();
+      const saturated = modelsFor(project, phase, runner)[rt.modelIndex] || '';
+      if (saturated) rotationStore.markCooling(saturated, Date.now() + pauseMs);
       rt.status = 'rateLimited';
       rt.resumeAt = Date.now() + pauseMs;
       rt.nextPhase = phase;
+      appendLog(project.id, 'system', `All candidates rate limited; next retry in ${Math.round(pauseMs / 1000)}s.`);
       rateLimitRetry(project, rt, pauseMs);
       emitState();
       return;
@@ -840,7 +908,7 @@ function handleClose(project, rt, code, task, phase, runner) {
       }
     }
 
-    advanceRotationCursor(project, rt, phase);
+    advanceRotationCursor(project, rt, phase, runner);
     if (rt.paused) {
       rt.status = 'paused';
       rt.pauseAfterStep = false;
@@ -888,7 +956,27 @@ async function startStep(project) {
     }
     const phase = rt.nextPhase || 'seed';
     const runKey = runKeyFor(project, phase, task.text);
-    runner = getRunner(project.runner) || getRunner(config.settings.globalRunner) || getRunner('opencode');
+    const runnerList = effectiveRunnerList(project);
+    const runnerRotating = runnerList.length > 1 && effectiveRunnerRotation(project);
+    if (rt.forcedRunnerId) {
+      runner = getRunner(rt.forcedRunnerId);
+      rt.forcedRunnerId = '';
+      rt.runnerIndex = Math.max(0, runnerList.indexOf(runner ? runner.id : ''));
+    } else {
+      const runnerPick = runnerRotating
+        ? rotationStore.pick(runnerList)
+        : { id: runnerList[0], index: 0, waitMs: 0 };
+      if (runnerPick.waitMs > 0) {
+        rt.status = 'rateLimited';
+        rt.resumeAt = Date.now() + runnerPick.waitMs;
+        rt.nextPhase = rt.nextPhase || 'seed';
+        appendLog(project.id, 'system', `All runners cooling down; next ready in ${Math.ceil(runnerPick.waitMs / 1000)}s.`);
+        emitState();
+        return;
+      }
+      runner = getRunner(runnerPick.id);
+      rt.runnerIndex = Math.max(0, runnerPick.index);
+    }
     if (!runner) throw new Error(`Runner "${project.runner || config.settings.globalRunner}" is not registered`);
 
     const loopDir = path.join(project.path, '.looparr');
@@ -955,9 +1043,19 @@ async function startStep(project) {
     if (rt.modelAttemptRunKey !== runKey) {
       rt.modelAttemptRunKey = runKey;
       rt.modelIndex = 0;
+      rt.tried = new Set();
     }
     if (rotating && !isFallbackRetry) {
-      rt.modelIndex = rotationStartIndex(rt, modelField, models);
+      const picked = rotationStore.pick(models);
+      if (picked.waitMs > 0) {
+        rt.status = 'rateLimited';
+        rt.resumeAt = Date.now() + picked.waitMs;
+        rt.nextPhase = phase;
+        appendLog(project.id, 'system', `All models cooling down; next ready in ${Math.ceil(picked.waitMs / 1000)}s.`);
+        emitState();
+        return;
+      }
+      rt.modelIndex = Math.max(0, picked.index);
     } else if (rt.modelIndex >= models.length) {
       rt.modelIndex = 0;
     }
@@ -965,6 +1063,13 @@ async function startStep(project) {
     let positionNote = '';
     if (rotating) positionNote = ` (rotation ${rt.modelIndex + 1}/${models.length})`;
     else if (models.length > 1) positionNote = ` (fallback ${rt.modelIndex + 1}/${models.length})`;
+    rt.activeRunner = runner.id;
+    rt.activeModel = model;
+    if (runnerRotating) {
+      appendLog(project.id, 'system', `Runner: ${runner.label} (rotation ${rt.runnerIndex + 1}/${runnerList.length})`);
+    } else if (runnerList.length > 1) {
+      appendLog(project.id, 'system', `Runner: ${runner.label}`);
+    }
     appendLog(project.id, 'system', `Model: ${model || defaultModelLabel(runner)}${positionNote}`);
     await spawnRunnerAttempt(project, rt, runner, {
       prompt,

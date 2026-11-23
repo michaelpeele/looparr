@@ -292,11 +292,17 @@ async function testServedModelOptions() {
   const text = await response.text();
   assert.ok(text.includes('omniroute/auto/coding'), 'served app.js includes omniroute/auto/coding');
   assert.ok(text.includes("'omniroute/auto'"), 'served app.js includes omniroute/auto entry');
+  assert.ok(text.includes("'omniroute/coding-safe'"), 'served app.js includes the coding-safe combo entry');
   for (const id of KILO_FREE_MODELS) {
     assert.ok(text.includes(`'${id}'`), `served app.js includes ${id}`);
   }
   assert.ok(text.includes('selectedOptions'), 'served app.js reads selectedOptions');
   assert.ok(text.includes('function readModelSelect'), 'served app.js defines readModelSelect');
+  assert.ok(text.includes('zai-glm-5-3-flash-vibe-free'), 'served app.js includes the Vibe free-lane id');
+  assert.ok(
+    text.includes('for (const id of modelList(runnerId))'),
+    'served app.js unions model ids across every selected runner'
+  );
   assert.ok(text.includes('effectiveModelListsFor'), 'served app.js reads effectiveModelLists');
   const savePaths = [
     ['global default', 'model', 'dom.model'],
