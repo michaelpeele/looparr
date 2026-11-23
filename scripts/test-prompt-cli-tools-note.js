@@ -112,6 +112,12 @@ async function main() {
       'promptPreamble() returns non-empty note when flag is true'
     );
 
+    const seedPrompt = engine.renderPrompt('seedPromptTemplate', { task: 'Task', planPath: '/abs/plan.md' });
+    assert.ok(seedPrompt.includes('/abs/plan.md'), 'seed prompt includes the plan path');
+    assert.ok(!seedPrompt.includes('{{planPath}}'), 'seed prompt has no unresolved {{planPath}}');
+    assert.ok(!seedPrompt.includes('--file'), 'seed prompt references no --file attachment');
+    assert.ok(!seedPrompt.includes('attached'), 'seed prompt no longer says attached');
+
     const disabled = await api('PATCH', '/api/settings', { promptCliToolsNote: false });
     assertEqual(disabled.status, 200, 'disable patch status');
     assertEqual(disabled.body.settings.promptCliToolsNote, false, 'disable patch reflects false');

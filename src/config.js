@@ -8,7 +8,7 @@ const CONFIG_PATH = path.resolve(process.env.CONFIG_PATH || path.join(__dirname,
 
 const LEGACY_SEED_PROMPT_TEMPLATE = [
   'Looparr SEED step. Fresh session. Work only inside the current project directory.',
-  'Read @plan.md (attached; also available as plan.md on disk).',
+  'Read the plan file at {{planPath}} if you need full plan context; the first unchecked task is already provided below.',
   'First unchecked task: "{{task}}"',
   '',
   'Write a concise analysis prompt for the next AI agent.',

@@ -20,7 +20,7 @@ Stale production assets have shipped three times. For every batch that changes s
 - [x] When a task finishes it is marking the plan completed too early and looparr shows the project current item as “idle press start" verbiage instead of task it is working on. It does show when it moves to the next task though, but not while it is wrapping up the previous since it was marked too early. Does the implement prompt need to be updated?
 - [x] Hide completed should be the default, last UI state of all settings should be remembered per project. Anything empty should be collapse like questions when there are none
 - [x] Mobile view only shows four icons across per task should be all
-- [ ] Seed prompts injecting entire plan markdown ballooning context. See if just filePath to plan is sufficient to pass context
+- [x] Seed prompts injecting entire plan markdown ballooning context. See if just filePath to plan is sufficient to pass context
 
 ## Free runner candidates
 

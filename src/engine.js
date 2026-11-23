@@ -712,7 +712,8 @@ function renderPrompt(settingKey, values) {
     : configStore.DEFAULT_SETTINGS[settingKey];
   return template
     .replace(/{{task}}/g, () => String(values.task ?? ''))
-    .replace(/{{handoff}}/g, () => String(values.handoff ?? ''));
+    .replace(/{{handoff}}/g, () => String(values.handoff ?? ''))
+    .replace(/{{planPath}}/g, () => String(values.planPath ?? ''));
 }
 
 const META_HANDOFF_PATTERNS = [
@@ -1023,8 +1024,8 @@ async function startStep(project) {
     let prompt;
     let files = [];
     if (phase === 'seed') {
-      prompt = renderPrompt('seedPromptTemplate', { task: task.text });
-      files = [plan.planPath];
+      prompt = renderPrompt('seedPromptTemplate', { task: task.text, planPath: plan.planPath });
+      files = [];
       try { fs.unlinkSync(promptFile); } catch { /* no stale handoff */ }
     } else {
       let handoff = '';
@@ -1483,6 +1484,7 @@ module.exports = {
   resumeOnStart,
   promptPreamble,
   isMetaPromptHandoff,
+  renderPrompt,
   iconVersionFor,
   refreshIcon
 };

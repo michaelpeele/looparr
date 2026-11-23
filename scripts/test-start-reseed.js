@@ -74,16 +74,20 @@ async function main() {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify({ settings: configStore.DEFAULT_SETTINGS }, null, 2));
 
     const runners = loadFresh('../src/runners/index.js');
+    let seedPayload = null;
     runners.registerRunner({
       id: 'opencode',
       label: 'Fake',
       description: 'Fake runner for reseed regression test',
       ensureServer: async () => null,
-      buildCommand: ({ cwd }) => ({
-        command: process.execPath,
-        args: ['-e', runnerScript()],
-        options: { cwd: cwd || process.cwd(), env: process.env, shell: false }
-      }),
+      buildCommand: ({ cwd, ...payload }) => {
+        if (payload.phase === 'seed') seedPayload = { ...payload, prompt: payload.prompt };
+        return {
+          command: process.execPath,
+          args: ['-e', runnerScript()],
+          options: { cwd: cwd || process.cwd(), env: process.env, shell: false }
+        };
+      },
       isRateLimit: () => false
     });
 
@@ -166,6 +170,11 @@ async function main() {
     assert.ok(reseedIndex >= 0 && seedIndex > reseedIndex, 'reseed log must precede SEED');
     assert.strictEqual(recovered.logs.find((log) => log.text === RESEED_LOG).stream, 'system');
     assert.strictEqual(fs.readFileSync(handoffPath, 'utf8'), FRESH_HANDOFF);
+
+    assert.ok(seedPayload, 'fake runner captured a seed-phase payload');
+    assert.ok(Array.isArray(seedPayload.files) && seedPayload.files.length === 0, 'seed payload carries no files');
+    assert.ok(seedPayload.prompt.includes(path.join(projectDir, 'plan.md')), 'seed prompt contains the plan path');
+    assert.ok(!seedPayload.prompt.includes('{{planPath}}'), 'seed prompt has no unresolved {{planPath}}');
 
     const checkpoint = await waitFor(() => {
       const checked = autoResume.readIntent(project);

@@ -12,7 +12,7 @@ const { getRunner, listRunners, runnerSupportsModel } = require('../src/runners'
 const kilo = require('../src/runners/kilo');
 const vibe = require('../src/runners/vibe');
 const { buildKiloArgs } = require('../src/kilo-command');
-const { buildVibeArgs } = require('../src/vibe-command');
+const { buildVibeArgs, CONTEXT_HEADER } = require('../src/vibe-command');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 
@@ -74,6 +74,11 @@ function testKiloArgs() {
   ], 'kilo invocation puts the prompt before the greedy --file array');
 
   assert.deepEqual(buildKiloArgs({ prompt: 'go' }), ['run', '--auto', '--format', 'json', 'go'], 'model is optional');
+  assert.deepEqual(
+    buildKiloArgs({ prompt: 'go', files: [] }),
+    ['run', '--auto', '--format', 'json', 'go'],
+    'empty files list produces no --file arg'
+  );
   assert.throws(() => buildKiloArgs({ prompt: '   ' }), /prompt is required/, 'blank prompt is rejected');
   assert.throws(() => buildKiloArgs({ prompt: 'go', model: 'a,b' }), /single model id/, 'model lists are rejected');
   assert.throws(() => buildKiloArgs({ prompt: 'go', model: 'a b' }), /whitespace/, 'model whitespace is rejected');
@@ -103,6 +108,13 @@ function testVibeArgs() {
     ['--prompt', 'go'],
     'files are optional and the prompt is unchanged'
   );
+  const emptyFilesArgs = buildVibeArgs({ prompt: 'go', files: [] });
+  assert.deepEqual(emptyFilesArgs.slice(0, 2), ['--prompt', 'go'], 'empty files keep the prompt as go');
+  assert.ok(!emptyFilesArgs[1].includes(CONTEXT_HEADER), 'empty files add no Project files line');
+  assert.ok(
+    buildVibeArgs({ prompt: 'go', files: ['/abs/plan.md'] })[1].includes('/abs/plan.md'),
+    'files provided still append the Project files line'
+  );
   assert.throws(() => buildVibeArgs({ prompt: '  ' }), /prompt is required/, 'blank prompt is rejected');
   assert.throws(() => buildVibeArgs({ prompt: 'go', model: 'a,b' }), /single model id/, 'model lists are rejected');
   assert.throws(() => buildVibeArgs({ prompt: 'go', model: '-x' }), /cannot start with/, 'flag-like models are rejected');
@@ -131,6 +143,21 @@ function testKiloBridgePayload() {
     /runKey is required/,
     'bridge mode requires a run key'
   );
+
+  const seedBuilt = kilo.buildCommand({
+    prompt: 'seed prompt',
+    cwd: '/project',
+    files: [],
+    runKey: 'kilo-run-seed',
+    projectId: 'p1',
+    phase: 'seed',
+    task: 'Task'
+  });
+  const seedPayload = JSON.parse(seedBuilt.options.env.LOOPARR_TASK_PAYLOAD);
+  assert.deepEqual(seedPayload.files, [], 'kilo seed payload carries no files');
+  const bridgeArgs = seedBuilt.args.slice(1).join(' ');
+  assert.ok(!bridgeArgs.includes('--file'), 'kilo seed bridge args have no --file');
+  assert.ok(seedPayload.prompt.includes('seed prompt'), 'kilo seed payload carries the prompt');
 }
 
 function testVibeBridgePayload() {
@@ -153,6 +180,20 @@ function testVibeBridgePayload() {
     /runKey is required/,
     'vibe bridge mode requires a run key'
   );
+
+  const seedBuilt = vibe.buildCommand({
+    prompt: 'seed prompt',
+    cwd: '/project',
+    files: [],
+    runKey: 'vibe-run-seed',
+    projectId: 'p1',
+    phase: 'seed',
+    task: 'Task'
+  });
+  const seedPayload = JSON.parse(seedBuilt.options.env.LOOPARR_TASK_PAYLOAD);
+  assert.deepEqual(seedPayload.files, [], 'vibe seed payload carries no files');
+  assert.ok(!seedPayload.prompt.includes(CONTEXT_HEADER), 'vibe seed prompt has no Project files line');
+  assert.ok(seedPayload.prompt.includes('seed prompt'), 'vibe seed payload carries the prompt');
 }
 
 function testOpencodeBridgePayload() {
@@ -168,6 +209,11 @@ function testOpencodeBridgePayload() {
   const payload = JSON.parse(built.options.env.LOOPARR_TASK_PAYLOAD);
   assert.equal(payload.runner, 'opencode', 'opencode payload carries its runner id');
   assert.equal(payload.model, 'opencode/big-pickle', 'opencode payload carries the model');
+  assert.deepEqual(payload.files, [], 'opencode payload carries no files for files: []');
+  assert.ok(
+    !built.args.slice(1).join(' ').includes('--file'),
+    'opencode bridge args contain no --file'
+  );
 }
 
 function testRunnersReachExecutor() {

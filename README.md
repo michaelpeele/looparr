@@ -92,11 +92,11 @@ Projects and settings persist in `config.json` next to `server.js`. That file is
 
 For every unchecked task, Looparr runs three isolated, fresh-session steps via the selected runner:
 
-1. **Seed**: reads `@plan.md`, finds the first unchecked item, and writes a concise analysis prompt to `.looparr/next_prompt.txt`.
+1. **Seed**: names the plan file at `{{planPath}}`, finds the first unchecked item, and writes a concise analysis prompt to `.looparr/next_prompt.txt`.
 2. **Analyze**: executes that prompt and writes a detailed implementation prompt to `.looparr/next_prompt.txt`.
 3. **Implement**: executes the implementation prompt, verifies the work, and exits. Looparr marks the item `- [x]` in `plan.md` on successful close.
 
-Each step runs in the project directory. The CLI attaches `plan.md` with `--file` so the agent can read and edit it. Logs stream live to the project card drawer.
+Each step runs in the project directory. Seed passes the plan path in the prompt text instead of `--file` attachments; Analyze and Implement pass the handoff text inline in the prompt. Logs stream live to the project card drawer.
 
 After a Seed or Analyze step, open the project drawer and use **Question handoff** to refresh, edit, and save the current `.looparr/next_prompt.txt`. Press **Start** again after saving the answer.
 
@@ -106,13 +106,13 @@ Looparr is headless: agents exchange prompts through files, not a chat transcrip
 
 The phase contract is:
 
-- **Seed question**: built-in Seed prompt plus attached `plan.md`. **Answer**: write only a concise analysis prompt to `.looparr/next_prompt.txt`. Do not edit `plan.md`.
+- **Seed question**: built-in Seed prompt naming the plan file at `{{planPath}}`. **Answer**: write only a concise analysis prompt to `.looparr/next_prompt.txt`. Do not edit `plan.md`.
 - **Analyze question**: current `.looparr/next_prompt.txt` from Seed. **Answer**: overwrite `.looparr/next_prompt.txt` with a detailed implementation prompt. Do not implement code.
 - **Implement question**: current `.looparr/next_prompt.txt` from Analyze. **Answer**: implement the task, run verification, commit safe tracked modified files, and leave `.looparr/next_prompt.txt` untouched. Leave the plan marker unchanged until verification passes; Looparr marks the item `- [x]` in `plan.md` on successful close.
 
 Analyze handoffs are validated before Implement. A handoff containing meta-instructions such as "do not implement code yet" or "produce the prompt only" is rejected. Looparr keeps the phase at Analyze, sets a visible error, and requires a manual retry. The Implement prompt also ignores that wording if it reaches a custom template. The default Implement prompt directs the agent to stage explicit paths, skip untracked files, and skip files containing secrets, tokens, passwords, API keys, or credentials.
 
-Settings > Prompt templates edits the Seed, Analyze, and Implement prompt templates. Use `{{task}}` for the current task text; Analyze and Implement also use `{{handoff}}` for the current `.looparr/next_prompt.txt` content. Defaults live in `config.json` under `settings` and are saved through `PATCH /api/settings`. Saved settings equal to the previous default Implement template are upgraded once on load; custom templates are preserved.
+Settings > Prompt templates edits the Seed, Analyze, and Implement prompt templates. The Seed prompt uses `{{task}}` for the current task text and `{{planPath}}` for the plan file path; Analyze and Implement also use `{{handoff}}` for the current `.looparr/next_prompt.txt` content. Defaults live in `config.json` under `settings` and are saved through `PATCH /api/settings`. Saved settings equal to the previous default Implement template are upgraded once on load; custom templates are preserved.
 
 To keep a markdown question/answer archive:
 
@@ -266,7 +266,7 @@ Execution stays on the host. The container never installs or starts `opencode`.
 
 When a step starts, the container runner calls `scripts/bridge-client.js`. The bridge client posts the existing prompt, project path, and plan file to the Docker bridge gateway on port `4187`, for example `http://172.17.0.1:4187`. The host executor authenticates with the bearer token, requires the project path to be inside `/home/michaelpeele/ai-projects`, runs the real host `opencode` in that directory, and streams stdout/stderr back to Looparr. The host executor starts and owns its own `opencode serve` (default port `4096`). It never reuses a server it did not start, because that server may not have read this repository's `opencode.json`; a foreign listener on the port is skipped and the next free port is used. Before starting the server it fills in the keyless `kilo` provider in `opencode.json` when that file is missing or incomplete, so the `kilo/*` free lane resolves after any fresh checkout. `GET /health` reports `kiloProvider` (`created`, `updated`, `unchanged`, or `error`), `kiloProviderPath`, and the three runner binaries under `runnerBinaries`.
 
-A project's runner (`opencode`, `kilo`, or `vibe`, with `settings.globalRunner` as the fallback) is sent with every step: the bridge payload carries `runner`, and the host executor spawns that runner's binary. The Kilo runner runs `kilo run --auto --format json`, passes `--model` and repeatable `--file` attachments, and reaches the keyless Kilo Gateway without a login; `kilo auth login` is only needed for other providers. Set `LOOPARR_EXECUTOR_KILO_BIN` when `kilo` is not on the executor's `PATH`. The Vibe runner runs `vibe --prompt <prompt> --auto-approve --output streaming --max-price 0`, which caps every run at zero cost and emits one JSON object per line. Vibe has no attachment flag, so the seed `plan.md` and handoff files are named in the prompt and read from the working directory; its `--model` takes a Vibe alias rather than a `provider/model` id, so its picker offers the account's free-lane id `zai-glm-5-3-flash-vibe-free` plus its alias `zai-glm-5-3-flash`, and a blank model means the account's active model. Set `LOOPARR_EXECUTOR_VIBE_BIN` when `vibe` is not on the executor's `PATH`. Model ids are scoped per runner, so a mis-picked id is skipped and logged rather than sent to the wrong CLI.
+A project's runner (`opencode`, `kilo`, or `vibe`, with `settings.globalRunner` as the fallback) is sent with every step: the bridge payload carries `runner`, and the host executor spawns that runner's binary. The Kilo runner runs `kilo run --auto --format json`, passes `--model` and repeatable `--file` attachments, and reaches the keyless Kilo Gateway without a login; `kilo auth login` is only needed for other providers. Set `LOOPARR_EXECUTOR_KILO_BIN` when `kilo` is not on the executor's `PATH`. The Vibe runner runs `vibe --prompt <prompt> --auto-approve --output streaming --max-price 0`, which caps every run at zero cost and emits one JSON object per line. Vibe has no attachment flag, but every step now passes prompts inline with no file list, so all three runners behave the same; its `--model` takes a Vibe alias rather than a `provider/model` id, so its picker offers the account's free-lane id `zai-glm-5-3-flash-vibe-free` plus its alias `zai-glm-5-3-flash`, and a blank model means the account's active model. Set `LOOPARR_EXECUTOR_VIBE_BIN` when `vibe` is not on the executor's `PATH`. Model ids are scoped per runner, so a mis-picked id is skipped and logged rather than sent to the wrong CLI.
 
 `extra_hosts` is not used. It conflicts with `network_mode: service:tailscale` on this Docker host. Discover the gateway with `docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}'` if the default changes.
 
