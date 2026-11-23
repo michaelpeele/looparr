@@ -150,24 +150,78 @@
   const STARTER_PLAN = '# Build plan\n\n- [ ] First task\n- [ ] Second task\n';
   const TASK_LINE_RE = /^\s*[-*+]\s+\[[ xX]\]\s*/;
   const TASK_EDIT_RE = /^(\s*[-*+]\s+\[)([ xX])(\]\s*)(.*)$/;
-  // Mirrors `opencode models` output (CLI registry). Keep in sync manually:
-  // the server/container has no opencode binary, so this list cannot be
-  // populated dynamically at runtime. See plan.md model-picker items.
-  const MODEL_OPTIONS = [
-    'omniroute/auto',
-    'omniroute/auto/coding',
-    'opencode/big-pickle',
-    'opencode/tidepool-alpha-free',
-    'opencode/hy4-flash-free',
-    'opencode/iceman-free',
-    'opencode/longcat-2.5-free',
-    'opencode/flint-40b-free',
-    'opencode/deepseek-v4.1-flash-free',
-    'opencode/nemotron-3.5-super-vl-free',
-    'opencode/beam-free',
-    'opencode/mimo-v2.6-flash-free',
-    'opencode/nemotron-3.5-lightning-free'
+  // Model ids are scoped per runner: an OpenCode id must never reach the Kilo
+  // CLI and a `kilo/*` id must never reach OpenCode. `/api/state` carries each
+  // runner's catalogue from `src/runners/*.js`; these copies only cover the
+  // first paint before state arrives. A runner missing here accepts no model
+  // ids at all (Vibe offers its account's free-lane aliases).
+  const MODEL_OPTIONS_BY_RUNNER = {
+    opencode: [
+      'omniroute/auto',
+      'omniroute/auto/coding',
+      'opencode/big-pickle',
+      'opencode/tidepool-alpha-free',
+      'opencode/hy4-flash-free',
+      'opencode/iceman-free',
+      'opencode/longcat-2.5-free',
+      'opencode/flint-40b-free',
+      'opencode/deepseek-v4.1-flash-free',
+      'opencode/nemotron-3.5-super-vl-free',
+      'opencode/beam-free',
+      'opencode/mimo-v2.6-flash-free',
+      'opencode/nemotron-3.5-lightning-free',
+      'kilo/kilo-auto/free',
+      'kilo/openrouter/free',
+      'kilo/reflection/beam-free',
+      'kilo/recursive/flint-v1.0:free',
+      'kilo/nvidia/nemotron-3.5-super-vl:free',
+      'kilo/nvidia/nemotron-3-ultra-550b-a55b:free',
+      'kilo/nvidia/nemotron-3.5-lightning:free',
+      'kilo/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+      'kilo/baidu/ernie-5.5-flash-preview:free',
+      'kilo/inclusionai/ling-3.2-flash:free',
+      'kilo/particle-ai/particle-1:free',
+      'kilo/liquid/lfm-3-1.7b:free'
+    ],
+    kilo: [
+      'kilo/kilo-auto/free',
+      'kilo/openrouter/free',
+      'kilo/reflection/beam-free',
+      'kilo/recursive/flint-v1.0:free',
+      'kilo/nvidia/nemotron-3.5-super-vl:free',
+      'kilo/nvidia/nemotron-3-ultra-550b-a55b:free',
+      'kilo/nvidia/nemotron-3.5-lightning:free',
+      'kilo/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+      'kilo/baidu/ernie-5.5-flash-preview:free',
+      'kilo/inclusionai/ling-3.2-flash:free',
+      'kilo/particle-ai/particle-1:free',
+      'kilo/liquid/lfm-3-1.7b:free'
+    ],
+    vibe: [
+      'zai-glm-5-3-flash-vibe-free',
+      'zai-glm-5-3-flash'
+    ]
+  };
+
+  // Every model dropdown owns its own rotation toggle. The select id is the
+  // stable anchor; the field name is what the server stores.
+  const MODEL_ROTATION_TARGETS = [
+    { select: 'model', field: 'modelRotation' },
+    { select: 'seed-model', field: 'seedRotation' },
+    { select: 'analyze-model', field: 'analyzeRotation' },
+    { select: 'implement-model', field: 'implementRotation' },
+    { select: 'project-model', field: 'modelRotation' },
+    { select: 'project-seed-model', field: 'seedRotation' },
+    { select: 'project-analyze-model', field: 'analyzeRotation' },
+    { select: 'project-implement-model', field: 'implementRotation' },
+    { select: 'drawer-model-input', field: 'modelRotation' },
+    { select: 'drawer-seed-model', field: 'seedRotation' },
+    { select: 'drawer-analyze-model', field: 'analyzeRotation' },
+    { select: 'drawer-implement-model', field: 'implementRotation' }
   ];
+  const GLOBAL_ROTATION_TARGETS = MODEL_ROTATION_TARGETS.slice(0, 4);
+  const PROJECT_SETUP_ROTATION_TARGETS = MODEL_ROTATION_TARGETS.slice(4, 8);
+  const DRAWER_ROTATION_TARGETS = MODEL_ROTATION_TARGETS.slice(8, 12);
 
   // Local mirrors of src/model-list.js; browser code cannot use Node modules.
   function modelList(value) {
@@ -916,28 +970,48 @@
     if (exists && document.activeElement !== select) select.value = selected;
   }
 
-  function modelOptions(selected, placeholder) {
-    const blank = placeholder || 'OpenCode default';
-    const ids = modelList(selected);
+  function runnerModelIds(runnerId) {
+    const runner = (app.state?.runners || []).find((entry) => entry.id === runnerId);
+    if (runner && Array.isArray(runner.models)) return runner.models;
+    return MODEL_OPTIONS_BY_RUNNER[runnerId] || [];
+  }
+
+  function modelOptions(selected, placeholder, runnerId) {
+    const blank = placeholder || 'Runner default';
+    const allowed = runnerModelIds(runnerId);
+    const allowedSet = new Set(allowed);
+    const ids = modelList(selected).filter((id) => allowedSet.has(id));
     const selectedIds = new Set(ids);
     const blankSelected = ids.length ? '' : ' selected';
-    return `<option value=""${blankSelected}>${esc(blank)}</option>` + MODEL_OPTIONS.map((id) =>
+    return `<option value=""${blankSelected}>${esc(blank)}</option>` + allowed.map((id) =>
       `<option value="${esc(id)}"${selectedIds.has(id) ? ' selected' : ''}>${esc(id)}</option>`
     ).join('');
   }
 
-  function fillModelSelect(select, selected, placeholder) {
+  function fillModelSelect(select, selected, placeholder, runnerId) {
     if (!select || document.activeElement === select) return;
-    const markup = modelOptions(selected, placeholder);
+    select.dataset.modelPlaceholder = placeholder || '';
+    select.dataset.modelRunner = runnerId || '';
+    const markup = modelOptions(selected, placeholder, runnerId);
     if (select.dataset.modelMarkup !== markup) {
       select.innerHTML = markup;
       select.dataset.modelMarkup = markup;
     }
-    const ids = modelList(selected);
+    const allowed = new Set(runnerModelIds(runnerId));
+    const ids = modelList(selected).filter((id) => allowed.has(id));
     const selectedIds = new Set(ids);
     Array.from(select.options).forEach((option) => {
       option.selected = option.value ? selectedIds.has(option.value) : ids.length === 0;
     });
+  }
+
+  // Rebuild model selects when their runner changes so a stale id from the
+  // previous runner cannot stay selected and reach the wrong CLI.
+  function refillModelSelectsForRunner(selects, runnerId) {
+    for (const select of selects) {
+      if (!select) continue;
+      fillModelSelect(select, readModelSelect(select), select.dataset.modelPlaceholder || '', runnerId);
+    }
   }
 
   function readModelSelect(select) {
@@ -945,6 +1019,57 @@
     return joinModelList(
       Array.from(select.selectedOptions).map((option) => option.value).filter(Boolean)
     );
+  }
+
+  function rotationButtonFor(selectId) {
+    return document.querySelector(`.model-rotate-button[data-rotate-for="${selectId}"]`);
+  }
+
+  function readRotationButtons(targets) {
+    const flags = {};
+    for (const target of targets) {
+      const button = rotationButtonFor(target.select);
+      if (button) flags[target.field] = button.getAttribute('aria-pressed') === 'true';
+    }
+    return flags;
+  }
+
+  function applyRotationButtons(targets, values) {
+    for (const target of targets) {
+      const button = rotationButtonFor(target.select);
+      if (!button) continue;
+      button.setAttribute('aria-pressed', values && values[target.field] === true ? 'true' : 'false');
+    }
+  }
+
+  function effectiveRotationFlags(project) {
+    if (project && project.effectiveRotations) return project.effectiveRotations;
+    const settings = app.state?.settings || {};
+    const flags = {
+      model: settings.modelRotation === true,
+      seed: settings.seedRotation === true,
+      analyze: settings.analyzeRotation === true,
+      implement: settings.implementRotation === true
+    };
+    if (!project) return flags;
+    const fields = {
+      model: 'modelRotation',
+      seed: 'seedRotation',
+      analyze: 'analyzeRotation',
+      implement: 'implementRotation'
+    };
+    for (const [key, field] of Object.entries(fields)) {
+      if (typeof project[field] === 'boolean') flags[key] = project[field];
+    }
+    return flags;
+  }
+
+  function rotationSummary(project) {
+    const flags = effectiveRotationFlags(project);
+    const on = [['default', flags.model], ['seed', flags.seed], ['analyze', flags.analyze], ['implement', flags.implement]]
+      .filter(([, enabled]) => enabled)
+      .map(([label]) => label);
+    return on.length ? `on (${on.join(', ')})` : 'off';
   }
 
   function fillPathSuggestions(projects) {
@@ -1429,17 +1554,26 @@
       ['Seed model', displayModelList(effective.seed || settings.seedModel || settings.model, 'OpenCode default')],
       ['Analyze model', displayModelList(effective.analyze || settings.analyzeModel || settings.model, 'OpenCode default')],
       ['Implement model', displayModelList(effective.implement || settings.implementModel || settings.model, 'OpenCode default')],
-      ['Project default override', displayModelList(override, 'global')]
+      ['Project default override', displayModelList(override, 'global')],
+      ['Rotation', rotationSummary(project)]
     ];
     dom.drawerModel.innerHTML = rows.map(([label, value]) => `
       <div class="policy-line">
         <span>${esc(label)}</span>
         <span>${esc(value)}</span>
       </div>`).join('');
-    fillModelSelect(dom.drawerModelInput, project.model, 'Inherit global');
-    fillModelSelect(dom.drawerSeedModel, project.seedModel, 'Inherit default model');
-    fillModelSelect(dom.drawerAnalyzeModel, project.analyzeModel, 'Inherit default model');
-    fillModelSelect(dom.drawerImplementModel, project.implementModel, 'Inherit default model');
+    const drawerRunner = project.runner || app.state?.settings?.globalRunner || '';
+    fillModelSelect(dom.drawerModelInput, project.model, 'Inherit global', drawerRunner);
+    fillModelSelect(dom.drawerSeedModel, project.seedModel, 'Inherit default model', drawerRunner);
+    fillModelSelect(dom.drawerAnalyzeModel, project.analyzeModel, 'Inherit default model', drawerRunner);
+    fillModelSelect(dom.drawerImplementModel, project.implementModel, 'Inherit default model', drawerRunner);
+    const rotationFlags = effectiveRotationFlags(project);
+    applyRotationButtons(DRAWER_ROTATION_TARGETS, {
+      modelRotation: rotationFlags.model,
+      seedRotation: rotationFlags.seed,
+      analyzeRotation: rotationFlags.analyze,
+      implementRotation: rotationFlags.implement
+    });
     dom.projectModelStatus.textContent = '';
   }
 
@@ -2131,7 +2265,8 @@
           model: readModelSelect(dom.drawerModelInput),
           seedModel: readModelSelect(dom.drawerSeedModel),
           analyzeModel: readModelSelect(dom.drawerAnalyzeModel),
-          implementModel: readModelSelect(dom.drawerImplementModel)
+          implementModel: readModelSelect(dom.drawerImplementModel),
+          ...readRotationButtons(DRAWER_ROTATION_TARGETS)
         })
       });
       await refreshState();
@@ -2217,14 +2352,17 @@
     const settings = state.settings || {};
     setIfIdle(dom.maxConcurrent, settings.maxConcurrent);
     setIfIdle(dom.mode, settings.mode);
-    fillModelSelect(dom.model, settings.model, 'OpenCode default');
-    fillModelSelect(dom.seedModel, settings.seedModel, 'Inherit default model');
-    fillModelSelect(dom.analyzeModel, settings.analyzeModel, 'Inherit default model');
-    fillModelSelect(dom.implementModel, settings.implementModel, 'Inherit default model');
-    fillModelSelect(dom.projectModel, '', 'Inherit global');
-    fillModelSelect(dom.projectSeedModel, '', 'Inherit default model');
-    fillModelSelect(dom.projectAnalyzeModel, '', 'Inherit default model');
-    fillModelSelect(dom.projectImplementModel, '', 'Inherit default model');
+    fillModelSelect(dom.model, settings.model, 'Runner default', settings.globalRunner);
+    fillModelSelect(dom.seedModel, settings.seedModel, 'Inherit default model', settings.globalRunner);
+    fillModelSelect(dom.analyzeModel, settings.analyzeModel, 'Inherit default model', settings.globalRunner);
+    fillModelSelect(dom.implementModel, settings.implementModel, 'Inherit default model', settings.globalRunner);
+    const setupRunner = dom.projectRunner.value || settings.globalRunner;
+    fillModelSelect(dom.projectModel, '', 'Inherit global', setupRunner);
+    fillModelSelect(dom.projectSeedModel, '', 'Inherit default model', setupRunner);
+    fillModelSelect(dom.projectAnalyzeModel, '', 'Inherit default model', setupRunner);
+    fillModelSelect(dom.projectImplementModel, '', 'Inherit default model', setupRunner);
+    applyRotationButtons(GLOBAL_ROTATION_TARGETS, settings);
+    applyRotationButtons(PROJECT_SETUP_ROTATION_TARGETS, settings);
     setIfIdle(dom.rateLimitSeconds, settings.rateLimitPauseSeconds);
     setIfIdle(dom.cooloffSeconds, settings.cooloffSeconds);
     setIfIdle(dom.blockThreshold, settings.blockThreshold);
@@ -2247,6 +2385,10 @@
       dom.projectRunner,
       state.runners,
       app.runnerTouched ? dom.projectRunner.value : settings.globalRunner
+    );
+    refillModelSelectsForRunner(
+      [dom.projectModel, dom.projectSeedModel, dom.projectAnalyzeModel, dom.projectImplementModel],
+      dom.projectRunner.value || settings.globalRunner
     );
     renderCards(state.projects || []);
 
@@ -2284,6 +2426,7 @@
           seedModel: readModelSelect(dom.seedModel),
           analyzeModel: readModelSelect(dom.analyzeModel),
           implementModel: readModelSelect(dom.implementModel),
+          ...readRotationButtons(GLOBAL_ROTATION_TARGETS),
           rateLimitPauseSeconds: Number(dom.rateLimitSeconds.value),
           cooloffSeconds: Number(dom.cooloffSeconds.value),
           blockThreshold: dom.blockThreshold.value.trim() === '' ? '' : Number(dom.blockThreshold.value),
@@ -2469,6 +2612,7 @@
           seedModel: readModelSelect(dom.projectSeedModel),
           analyzeModel: readModelSelect(dom.projectAnalyzeModel),
           implementModel: readModelSelect(dom.projectImplementModel),
+          ...readRotationButtons(PROJECT_SETUP_ROTATION_TARGETS),
           blockThreshold: dom.projectBlockThreshold.value.trim() === ''
             ? ''
             : Number(dom.projectBlockThreshold.value),
@@ -2484,6 +2628,7 @@
       [dom.projectModel, dom.projectSeedModel, dom.projectAnalyzeModel, dom.projectImplementModel].forEach((select) => {
         Array.from(select.options).forEach((option) => { option.selected = option.value === ''; });
       });
+      applyRotationButtons(PROJECT_SETUP_ROTATION_TARGETS, app.state?.settings || {});
       dom.projectBlockThreshold.value = '';
       dom.projectCooloffSeconds.value = '';
       dom.projectTemporaryLiftScope.value = '';
@@ -2788,10 +2933,28 @@
     setSidebarOpen(false);
   });
   dom.projectName.addEventListener('input', () => { app.nameTouched = Boolean(dom.projectName.value); });
-  dom.projectRunner.addEventListener('change', () => { app.runnerTouched = true; });
+  dom.projectRunner.addEventListener('change', () => {
+    app.runnerTouched = true;
+    refillModelSelectsForRunner(
+      [dom.projectModel, dom.projectSeedModel, dom.projectAnalyzeModel, dom.projectImplementModel],
+      dom.projectRunner.value
+    );
+  });
+  dom.globalRunner.addEventListener('change', () => {
+    refillModelSelectsForRunner(
+      [dom.model, dom.seedModel, dom.analyzeModel, dom.implementModel],
+      dom.globalRunner.value
+    );
+  });
   dom.drawerClose.addEventListener('click', closeDrawer);
   dom.drawerBackdrop.addEventListener('click', closeDrawer);
   dom.saveProjectModel.addEventListener('click', saveProjectModel);
+  document.addEventListener('click', (event) => {
+    const button = event.target instanceof Element ? event.target.closest('.model-rotate-button') : null;
+    if (!button) return;
+    const pressed = button.getAttribute('aria-pressed') === 'true';
+    button.setAttribute('aria-pressed', pressed ? 'false' : 'true');
+  });
   dom.saveAutoResume.addEventListener('click', saveAutoResume);
   dom.saveBlockPolicy.addEventListener('click', saveBlockPolicy);
   dom.autoResumeToggle.addEventListener('change', () => {

@@ -500,3 +500,209 @@ Confirmed decisions:
 - `git diff --check` passed for all staged-path candidates. Secret-pattern scan found only ordinary UI wording and documentation references; no credential values were present.
 - Commit: `e8b96367a4546f2f02aa618ec17680e7169a194e` (`feat: remember drawer UI state per project`).
 - Untracked files, `.tmp-*`, `looparr-a-open.yml`, pre-existing `server.js` changes, and engine-managed `.looparr/next_prompt.txt` were excluded or left untouched.
+
+
+## Scriptable PNG icon batch — complete
+
+Added `GET /api/projects/:id/icon.png` for native clients that cannot decode SVG. The endpoint returns a 256x256 PNG, keeps the discovered icon's version in a `-png` ETag, uses `Cache-Control: no-cache`, and reuses the browser icon route's project/path containment checks.
+
+Changes:
+- Added `src/icon-png.js` with `sharp`-based rasterization and a small in-memory cache.
+- Added `resolveProjectIcon(id)` in `server.js`; both icon routes use it.
+- Refactored `GET /api/projects/:id/icon` without changing its response behavior.
+- Added `GET /api/projects/:id/icon.png`.
+- Added PNG route tests to `scripts/test-icons.js`.
+- Documented the endpoint in `README.md`.
+- Added `sharp ^0.35.5` and updated `package-lock.json`.
+- Marked the `plan.md` batch complete.
+
+Verification:
+- `npm test` passed all suites, including `icon discovery and serving tests passed`.
+- `git diff --check` passed.
+- `npm run restart:looparr -- --dry-run` produced the expected Docker command.
+- `bash scripts/promote.sh --sandbox-only` built `looparr:latest` and passed sandbox smoke.
+- `npm run restart:looparr` rebuilt and recreated production. API and health checks passed.
+- Production container `looparr` is `running` and `healthy` on the new image.
+- Local and container SHA-256 hashes match for `server.js`, `src/icon-png.js`, `package.json`, `package-lock.json`, `public/index.html`, `public/app.js`, and `public/styles.css`.
+- Served `/`, `/styles.css`, and `/app.js` hashes match local source.
+- `/api/state` responds on the production port.
+- `/api/projects/d76e436a-8816-4342-9511-b4706e2320e4/icon` still returns the original SVG with its original ETag.
+- `/api/projects/d76e436a-8816-4342-9511-b4706e2320e4/icon.png` returned `200`, `image/png`, `nosniff`, `no-cache`, ETag `"0312d5640e79-png"`, and a 256x256 RGBA PNG. Matching `If-None-Match` returned `304`.
+
+Note: `npm run restart:looparr` printed `Active-run postcheck failed: fetch failed`, but it completed its API/health checks and printed the standard instruction to finish the served-asset and container-content checks above.
+
+Widget follow-up: Scriptable should request `/api/projects/:id/icon.png` instead of `/api/projects/:id/icon`; keep the same `v` query value from `iconVersion || icon`.
+
+## Model rotation per dropdown batch — complete (2026-11-22)
+
+Added an opt-in rotation toggle to every model dropdown. Rotation is off by default and stored per field: global `modelRotation`, `seedRotation`, `analyzeRotation`, `implementRotation`, with per-project boolean overrides where `null` inherits the global. When on and the effective list has two or more models, each successfully completed step advances that field's in-memory cursor; rate-limit fallback still advances inside a step, and rotation resumes past the model that served it.
+
+Changes:
+- `src/config.js`: rotation defaults, nullable project overrides, `resolveRotation`, `rotationFieldForModelField`.
+- `src/engine.js`: per-field cursor (`rt.rotationCursor`, `rt.rotationLists`), rotation start index, advance on successful close, `modelFallbackPending` so an in-step rate-limit retry is not treated as a new step, `Model: <id> (rotation n/N)` log suffix, `modelRotation`/`effectiveRotations` in state.
+- `server.js`: boolean validation in `PATCH /api/settings`; boolean-or-null validation in project create and patch.
+- `public/index.html`, `public/app.js`, `public/styles.css`: 12 toggles sharing one two-arrow SVG symbol, `aria-pressed` state, green filled square when on and gray when off, `title`/`aria-label` "Model Rotation", drawer `Rotation:` summary line, updated hints.
+- `scripts/test-model-rotation.js` wired into `npm test`; `scripts/test-model-selector.js` asserts each select has a toggle.
+- `README.md` and `plan.md` updated.
+
+Verification:
+- `npm test`: all 17 scripts passed, including `model rotation smoke tests passed`.
+- `node --check` passed for `src/config.js`, `src/engine.js`, `server.js`, `public/app.js`.
+- `git diff --check` passed.
+- `docker compose build looparr && docker compose up -d looparr`: container healthy on new image `sha256:874be07fb107`.
+- Container SHA-256 matches local for `server.js`, `src/config.js`, `src/engine.js`, `src/model-list.js`, `public/index.html`, `public/app.js`, `public/styles.css`.
+- Served `/index.html` has 12 `data-rotate-for` toggles, `/app.js` has `readRotationButtons`, `/styles.css` has the green `[aria-pressed="true"]` state, `/api/state` reports all four rotation flags off by default.
+
+## Free runner discovery batch — complete (2026-11-22)
+
+Discovery only for the plan item on free terminal coding CLIs as runners. No application source changed, so the production rebuild block did not apply.
+
+Recorded in `.project_documents/INVESTIGATION-free-runner-options.md`:
+- Requirement list a runner must meet (no TTY, per-step model pinning, non-interactive approvals, greppable failure text, auth without a browser).
+- 14-row candidate matrix with headless invocation, free-token path, prod-auth viability and verdict.
+- Live probe: `opencode v2.3.2`; Kilo Gateway `api.kilo.ai/api/gateway` returned `200` for the models list and `200` for a keyless `kilo-auto/free` completion (routed to `reflection/beam-free`), so free tokens are available through the existing OpenCode runner with a provider config only.
+- Decisions: build Kilo Gateway first (no new runner), then Kilo CLI as the first real second runner; probe Qoder and Mistral Vibe; rule out Antigravity (ToS forbids wrapping `agy` in third-party agents on consumer plans, headless needs a cached interactive login), Copilot Free (unquantified credits, auto model selection only), iFlow (service shut down), Qwen (free OAuth ended 2026-04-15), Gemini CLI (free access moved to Antigravity 2026-06-18), Amp (Amp Free paused).
+- Rotation conclusion: keep the per-dropdown toggle, but ids must be runner-scoped (project runner selection, `runner` on `/run`, per-runner model catalogues) before a second provider's models enter the shared pickers.
+
+Plan updates: discovery item marked complete; new `## Free runner candidates` section holds the follow-up items and the Antigravity decision.
+
+## Kilo Gateway free lane — complete (2026-11-22)
+
+Added the keyless Kilo Gateway free models to the picker through the existing OpenCode runner. No new runner and no engine change.
+
+Changes:
+- `opencode.json` (repo root): `kilo` provider against `https://api.kilo.ai/api/gateway`, no `apiKey`, 12 free model ids declared.
+- `public/app.js`: the same 12 `kilo/*` ids appended to `MODEL_OPTIONS`, so every global, project, and drawer dropdown offers them and per-dropdown rotation works unchanged.
+- `README.md`: ids documented plus the provider requirement, the host-executor restart note, and the rotating/rate-limited nature of the free catalogue.
+- `scripts/test-model-selector.js`: asserts the served `app.js` carries every id, and that `opencode.json` declares the provider keyless with each model.
+- `plan.md`: gateway item marked complete.
+
+Verification:
+- `opencode models` with the provider present lists 443 `kilo/...` entries, 12 tagged free; the gateway completed `kilo/kilo-auto/free` with no credential.
+- Server-cwd config reaches a config-less project directory: `opencode serve` from the repo root plus `opencode run --server ... --model kilo/kilo-auto/free` printed `ok`, exit 0.
+- Real Looparr path: `scripts/host-executor.js` on port 4291 with its own OpenCode server on 4124; `POST /run` with model `kilo/kilo-auto/free` streamed `{"stream":"out","text":"ok\n"}` then `{"exit":0}`.
+- `node --check public/app.js`, `scripts/test-model-selector.js`, and `git diff --check` passed.
+- Production rebuilt and recreated: healthy on image `sha256:9e8140ac503c`; container `/app/public/app.js` hash matches local; served `/app.js` exposes the 12 kilo ids; `/api/state` still returns settings, projects, and the four rotation flags.
+
+Notes:
+- The live host executor and its OpenCode server must be restarted for the new provider to load; verification used an isolated executor on alternate ports so no active run was interrupted.
+- OpenCode 2.3.2 requires `OPENCODE_PASSWORD` for both `serve` and `run` when the server enforces it; the probe set it explicitly.
+- `opencode.json` is host-side OpenCode configuration and is intentionally not copied into the Looparr image.
+
+## Provider hardening, live restart, Qoder/Vibe probes (2026-11-22)
+
+Hardening:
+- New `src/opencode-provider.js` fills in the keyless `kilo` provider in the repo-root `opencode.json` only where keys are missing, preserves hand-edited values and unrelated config, writes atomically, and refuses to touch a file it cannot parse. `scripts/test-opencode-provider.js` covers creation, idempotency, preservation, custom settings, broken JSON, and the committed config.
+- `scripts/host-executor.js` now seeds that config at startup and reports `kiloProvider`/`kiloProviderPath` in `GET /health`.
+- The executor no longer attaches to an OpenCode server it did not start. It skips a listener on the configured port and starts its own server, cwd `REPO_ROOT`, on the next free port, so the server always reads this repo's provider config. If a port cannot serve, it tries the next one and fails only after the whole range.
+
+Live restart and verification:
+- Restarted the production host executor. `GET /health` on `172.17.0.1:4187` reports `kiloProvider: unchanged`; the log shows `port 4096 is served by a process this executor does not own; trying the next port` followed by `serving http://127.0.0.1:4097/ from /home/michaelpeele/ai-projects/looparr`. The pre-existing `opencode serve --service` on 4096 was left running untouched.
+- A real `POST /run` through 4187 with `model: "kilo/kilo-auto/free"` streamed `{"stream":"out","text":"ok\n"}` and `{"exit":0}`; the container can reach the same health endpoint.
+- Note for future sessions: a background process started inside a single tool command is killed when that command exits. The executor must be started detached (`setsid nohup node scripts/host-executor.js ... &`) or as a long-lived background job, then verified alive afterwards.
+
+Runner investigation:
+- Per-project runner selection already exists end to end: `project.runner` + `settings.globalRunner` in config, `PUT /api/projects/:id` and settings validation in `server.js`, the `project-runner` and `global-runner` selects in `public/index.html`, and `getRunner(...)` dispatch in `src/engine.js`. What is missing is a second registered runner, not the selection plumbing. The remaining gap for a second runner is the `runner` field on the host-executor `/run` payload.
+
+Qoder and Mistral Vibe probes:
+- `qodercli 1.1.95` installed from `@qoder-ai/qodercli`; headless flags confirmed, but every run stops at `Not logged in · Please run /login` and only interactive login is offered.
+- `mistral-vibe 3.1.4` installed from PyPI into a venv; programmatic mode starts but exits 1 with `Missing MISTRAL_API_KEY`, and setup is interactive `vibe --setup`.
+- Both probe plan items are closed with a "no runner until authenticated" decision; details and exact output are in `.project_documents/INVESTIGATION-free-runner-options.md`.
+
+Checks: `npm test` passed (18 scripts, including the new provider test). Production was rebuilt and verified after these source changes.
+
+## Runner payload, Kilo CLI runner, host CLI installs (2026-11-22)
+
+Runner payload:
+- `runner` now travels from the engine's bridge payload through `scripts/bridge-client.js` to the host executor. `scripts/host-executor.js` validates it against `opencode` and `kilo` (default `opencode`, HTTP 400 on an unknown id) and spawns the matching binary.
+- The OpenCode bridge payload explicitly carries `runner: "opencode"`; the new Kilo runner carries `runner: "kilo"`.
+- `GET /health` reports both binaries under `runnerBinaries`; `/active` entries include `runner`.
+
+Kilo runner:
+- New `src/runners/kilo.js` and `src/kilo-command.js`. Invocation: `kilo run --auto --format json [--model provider/model] [--file path]... <prompt>`, with the model validated by the shared `validateModelId`. Files are supported, so the seed step still attaches `plan.md`.
+- Registered in `src/runners/index.js`; `/api/state` now lists `opencode:OpenCode,kilo:Kilo CLI`.
+- Rate-limit detection, stale-run cancellation, and active-run listing are reused from the OpenCode runner because both go through the same executor endpoints.
+- Local mode spawns `KILO_BIN` (default `kilo`); bridge mode spawns the executor.
+
+Verification:
+- `scripts/test-runner-payload.js` covers registry, both bridge payloads, Kilo argument building, blank prompt, comma model lists, whitespace, and the required run key.
+- Live: `POST /run` with `runner: "kilo"` through the restarted executor streamed Kilo JSON events and `{"exit":0}`, routed keyless to `baidu/ernie-5.5-flash-preview:free` with `cost: 0`. No `kilo auth` login was needed.
+- `POST /run` with `runner: "nope"` returned HTTP 400.
+- `npm test` passed (19 scripts). Production rebuilt and healthy on image `sha256:6f546a9a3eeb`; container hashes match local for the new runner, the argument builder, the registry, and the executor.
+- The executor runs detached under `setsid` (pid 1957223 at the end of the batch), with its own OpenCode server, and skips the foreign listener on 4096.
+
+Persistent host CLIs (for the Qoder and Vibe follow-up):
+- `~/.local/bin/qodercli` 1.1.95, installed with `npm install -g --prefix "$HOME/.local" @qoder-ai/qodercli` (the global `npm install -g` fails with `EACCES` on `/usr/local/lib/node_modules`).
+- `~/.local/bin/kilo` 7.8.32 from `@kilocode/cli`, same prefix.
+- `~/.local/bin/vibe` 3.1.4 symlinked into a venv at `~/.local/share/mistral-vibe`, because system Python is PEP 668 managed and `pip install --user` is refused.
+- Auth is still pending for Qoder (`qodercli login`) and Vibe (`vibe --setup` or `MISTRAL_API_KEY`); both remain unverified end to end.
+
+Open follow-up: model ids are still a single shared list, so a project must pair the `kilo` runner with `kilo/*` ids and `opencode` with `opencode/*` until the per-runner catalogues land.
+
+## Post-auth re-probe: Qoder and Mistral Vibe (2026-11-22)
+
+Both host CLIs were signed in by the user, then probed again headless with no TTY.
+
+Qoder CLI 1.1.95:
+- `qodercli whoami` exits 0 and `~/.qoder/.auth/user` exists, so login works.
+- `qodercli --list-models` prints `Warning: no models available for your account.`
+- `qodercli -p "Reply with the single word ok." --permission-mode auto -o json` exits 1 with `inference.remoteChat.stream failed (403): {"pricingUrl":"https://qoder.com/pricing?client=qoder"}`, `error_code: 112`, zero tokens. Forcing `--model qwen3-coder-plus` falls back to `auto` and fails identically.
+- Outcome: the block is plan entitlement, not auth. No runner built; revisit only if the account gains a paid or trial plan.
+
+Mistral Vibe 3.1.4:
+- `vibe -p "Reply with the single word ok." --max-turns 2 --max-price 0 --output json` exits 0 with assistant text `ok` and empty stderr.
+- Headless file edits work: an `--auto-approve --max-price 0` run appended the requested line to `plan.md` and replied `done`, creating no other files.
+- `--output streaming` emits one JSON object per line (5 events for a two-step run: `message:user`, `reasoning`, two `effect`, `message:assistant`), usable as NDJSON for logs and SSE.
+- `--output-dir` writes `export.json` with `outcome: finished`, `stop_reason: null`, `cost_usd: 0`, and `usage.total_tokens: 19038`.
+- Free lane confirmed: `--max-price 0` did not halt the run and the run cost 0.
+- Runner gaps: no attachment flag (`--prompt-file` replaces the prompt rather than attaching), `--model` accepts a Vibe alias only, and `--output-dir` is the only structured cost/stop-reason source.
+- Outcome: viable second runner; recorded as the open build item in `plan.md`.
+
+Docs-only batch: no source files changed, so production was not rebuilt. `git diff --check` clean. The host executor from the previous batch is still alive (pid 1957223) and `/api/state` still lists both runners.
+
+## Vibe runner and per-runner model scoping (2026-11-22)
+
+Qoder, closed out:
+- After the account was signed in, `qodercli whoami` succeeds but `qodercli --list-models` prints `Warning: no models available for your account.` and every `-p` run exits 1 with a 403 pointing at the pricing page. Qoder's own pricing page lists Free as the 2-week Pro trial plus completions/NES and BYOK, with no standing free model catalogue, so the account has no models to rotate. No runner built.
+
+Vibe runner:
+- New `src/vibe-command.js` builds `vibe --prompt <prompt> --auto-approve --output streaming --max-price 0 [--model <alias>]`. `--max-price 0` stops a run before any call that would cost money, so only free-plan usage completes.
+- Vibe has no attachment flag (`--prompt-file` replaces the prompt), so seed `plan.md` and handoff paths are appended to the prompt as a short context list and read from the working directory by the agent.
+- New `src/runners/vibe.js`, registered in `src/runners/index.js`. Local mode spawns `VIBE_BIN` (default `vibe`); bridge mode sends `runner: "vibe"`.
+- `scripts/host-executor.js` accepts `vibe` in its runner set, dispatches to `buildVibeArgs`, reports `runnerBinaries.vibe`, and names the actual runner in its signal message.
+- No cost or stop-reason parsing yet: that needs `--output-dir` `export.json`, which is not wired.
+
+Per-runner model scoping:
+- Each runner exports a `models` catalogue: OpenCode 25 ids (its own namespaces plus the `kilo/*` gateway lane, which resolves through the keyless `kilo` provider in repo-root `opencode.json`), Kilo CLI 12 `kilo/*` ids, Vibe none because `--model` takes an account alias.
+- `listRunners()` serves the catalogues in `/api/state`; `runnerSupportsModel()` refuses ids claimed by another runner and allows unclaimed custom/BYOK ids. `src/engine.js` filters the effective model list per step and logs `Skipped model ids not valid for <runner>`.
+- `public/app.js` replaces the flat `MODEL_OPTIONS` with `MODEL_OPTIONS_BY_RUNNER`, filters every picker by the selected runner, and rebuilds the model selects when the global or project runner changes so a stale id cannot stay selected.
+
+Verification:
+- `npm test` passes (19 scripts) including the expanded runner payload tests: registry, catalogues, Kilo and Vibe argument building, both bridge payloads, shared cancellation, rate-limit detection.
+- Live executor restarted and still serving (pid 1975836) reports `runnerBinaries: {opencode, kilo, vibe}` and `kiloProvider: unchanged`.
+- Live `POST /run` with `runner: "vibe"` returned Vibe JSON events, assistant text `ok`, and `{"exit":0}` in 8.6 seconds.
+- Production rebuilt and healthy on image `sha256:1e2f05520a6b`; container `public/app.js` hash matches local `28261f3a5ad8`, `src/runners/vibe.js` and `src/vibe-command.js` are present, and prod `/api/state` reports `opencode:OpenCode:25, kilo:Kilo CLI:12, vibe:Mistral Vibe:0`.
+
+Host cleanup command for Qoder (not run here): `npm uninstall -g @qoder-ai/qodercli --prefix "$HOME/.local"`, plus `rm -rf ~/.qoder` for its login state.
+
+## Vibe free-lane aliases (2026-11-23)
+
+Vibe had an empty picker because `--model` takes an account alias rather than a `provider/model` id. The account's cached catalogue (`~/.vibe/model_catalog_cache.json`, `model_catalog_cache` key `24c552dda975e18c5e175cbbc01665d3`, plan `FREE`) lists six models and exactly one free-lane entry:
+
+- `zai-glm-5-3-flash-vibe-free`, label `GLM 5.3 Flash (Mistral Hosted)`, alias `zai-glm-5-3-flash`, no `requires`, 262,144 ctx.
+- Paid/plan-gated and therefore left out: `mistral-large-4-0`, `zai-glm-5-3`, `zai-glm-5-3-flash` (the higher-plan id), `deepseek-v4-1-flash-1017`. `mistral-medium-latest` has no `higher_plan` requirement but is priced above zero, so the `--max-price 0` guard would stop it instead of running free.
+
+Probes (headless, no TTY, `--max-price 0 --output streaming`):
+- `--model zai-glm-5-3-flash-vibe-free`: assistant `ok`, `export.json` `outcome: finished`, `cost_usd: 0`, `config.active_model: zai-glm-5-3-flash-vibe-free`, 6,224 tokens.
+- `--model zai-glm-5-3-flash`: assistant `ok`, `export.json` `outcome: finished`, `cost_usd: 0`. The alias resolves to the free entry for this account even though a paid model shares that id string.
+
+Changes:
+- `src/runners/vibe.js` `MODELS` now carries the two ids with a comment recording that they are the free lane only.
+- `MODEL_OPTIONS_BY_RUNNER.vibe` in `public/app.js` mirrors them for the first paint. A blank model still means the account's active model.
+- `scripts/test-runner-payload.js` asserts the Vibe catalogue, that Vibe accepts both ids, and that OpenCode refuses the Vibe alias.
+- `README.md` and `plan.md` updated; the plan item is closed.
+
+Verification:
+- `npm test` passes (19 scripts); `git diff --check` clean.
+- Production rebuilt and recreated: healthy on image `sha256:a75d1c65c79e129a98994eefe9aefa7eb21abea010bd1dea56634b8ec79544fe`; container `public/app.js` hash `265644bea270416842cd727b410dac16e04c0556c4179f61267f94fa6097f275` matches local; `/api/state` reports `opencode:25, kilo:12, vibe:2`.
+- No host executor restart was needed: the executor already forwards `--model`, and these ids only change what the picker offers.

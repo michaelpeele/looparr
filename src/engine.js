@@ -11,7 +11,7 @@ const autoResume = require('./auto-resume');
 const bus = require('./events');
 const planLib = require('./plan');
 const iconLib = require('./icon');
-const { getRunner, listRunners } = require('./runners');
+const { getRunner, listRunners, runnerSupportsModel } = require('./runners');
 const { modelList, joinModelList } = require('./model-list');
 
 const config = configStore.loadConfig();
@@ -68,6 +68,9 @@ function ensureRuntime(project) {
       token: 0,
       modelIndex: 0,
       modelAttemptRunKey: '',
+      modelFallbackPending: false,
+      rotationCursor: {},
+      rotationLists: {},
       stepTask: null,
       stepOutput: '',
       icon: null,
@@ -91,6 +94,28 @@ function effectiveModelList(project, phase = 'seed') {
 
 function effectiveModel(project, phase = 'seed') {
   return effectiveModelList(project, phase)[0] || '';
+}
+
+function effectiveRotation(project, modelField = 'model') {
+  return configStore.resolveRotation(project, config.settings, modelField);
+}
+
+function rotationStartIndex(rt, field, models) {
+  const key = joinModelList(models);
+  if (rt.rotationLists[field] !== key) {
+    rt.rotationLists[field] = key;
+    rt.rotationCursor[field] = 0;
+  }
+  const cursor = Number.isInteger(rt.rotationCursor[field]) ? rt.rotationCursor[field] : 0;
+  return ((cursor % models.length) + models.length) % models.length;
+}
+
+function advanceRotationCursor(project, rt, phase) {
+  const field = configStore.modelFieldForPhase(phase);
+  if (!configStore.resolveRotation(project, config.settings, field)) return;
+  const models = effectiveModelList(project, phase);
+  if (models.length < 2) return;
+  rt.rotationCursor[field] = (rt.modelIndex + 1) % models.length;
 }
 
 function blockPolicyFor(project) {
@@ -162,6 +187,16 @@ function getState() {
         seedModel: project.seedModel || '',
         analyzeModel: project.analyzeModel || '',
         implementModel: project.implementModel || '',
+        modelRotation: project.modelRotation ?? null,
+        seedRotation: project.seedRotation ?? null,
+        analyzeRotation: project.analyzeRotation ?? null,
+        implementRotation: project.implementRotation ?? null,
+        effectiveRotations: {
+          model: effectiveRotation(project, 'model'),
+          seed: effectiveRotation(project, 'seedModel'),
+          analyze: effectiveRotation(project, 'analyzeModel'),
+          implement: effectiveRotation(project, 'implementModel')
+        },
         effectiveModel: effectiveModel(project),
         effectiveModels: {
           seed: effectiveModel(project, 'seed'),
@@ -266,6 +301,10 @@ function addProject(input) {
     seedModel: configStore.normalizedModel(input.seedModel, ''),
     analyzeModel: configStore.normalizedModel(input.analyzeModel, ''),
     implementModel: configStore.normalizedModel(input.implementModel, ''),
+    modelRotation: input.modelRotation,
+    seedRotation: input.seedRotation,
+    analyzeRotation: input.analyzeRotation,
+    implementRotation: input.implementRotation,
     blockThreshold: input.blockThreshold ?? null,
     cooloffSeconds: input.cooloffSeconds ?? null,
     temporaryLiftScope: input.temporaryLiftScope || '',
@@ -679,6 +718,7 @@ function scheduleModelFallback(project, rt, runner, phase, models) {
   const currentModel = models[rt.modelIndex] || 'OpenCode default';
   const nextModel = models[rt.modelIndex + 1] || 'OpenCode default';
   const pauseMs = rateLimitPauseMs();
+  rt.modelFallbackPending = true;
   appendLog(project.id, 'system', `Rate limited on ${currentModel}; retrying with ${nextModel}.`);
   rt.modelIndex += 1;
   rt.status = 'rateLimited';
@@ -794,6 +834,7 @@ function handleClose(project, rt, code, task, phase, runner) {
       }
     }
 
+    advanceRotationCursor(project, rt, phase);
     if (rt.paused) {
       rt.status = 'paused';
       rt.pauseAfterStep = false;
@@ -889,16 +930,36 @@ async function startStep(project) {
     emitState();
 
     const url = runner.ensureServer ? await runner.ensureServer() : null;
-    const models = effectiveModelList(project, phase);
+    const modelField = configStore.modelFieldForPhase(phase);
+    const configuredModels = effectiveModelList(project, phase);
+    // Model ids are scoped per runner, so an inherited or stale id for another
+    // provider can never reach this runner's CLI.
+    const models = configuredModels.filter((id) => runnerSupportsModel(runner, id));
+    const droppedModels = configuredModels.filter((id) => !models.includes(id));
+    if (droppedModels.length) {
+      appendLog(
+        project.id,
+        'system',
+        `Skipped model ids not valid for ${runner.label}: ${droppedModels.join(', ')}`
+      );
+    }
+    const rotating = models.length > 1 && configStore.resolveRotation(project, config.settings, modelField);
+    const isFallbackRetry = rt.modelFallbackPending === true && rt.modelAttemptRunKey === runKey;
+    rt.modelFallbackPending = false;
     if (rt.modelAttemptRunKey !== runKey) {
       rt.modelAttemptRunKey = runKey;
       rt.modelIndex = 0;
+    }
+    if (rotating && !isFallbackRetry) {
+      rt.modelIndex = rotationStartIndex(rt, modelField, models);
     } else if (rt.modelIndex >= models.length) {
       rt.modelIndex = 0;
     }
     const model = models[rt.modelIndex] || '';
-    const fallbackNote = models.length > 1 ? ` (fallback ${rt.modelIndex + 1}/${models.length})` : '';
-    appendLog(project.id, 'system', `Model: ${model || 'OpenCode default'}${fallbackNote}`);
+    let positionNote = '';
+    if (rotating) positionNote = ` (rotation ${rt.modelIndex + 1}/${models.length})`;
+    else if (models.length > 1) positionNote = ` (fallback ${rt.modelIndex + 1}/${models.length})`;
+    appendLog(project.id, 'system', `Model: ${model || 'OpenCode default'}${positionNote}`);
     await spawnRunnerAttempt(project, rt, runner, {
       prompt,
       url,

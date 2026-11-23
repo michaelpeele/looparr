@@ -21,6 +21,20 @@ const BASE_URL = 'http://127.0.0.1:4199';
 const RATE_LIMIT_MODEL = 'opencode/rate-limited';
 const FALLBACK_MODEL = 'opencode/fallback-ok';
 const PLAN_TASK = 'fallback task';
+const KILO_FREE_MODELS = [
+  'kilo/kilo-auto/free',
+  'kilo/openrouter/free',
+  'kilo/reflection/beam-free',
+  'kilo/recursive/flint-v1.0:free',
+  'kilo/nvidia/nemotron-3.5-super-vl:free',
+  'kilo/nvidia/nemotron-3-ultra-550b-a55b:free',
+  'kilo/nvidia/nemotron-3.5-lightning:free',
+  'kilo/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+  'kilo/baidu/ernie-5.5-flash-preview:free',
+  'kilo/inclusionai/ling-3.2-flash:free',
+  'kilo/particle-ai/particle-1:free',
+  'kilo/liquid/lfm-3-1.7b:free'
+];
 const MODEL_SELECT_IDS = [
   'model',
   'seed-model',
@@ -246,7 +260,21 @@ function testHostExecutorRejectsComma() {
   assertMatch(source, /model\.includes\(','\)/, 'host executor rejects comma payload model');
 }
 
+function testKiloProviderConfig() {
+  const file = path.join(REPO_ROOT, 'opencode.json');
+  const config = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const provider = config.providers && config.providers.kilo;
+  assert.ok(provider, 'opencode.json declares the kilo provider');
+  assertEqual(provider.settings.baseURL, 'https://api.kilo.ai/api/gateway', 'kilo baseURL');
+  assert.ok(!Object.prototype.hasOwnProperty.call(provider.settings, 'apiKey'), 'kilo provider is keyless');
+  for (const id of KILO_FREE_MODELS) {
+    const modelId = id.replace(/^kilo\//, '');
+    assert.ok(provider.models[modelId], `opencode.json declares ${modelId}`);
+  }
+}
+
 async function testServedModelOptions() {
+  testKiloProviderConfig();
   const htmlResponse = await fetch(`${BASE_URL}/index.html`);
   assertEqual(htmlResponse.status, 200, 'GET /index.html status');
   const html = await htmlResponse.text();
@@ -256,6 +284,7 @@ async function testServedModelOptions() {
     assert.ok(match, `served index.html has #${id}`);
     assertMatch(match[0], /\bmultiple\b/, `#${id} is multiple`);
     assertMatch(match[0], /size="4"/, `#${id} uses size="4"`);
+    assert.ok(html.includes(`data-rotate-for="${id}"`), `#${id} has a Model Rotation toggle`);
   }
 
   const response = await fetch(`${BASE_URL}/app.js`);
@@ -263,6 +292,9 @@ async function testServedModelOptions() {
   const text = await response.text();
   assert.ok(text.includes('omniroute/auto/coding'), 'served app.js includes omniroute/auto/coding');
   assert.ok(text.includes("'omniroute/auto'"), 'served app.js includes omniroute/auto entry');
+  for (const id of KILO_FREE_MODELS) {
+    assert.ok(text.includes(`'${id}'`), `served app.js includes ${id}`);
+  }
   assert.ok(text.includes('selectedOptions'), 'served app.js reads selectedOptions');
   assert.ok(text.includes('function readModelSelect'), 'served app.js defines readModelSelect');
   assert.ok(text.includes('effectiveModelListsFor'), 'served app.js reads effectiveModelLists');

@@ -5,11 +5,16 @@ const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const { execFileSync, spawn } = require('child_process');
+const { ensureKiloProvider } = require('../src/opencode-provider');
+const { buildKiloArgs } = require('../src/kilo-command');
+const { buildVibeArgs } = require('../src/vibe-command');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DEFAULT_PROJECTS_ROOT = '/home/michaelpeele/ai-projects';
 const DEFAULT_OPENCODE_BIN = '/home/michaelpeele/.opencode/bin/opencode';
 const DEFAULT_OPENCODE_SERVER_PORT = 4096;
+const OPENCODE_PORT_ATTEMPTS = 10;
+const RUNNERS = new Set(['opencode', 'kilo', 'vibe']);
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
 const MAX_RUN_KEY_LENGTH = 128;
 const RUN_KEY_PATTERN = /^[A-Za-z0-9._:-]+$/;
@@ -55,7 +60,9 @@ const opencodeServerPort = Number(process.env.LOOPARR_EXECUTOR_OPENCODE_PORT || 
 if (!Number.isInteger(opencodeServerPort) || opencodeServerPort < 1 || opencodeServerPort > 65535) {
   fail('LOOPARR_EXECUTOR_OPENCODE_PORT must be an integer from 1 to 65535');
 }
-const PROBE_URL = `http://127.0.0.1:${opencodeServerPort}/`;
+function serverUrl(port) {
+  return `http://127.0.0.1:${port}/`;
+}
 
 function discoverBind() {
   const explicit = process.env.LOOPARR_EXECUTOR_BIND;
@@ -82,6 +89,19 @@ const opencodeBin = process.env.LOOPARR_EXECUTOR_OPENCODE_BIN
   || process.env.OPENCODE_BIN
   || DEFAULT_OPENCODE_BIN;
 if (!fs.existsSync(opencodeBin)) fail(`OpenCode binary not found: ${opencodeBin}`);
+const kiloBin = process.env.LOOPARR_EXECUTOR_KILO_BIN || 'kilo';
+const vibeBin = process.env.LOOPARR_EXECUTOR_VIBE_BIN || 'vibe';
+
+// The kilo lane only resolves when the OpenCode server started below can read a
+// config that declares the provider, so keep it in place before anything spawns.
+let providerStatus;
+try {
+  providerStatus = ensureKiloProvider({ root: REPO_ROOT });
+  process.stdout.write(`[host-executor] kilo provider ${providerStatus.status}: ${providerStatus.path}\n`);
+} catch (error) {
+  providerStatus = { status: 'error', path: path.join(REPO_ROOT, 'opencode.json'), error: error.message };
+  process.stderr.write(`[host-executor] kilo provider config error: ${error.message}\n`);
+}
 
 let projectsRoot;
 try {
@@ -99,6 +119,14 @@ let managedServer = null;
 function isInside(root, target) {
   const relative = path.relative(root, target);
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function normalizeRunner(value) {
+  if (value === undefined || value === null || value === '') return 'opencode';
+  if (typeof value !== 'string') throw new Error('runner must be a string');
+  const runner = value.trim().toLowerCase();
+  if (!RUNNERS.has(runner)) throw new Error(`unknown runner: ${value}`);
+  return runner;
 }
 
 function normalizeModel(value) {
@@ -153,9 +181,9 @@ function readJson(req) {
   });
 }
 
-async function probeServer() {
+async function probeUrl(url) {
   try {
-    const response = await fetch(PROBE_URL, { method: 'GET', signal: AbortSignal.timeout(1000) });
+    const response = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(1000) });
     await response.arrayBuffer();
     return response.ok;
   } catch {
@@ -163,11 +191,11 @@ async function probeServer() {
   }
 }
 
-function waitForServer(child) {
+function waitForServer(child, url) {
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + 15000;
     const tick = async () => {
-      if (await probeServer()) return resolve();
+      if (await probeUrl(url)) return resolve();
       if (child && child.exitCode !== null) return reject(new Error('opencode serve exited before becoming ready'));
       if (Date.now() > deadline) return reject(new Error('opencode serve did not become ready in 15s'));
       setTimeout(tick, 250);
@@ -192,28 +220,48 @@ function getAttachFlag() {
 }
 
 async function ensureServer() {
-  if (await probeServer()) return PROBE_URL;
   if (serverPromise) return serverPromise;
   serverPromise = (async () => {
-    managedServer = spawn(opencodeBin, ['serve', '--port', String(opencodeServerPort)], {
-      cwd: REPO_ROOT,
-      env: process.env,
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
-    managedServer.stdout.on('data', (chunk) => {
-      process.stdout.write(`[opencode] ${chunk.toString()}`);
-    });
-    managedServer.stderr.on('data', (chunk) => {
-      process.stderr.write(`[opencode] ${chunk.toString()}`);
-    });
-    managedServer.once('exit', (code, signal) => {
-      managedServer = null;
-      serverPromise = null;
-      process.stderr.write(`[opencode] serve exited (code=${code}, signal=${signal || 'none'})\n`);
-    });
-    await waitForServer(managedServer);
-    return PROBE_URL;
+    let lastError = null;
+    for (let offset = 0; offset < OPENCODE_PORT_ATTEMPTS; offset += 1) {
+      const candidate = opencodeServerPort + offset;
+      if (candidate > 65535) break;
+      const url = serverUrl(candidate);
+      // A server we did not start cannot be trusted to carry this repo's config,
+      // so it is skipped rather than reused.
+      if (await probeUrl(url)) {
+        process.stdout.write(`[opencode] port ${candidate} is served by a process this executor does not own; trying the next port\n`);
+        continue;
+      }
+      const child = spawn(opencodeBin, ['serve', '--port', String(candidate)], {
+        cwd: REPO_ROOT,
+        env: process.env,
+        shell: false,
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+      child.stdout.on('data', (chunk) => {
+        process.stdout.write(`[opencode] ${chunk.toString()}`);
+      });
+      child.stderr.on('data', (chunk) => {
+        process.stderr.write(`[opencode] ${chunk.toString()}`);
+      });
+      child.once('exit', (code, signal) => {
+        if (managedServer === child) managedServer = null;
+        process.stderr.write(`[opencode] serve exited (code=${code}, signal=${signal || 'none'}, port=${candidate})\n`);
+      });
+      try {
+        await waitForServer(child, url);
+      } catch (error) {
+        lastError = error;
+        process.stderr.write(`[opencode] server on port ${candidate} failed: ${error.message}\n`);
+        try { child.kill('SIGTERM'); } catch { /* already gone */ }
+        continue;
+      }
+      managedServer = child;
+      process.stdout.write(`[opencode] serving ${url} from ${REPO_ROOT}\n`);
+      return url;
+    }
+    throw new Error(lastError ? lastError.message : `no free OpenCode port from ${opencodeServerPort} to ${opencodeServerPort + OPENCODE_PORT_ATTEMPTS - 1}`);
   })();
   try {
     return await serverPromise;
@@ -250,10 +298,11 @@ function validateRun(payload) {
   });
 
   const model = normalizeModel(payload.model);
+  const runner = normalizeRunner(payload.runner);
   const projectId = typeof payload.projectId === 'string' && payload.projectId.trim()
     ? payload.projectId.trim().slice(0, 128)
     : '';
-  return { prompt: payload.prompt, cwd, files: checkedFiles, model, runKey: payload.runKey, projectId };
+  return { prompt: payload.prompt, cwd, files: checkedFiles, model, runner, runKey: payload.runKey, projectId };
 }
 
 function wait(ms) {
@@ -320,18 +369,36 @@ async function handleRun(req, res) {
     return sendJson(res, 400, { error: error.message });
   }
 
-  let serverUrl;
-  try {
-    serverUrl = await ensureServer();
-  } catch (error) {
-    return sendJson(res, 500, { error: error.message });
+  let command;
+  let args;
+  if (payload.runner === 'kilo') {
+    command = kiloBin;
+    try {
+      args = buildKiloArgs({ prompt: payload.prompt, files: payload.files, model: payload.model });
+    } catch (error) {
+      return sendJson(res, 400, { error: error.message });
+    }
+  } else if (payload.runner === 'vibe') {
+    command = vibeBin;
+    try {
+      args = buildVibeArgs({ prompt: payload.prompt, files: payload.files, model: payload.model });
+    } catch (error) {
+      return sendJson(res, 400, { error: error.message });
+    }
+  } else {
+    let serverUrl;
+    try {
+      serverUrl = await ensureServer();
+    } catch (error) {
+      return sendJson(res, 500, { error: error.message });
+    }
+    const flag = getAttachFlag();
+    args = ['run', flag, serverUrl, '--auto'];
+    if (payload.model) args.push('--model', payload.model);
+    for (const file of payload.files) args.push('--file', file);
+    args.push(payload.prompt);
+    command = opencodeBin;
   }
-
-  const flag = getAttachFlag();
-  const args = ['run', flag, serverUrl, '--auto'];
-  if (payload.model) args.push('--model', payload.model);
-  for (const file of payload.files) args.push('--file', file);
-  args.push(payload.prompt);
 
   res.writeHead(200, {
     'content-type': 'application/x-ndjson; charset=utf-8',
@@ -345,7 +412,7 @@ async function handleRun(req, res) {
 
   let child;
   try {
-    child = spawn(opencodeBin, args, {
+    child = spawn(command, args, {
       cwd: payload.cwd,
       env: process.env,
       shell: false,
@@ -363,6 +430,7 @@ async function handleRun(req, res) {
   const entry = {
     child,
     runKey: payload.runKey,
+    runner: payload.runner,
     projectId: payload.projectId,
     cwd: payload.cwd,
     startedAt: new Date().toISOString(),
@@ -388,7 +456,7 @@ async function handleRun(req, res) {
   child.on('close', (code, signal) => {
     if (finished) return;
     if (signal && code === null) {
-      frame(res, { stream: 'err', text: `[host-executor] opencode run terminated by ${signal}\n` });
+      frame(res, { stream: 'err', text: `[host-executor] ${payload.runner} run terminated by ${signal}\n` });
     }
     entry.finish(Number.isInteger(code) ? code : 1);
   });
@@ -446,12 +514,20 @@ async function handleCancel(req, res) {
 
 const server = http.createServer((req, res) => {
   if (req.url === '/health' && req.method === 'GET') {
-    return sendJson(res, 200, { ok: true, projectsRoot, opencodeBin });
+    return sendJson(res, 200, {
+      ok: true,
+      projectsRoot,
+      opencodeBin,
+      kiloProvider: providerStatus.status,
+      kiloProviderPath: providerStatus.path,
+      runnerBinaries: { opencode: opencodeBin, kilo: kiloBin, vibe: vibeBin }
+    });
   }
   if (req.url === '/active' && req.method === 'GET') {
     if (!authorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
     const active = Array.from(activeRuns.values(), (entry) => ({
       runKey: entry.runKey,
+      runner: entry.runner || 'opencode',
       projectId: entry.projectId || '',
       cwd: entry.cwd || '',
       startedAt: entry.startedAt

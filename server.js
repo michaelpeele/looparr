@@ -241,6 +241,29 @@ function applyModelPhaseFields(body, target) {
   return { ok: true };
 }
 
+const MODEL_ROTATION_FIELDS = [
+  { field: 'modelRotation', label: 'Model rotation' },
+  { field: 'seedRotation', label: 'Seed rotation' },
+  { field: 'analyzeRotation', label: 'Analyze rotation' },
+  { field: 'implementRotation', label: 'Implement rotation' }
+];
+
+function applyRotationFields(body, target, allowNull = false) {
+  for (const { field, label } of MODEL_ROTATION_FIELDS) {
+    if (body[field] === undefined) continue;
+    if (body[field] === null) {
+      if (!allowNull) return { ok: false, error: `${label} must be a boolean` };
+      target[field] = null;
+      continue;
+    }
+    if (typeof body[field] !== 'boolean') {
+      return { ok: false, error: `${label} must be a boolean` };
+    }
+    target[field] = body[field];
+  }
+  return { ok: true };
+}
+
 const PROMPT_TEMPLATE_FIELDS = [
   { field: 'seedPromptTemplate', label: 'Seed prompt template', placeholders: ['{{task}}'] },
   { field: 'analyzePromptTemplate', label: 'Analyze prompt template', placeholders: ['{{task}}', '{{handoff}}'] },
@@ -310,6 +333,8 @@ app.post('/api/projects', (req, res) => {
   const modelFields = { model: model.value };
   const phaseModels = applyModelPhaseFields(body, modelFields);
   if (!phaseModels.ok) return fail(res, 400, phaseModels.error);
+  const rotations = applyRotationFields(body, modelFields, true);
+  if (!rotations.ok) return fail(res, 400, rotations.error);
 
   const threshold = parseBlockThreshold(body.blockThreshold, null, 'Block threshold');
   if (!threshold.ok) return fail(res, 400, threshold.error);
@@ -435,6 +460,8 @@ app.patch('/api/projects/:id', (req, res) => {
   if (model.value !== undefined) patch.model = model.value;
   const phaseModels = applyModelPhaseFields(body, patch);
   if (!phaseModels.ok) return fail(res, 400, phaseModels.error);
+  const rotations = applyRotationFields(body, patch, true);
+  if (!rotations.ok) return fail(res, 400, rotations.error);
   if (body.runner !== undefined) {
     const runner = String(body.runner).trim();
     if (!getRunner(runner)) return fail(res, 400, `Unknown runner: ${runner}`);
@@ -507,6 +534,8 @@ app.patch('/api/settings', (req, res) => {
   if (model.value !== undefined) patch.model = model.value;
   const phaseModels = applyModelPhaseFields(body, patch);
   if (!phaseModels.ok) return fail(res, 400, phaseModels.error);
+  const rotations = applyRotationFields(body, patch);
+  if (!rotations.ok) return fail(res, 400, rotations.error);
   if (body.rateLimitPauseSeconds !== undefined) {
     patch.rateLimitPauseSeconds = clampNumber(
       body.rateLimitPauseSeconds,

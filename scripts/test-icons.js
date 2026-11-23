@@ -44,16 +44,20 @@ function freePort() {
   });
 }
 
-function httpGet(port, requestPath) {
+function httpGet(port, requestPath, headers = {}) {
   return new Promise((resolve) => {
-    const request = http.get({ host: '127.0.0.1', port, path: requestPath }, (response) => {
+    const request = http.get({ host: '127.0.0.1', port, path: requestPath, headers }, (response) => {
       const chunks = [];
       response.on('data', (chunk) => chunks.push(chunk));
-      response.on('end', () => resolve({
-        statusCode: response.statusCode,
-        headers: response.headers,
-        body: Buffer.concat(chunks).toString('utf8')
-      }));
+      response.on('end', () => {
+        const bodyBuffer = Buffer.concat(chunks);
+        resolve({
+          statusCode: response.statusCode,
+          headers: response.headers,
+          body: bodyBuffer.toString('utf8'),
+          bodyBuffer
+        });
+      });
     });
     request.on('error', () => resolve(null));
   });
@@ -95,7 +99,12 @@ function serverChild(mode) {
   return script;
 }
 
-async function requestIconRoute(mode, configPath) {
+async function requestIconRoute(
+  mode,
+  configPath,
+  route = '/api/projects/iconserver/icon',
+  headers = {}
+) {
   const port = await freePort();
   const child = spawn(process.execPath, ['-e', serverChild(mode)], {
     cwd: REPO_ROOT,
@@ -106,7 +115,7 @@ async function requestIconRoute(mode, configPath) {
   child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
   try {
     await waitForServer(port, child);
-    const response = await httpGet(port, '/api/projects/iconserver/icon');
+    const response = await httpGet(port, route, headers);
     if (!response) throw new Error(`No icon response (${mode}): ${stderr}`);
     return response;
   } finally {
@@ -194,7 +203,10 @@ async function main() {
   }
 
   const serverProject = path.join(TMP_ROOT, 'server-project');
-  writeFile('server-project/public/app-icon.svg', '<svg></svg>');
+  writeFile(
+    'server-project/public/app-icon.svg',
+    '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#38bdf8"/></svg>'
+  );
   fs.symlinkSync(path.join(TMP_ROOT, 'outside-secret.png'), path.join(serverProject, 'escape.png'));
   const serverConfigPath = path.join(TMP_ROOT, 'server-config.json');
   fs.writeFileSync(serverConfigPath, JSON.stringify({
@@ -212,6 +224,15 @@ async function main() {
   assert.match(escapeResponse.body, /Invalid icon path/);
   assert(!escapeResponse.body.includes(TMP_ROOT), 'error body must not expose absolute paths');
 
+  const pngEscapeResponse = await requestIconRoute(
+    'escape',
+    serverConfigPath,
+    '/api/projects/iconserver/icon.png'
+  );
+  assert.strictEqual(pngEscapeResponse.statusCode, 400);
+  assert.match(pngEscapeResponse.body, /Invalid icon path/);
+  assert(!pngEscapeResponse.body.includes(TMP_ROOT), 'PNG error must not expose absolute paths');
+
   const validResponse = await requestIconRoute('valid', serverConfigPath);
   assert.strictEqual(validResponse.statusCode, 200);
   assert.strictEqual(validResponse.headers['content-type'], 'image/svg+xml');
@@ -219,6 +240,27 @@ async function main() {
   assert.match(validResponse.headers['content-security-policy'] || '', /default-src 'none'/);
   assert.strictEqual(validResponse.headers['cache-control'], 'no-cache');
   assert.strictEqual(validResponse.headers.etag, '"abc123def456"');
+
+  const pngResponse = await requestIconRoute(
+    'valid',
+    serverConfigPath,
+    '/api/projects/iconserver/icon.png'
+  );
+  const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  assert.strictEqual(pngResponse.statusCode, 200);
+  assert(pngResponse.bodyBuffer.slice(0, 8).equals(pngSignature), 'icon.png must return PNG bytes');
+  assert.strictEqual(pngResponse.headers['content-type'], 'image/png');
+  assert.strictEqual(pngResponse.headers['x-content-type-options'], 'nosniff');
+  assert.strictEqual(pngResponse.headers['cache-control'], 'no-cache');
+  assert.strictEqual(pngResponse.headers.etag, '"abc123def456-png"');
+
+  const cachedPngResponse = await requestIconRoute(
+    'valid',
+    serverConfigPath,
+    '/api/projects/iconserver/icon.png',
+    { 'If-None-Match': '"abc123def456-png"' }
+  );
+  assert.strictEqual(cachedPngResponse.statusCode, 304);
 
   console.log('icon discovery and serving tests passed');
 }

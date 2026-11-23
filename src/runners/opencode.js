@@ -15,6 +15,39 @@ const EXECUTOR_URL = process.env.LOOPARR_EXECUTOR_URL
 const EXECUTOR_TOKEN = process.env.LOOPARR_EXECUTOR_TOKEN || '';
 const BRIDGE_CLIENT = path.join(__dirname, '..', '..', 'scripts', 'bridge-client.js');
 
+// Ids OpenCode can resolve. Keep in step with the equivalent default settings
+// and `public/app.js`; the Kilo Gateway ids belong to the Kilo CLI runner.
+const MODELS = [
+  'omniroute/auto',
+  'omniroute/auto/coding',
+  'opencode/big-pickle',
+  'opencode/tidepool-alpha-free',
+  'opencode/hy4-flash-free',
+  'opencode/iceman-free',
+  'opencode/longcat-2.5-free',
+  'opencode/flint-40b-free',
+  'opencode/deepseek-v4.1-flash-free',
+  'opencode/nemotron-3.5-super-vl-free',
+  'opencode/beam-free',
+  'opencode/mimo-v2.6-flash-free',
+  'opencode/nemotron-3.5-lightning-free',
+  // The Kilo Gateway lane runs through OpenCode: repo-root `opencode.json`
+  // declares the keyless `kilo` provider, so these ids resolve here as well as
+  // in the Kilo CLI runner.
+  'kilo/kilo-auto/free',
+  'kilo/openrouter/free',
+  'kilo/reflection/beam-free',
+  'kilo/recursive/flint-v1.0:free',
+  'kilo/nvidia/nemotron-3.5-super-vl:free',
+  'kilo/nvidia/nemotron-3-ultra-550b-a55b:free',
+  'kilo/nvidia/nemotron-3.5-lightning:free',
+  'kilo/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+  'kilo/baidu/ernie-5.5-flash-preview:free',
+  'kilo/inclusionai/ling-3.2-flash:free',
+  'kilo/particle-ai/particle-1:free',
+  'kilo/liquid/lfm-3-1.7b:free'
+];
+
 let attachFlag = null;
 let serverPromise = null;
 let managedServer = null;
@@ -100,7 +133,7 @@ function buildCommand({ prompt, cwd, url = SERVER_URL, files = [], model = '', r
           ...process.env,
           LOOPARR_EXECUTOR_URL: EXECUTOR_URL,
           LOOPARR_EXECUTOR_TOKEN: EXECUTOR_TOKEN,
-          LOOPARR_TASK_PAYLOAD: JSON.stringify({ prompt, cwd, files, url, model, runKey, projectId, phase, task })
+          LOOPARR_TASK_PAYLOAD: JSON.stringify({ runner: 'opencode', prompt, cwd, files, url, model, runKey, projectId, phase, task })
         },
         shell: false
       }
@@ -243,6 +276,7 @@ module.exports = {
   description: EXECUTOR_URL
     ? 'Host-side opencode executor via HTTP bridge; fresh opencode run per step.'
     : 'Shared opencode serve on port 4096; fresh opencode run per step.',
+  models: MODELS,
   ensureServer,
   buildCommand,
   isRateLimit,

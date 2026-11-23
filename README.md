@@ -14,9 +14,11 @@ Two additions are queued in `plan.md`. A Plan prompt type lets questions come ba
 
 - Node.js 20 or newer
 - npm 9 or newer
-- An AI CLI runner on your `PATH`. OpenCode is the default.
+- An AI CLI runner on your `PATH`: `opencode` (default), the Kilo CLI (`kilo`), or Mistral Vibe (`vibe`).
 
 Optional: `opencode` v2.3.0 or newer. Looparr starts a shared `opencode serve --port 4096` process when needed and reuses it for every step. The runner auto-detects the CLI flag: v2.3.0 uses `--server`; newer builds that support `--attach` use that instead.
+
+Optional alternatives, both host-side binaries: `kilo` (Kilo CLI runner) and `vibe` (Mistral Vibe runner). Neither needs a login for the free lanes described below.
 
 ## Install and run
 
@@ -148,7 +150,7 @@ The archive is manual. Looparr does not create or rotate these files automatical
   - **Parallel Pool** (default): up to N projects run continuously through their own plans.
   - **Round-Robin**: gives each active project one step per turn so all queued projects advance evenly.
 - **Runner**: global default for projects without an override.
-- **Models**: every global and per-project model field (`model`, `seedModel`, `analyzeModel`, `implementModel`) accepts one model id or an ordered comma-separated fallback list such as `opencode/big-pickle,opencode/tidepool-alpha-free`. Global fields and per-project overrides use the same format. The first id is tried first; Looparr falls back to the next id only when the runner reports an explicit provider rate-limit error. An empty selection or blank value means inherit/default: blank project phase fields inherit, blank global phase fields inherit the global default model, and a blank global default uses the OpenCode default. A single-model value stays valid and unchanged. Dropdown options come from the manually maintained `MODEL_OPTIONS` list in `public/app.js`: `omniroute/auto`, `omniroute/auto/coding`, `opencode/big-pickle` (default), `opencode/tidepool-alpha-free`, `opencode/hy4-flash-free`, `opencode/iceman-free`, `opencode/longcat-2.5-free`, `opencode/flint-40b-free`, `opencode/deepseek-v4.1-flash-free`, `opencode/nemotron-3.5-super-vl-free`, `opencode/beam-free`, `opencode/mimo-v2.6-flash-free`, and `opencode/nemotron-3.5-lightning-free`. Dynamic model loading is blocked because the server/container has no OpenCode CLI. Seed, Analyze, and Implement each have an independent global default and project override. Resolution order is project phase model list, project default model list, global phase model list, global default model list, then OpenCode default.
+- **Models**: every global and per-project model field (`model`, `seedModel`, `analyzeModel`, `implementModel`) accepts one model id or an ordered comma-separated fallback list such as `opencode/big-pickle,opencode/tidepool-alpha-free`. Global fields and per-project overrides use the same format. The first id is tried first; Looparr falls back to the next id only when the runner reports an explicit provider rate-limit error. An empty selection or blank value means inherit/default: blank project phase fields inherit, blank global phase fields inherit the global default model, and a blank global default uses the OpenCode default. A single-model value stays valid and unchanged. Dropdown options are scoped per runner: every picker lists only the ids its runner accepts, read from the `models` array each runner exports in `src/runners/*.js` (mirrored in `MODEL_OPTIONS_BY_RUNNER` in `public/app.js` for the first paint). The OpenCode picker offers `omniroute/auto`, `omniroute/auto/coding`, `opencode/big-pickle` (default), `opencode/tidepool-alpha-free`, `opencode/hy4-flash-free`, `opencode/iceman-free`, `opencode/longcat-2.5-free`, `opencode/flint-40b-free`, `opencode/deepseek-v4.1-flash-free`, `opencode/nemotron-3.5-super-vl-free`, `opencode/beam-free`, `opencode/mimo-v2.6-flash-free`, and `opencode/nemotron-3.5-lightning-free`, plus the keyless Kilo Gateway free lane: `kilo/kilo-auto/free`, `kilo/openrouter/free`, `kilo/reflection/beam-free`, `kilo/recursive/flint-v1.0:free`, `kilo/nvidia/nemotron-3.5-super-vl:free`, `kilo/nvidia/nemotron-3-ultra-550b-a55b:free`, `kilo/nvidia/nemotron-3.5-lightning:free`, `kilo/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`, `kilo/baidu/ernie-5.5-flash-preview:free`, `kilo/inclusionai/ling-3.2-flash:free`, `kilo/particle-ai/particle-1:free`, and `kilo/liquid/lfm-3-1.7b:free`. The `kilo/*` ids are accepted by both the OpenCode runner and the Kilo CLI runner: the repository-root `opencode.json` declares the keyless `kilo` provider against `https://api.kilo.ai/api/gateway`, so OpenCode projects resolve them through the host executor's server, while Kilo CLI projects pass them to `kilo --model`. The Vibe picker offers the account's free lane: `zai-glm-5-3-flash-vibe-free` and the alias Vibe publishes for it, `zai-glm-5-3-flash`; both are priced at $0 on the free plan, while paid ids that need a higher plan (`mistral-large-4-0`, `zai-glm-5-3`, `deepseek-v4-1-flash-1017`) are left out, and a blank model means use the account's active model. The engine drops any id the selected runner does not own and logs `Skipped model ids not valid for <runner>`, so an inherited OpenCode id can never reach the Kilo CLI or Vibe, and a `kilo/*` id can never reach Vibe. Restart the host executor after editing that file, and note that the gateway's free catalogue rotates and is rate-limited per IP, so a free id can disappear. Dynamic model loading is blocked because the server/container has no OpenCode CLI. Seed, Analyze, and Implement each have an independent global default and project override. Resolution order is project phase model list, project default model list, global phase model list, global default model list, then OpenCode default. Every model dropdown has its own rotation toggle (two curved arrows, green when on, gray when off, tooltip "Model Rotation"); when on, consecutive steps cycle through that dropdown's selected models while rate-limit fallback still applies inside a step. Rotation is off by default and is stored per dropdown for global settings and per project.
 - **Rate-limit pause**: `60` seconds by default. Only an explicit provider error signature reported by the runner pauses that project, shows a countdown, then retries the same step. Incidental mentions of rate limits, `429`, quota, usage limits, or throttling do not trigger a pause. Looparr's own backoff notice does not trigger a pause.
 - **Cooloff**: `0` seconds by default (no pause). Global setting; per-project override, blank/null inherits the global. Applies between tasks — after an implement completes, before the next task seeds. Explicit Start skips the wait. Range 0..3600 seconds.
 - **Sticky add task row**: off by default. When enabled, the Add task input and button stay visible while scrolling the plan checklist in a project drawer.
@@ -190,6 +192,7 @@ Runners live in `src/runners/`. A runner module exports:
   id,
   label,
   description,
+  models,                  // model ids this runner accepts; [] means none
   isRateLimit(text),
   ensureServer(),
   buildCommand({ prompt, cwd, file }),
@@ -197,7 +200,7 @@ Runners live in `src/runners/`. A runner module exports:
 }
 ```
 
-Register it in `src/runners/index.js`. Registered runners appear in both runner selects immediately. The OpenCode runner is the reference implementation. `isRateLimit(text)` must recognize only explicit provider error signatures. Broad matches on bare `429`, `rate limit`, quota, usage limits, or throttling cause false positives and repeated steps.
+`models` is what scopes the pickers and the engine: a model id that is not in the selected runner's array is skipped, so only add ids the CLI can actually resolve. Register it in `src/runners/index.js`. Registered runners appear in both runner selects immediately. The OpenCode runner is the reference implementation. `isRateLimit(text)` must recognize only explicit provider error signatures. Broad matches on bare `429`, `rate limit`, quota, usage limits, or throttling cause false positives and repeated steps.
 
 ## Hosted deployment
 
@@ -212,6 +215,9 @@ This deployment uses Tailscale Serve only. It is reachable from the tailnet, not
 - `serve.json`: HTTPS 443 for `${TS_CERT_DOMAIN}` proxies to `http://127.0.0.1:3000`.
 - `.env.example`: required settings. Copy to `.env`; `.env` is gitignored.
 - `scripts/host-executor.js`: host-side OpenCode bridge. It runs on the host, not in Docker.
+- `src/opencode-provider.js`: seeds and validates the keyless `kilo` provider in `opencode.json`.
+- `src/runners/kilo.js`: Kilo CLI runner (`kilo run --auto --format json`); `src/kilo-command.js` builds its arguments for local and bridge execution alike.
+- `src/runners/vibe.js`: Mistral Vibe runner (`vibe --prompt ... --auto-approve --output streaming --max-price 0`); `src/vibe-command.js` builds its arguments for local and bridge execution alike.
 - `scripts/bridge-client.js`: runs in the container and forwards each step to the host bridge.
 - `data/config.json`: runtime config; gitignored.
 
@@ -231,7 +237,7 @@ Set these in `.env`:
 - `LOOPARR_LOCAL_PORT=4188`: Host debug port for HTTP.
 - `LOOPARR_PROJECTS_ROOT=/home/michaelpeele/ai-projects`: Mounted read-write at the same path.
 - `PUID=1000`, `PGID=1000`: Keep mounted project files owned by the host user.
-- `OPENCODE_PASSWORD`: Optional. Set when the host executor reuses a password-protected OpenCode service on port `4096`.
+- `OPENCODE_PASSWORD`: Optional. Exported to both `opencode serve` and `opencode run` for OpenCode builds that enforce a server password.
 
 The Settings page includes an `.env settings` editor. Existing values appear masked as `********`; use the eye button to reveal one value. Only changed keys are saved. Looparr writes to the mounted host `.env`, rereads it, then masks saved values again. Saving an empty value removes that key. Keys read at startup by the host executor require a host executor restart.
 
@@ -256,7 +262,9 @@ The app shares the Tailscale container network namespace. Tailscale terminates H
 
 Execution stays on the host. The container never installs or starts `opencode`.
 
-When a step starts, the container runner calls `scripts/bridge-client.js`. The bridge client posts the existing prompt, project path, and plan file to the Docker bridge gateway on port `4187`, for example `http://172.17.0.1:4187`. The host executor authenticates with the bearer token, requires the project path to be inside `/home/michaelpeele/ai-projects`, runs the real host `opencode` in that directory, and streams stdout/stderr back to Looparr. The host executor manages the shared `opencode serve --port 4096` server the same way local mode does.
+When a step starts, the container runner calls `scripts/bridge-client.js`. The bridge client posts the existing prompt, project path, and plan file to the Docker bridge gateway on port `4187`, for example `http://172.17.0.1:4187`. The host executor authenticates with the bearer token, requires the project path to be inside `/home/michaelpeele/ai-projects`, runs the real host `opencode` in that directory, and streams stdout/stderr back to Looparr. The host executor starts and owns its own `opencode serve` (default port `4096`). It never reuses a server it did not start, because that server may not have read this repository's `opencode.json`; a foreign listener on the port is skipped and the next free port is used. Before starting the server it fills in the keyless `kilo` provider in `opencode.json` when that file is missing or incomplete, so the `kilo/*` free lane resolves after any fresh checkout. `GET /health` reports `kiloProvider` (`created`, `updated`, `unchanged`, or `error`), `kiloProviderPath`, and the three runner binaries under `runnerBinaries`.
+
+A project's runner (`opencode`, `kilo`, or `vibe`, with `settings.globalRunner` as the fallback) is sent with every step: the bridge payload carries `runner`, and the host executor spawns that runner's binary. The Kilo runner runs `kilo run --auto --format json`, passes `--model` and repeatable `--file` attachments, and reaches the keyless Kilo Gateway without a login; `kilo auth login` is only needed for other providers. Set `LOOPARR_EXECUTOR_KILO_BIN` when `kilo` is not on the executor's `PATH`. The Vibe runner runs `vibe --prompt <prompt> --auto-approve --output streaming --max-price 0`, which caps every run at zero cost and emits one JSON object per line. Vibe has no attachment flag, so the seed `plan.md` and handoff files are named in the prompt and read from the working directory; its `--model` takes a Vibe alias rather than a `provider/model` id, so its picker offers the account's free-lane id `zai-glm-5-3-flash-vibe-free` plus its alias `zai-glm-5-3-flash`, and a blank model means the account's active model. Set `LOOPARR_EXECUTOR_VIBE_BIN` when `vibe` is not on the executor's `PATH`. Model ids are scoped per runner, so a mis-picked id is skipped and logged rather than sent to the wrong CLI.
 
 `extra_hosts` is not used. It conflicts with `network_mode: service:tailscale` on this Docker host. Discover the gateway with `docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}'` if the default changes.
 
@@ -332,8 +340,10 @@ looparr/
 │   ├── icon.js             # icon discovery
 │   ├── plan.js             # Markdown checklist parser/edits
 │   └── runners/
-│       ├── index.js        # runner registry
-│       └── opencode.js     # OpenCode CLI or bridge runner
+│       ├── index.js        # runner registry and per-runner model catalogues
+│       ├── opencode.js     # OpenCode CLI or bridge runner
+│       ├── kilo.js         # Kilo CLI runner
+│       └── vibe.js         # Mistral Vibe runner
 ├── public/
 │   ├── index.html
 │   ├── styles.css

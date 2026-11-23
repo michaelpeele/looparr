@@ -13,6 +13,14 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
+  <svg class="model-rotate-sprite" width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
+    <symbol id="icon-model-rotation" viewBox="0 0 24 24">
+      <path d="M20 11a8 8 0 0 0-13.6-4.6L4 9"/>
+      <path d="M4 4v5h5"/>
+      <path d="M4 13a8 8 0 0 0 13.6 4.6L20 15"/>
+      <path d="M20 20v-5h-5"/>
+    </symbol>
+  </svg>
   <header class="topbar">
     <button class="nav-toggle" id="nav-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="sidebar-nav">
       <span aria-hidden="true">☰</span>
@@ -136,22 +144,34 @@
             </label>
             <label class="field">
               <span>Default model <small>fallback</small></span>
-              <select id="model" multiple size="4"><option value="">OpenCode default</option></select>
+              <div class="model-field-row">
+                <select id="model" multiple size="4"><option value="">OpenCode default</option></select>
+                <button type="button" class="icon-button model-rotate-button" data-rotate-for="model" aria-pressed="false" aria-label="Model Rotation" title="Model Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
+              </div>
               <small class="field-hint">Blank uses OpenCode default. Phase models override this.</small>
             </label>
             <label class="field">
               <span>Seed model</span>
-              <select id="seed-model" multiple size="4"><option value="">Inherit default model</option></select>
+              <div class="model-field-row">
+                <select id="seed-model" multiple size="4"><option value="">Inherit default model</option></select>
+                <button type="button" class="icon-button model-rotate-button" data-rotate-for="seed-model" aria-pressed="false" aria-label="Model Rotation" title="Model Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
+              </div>
             </label>
             <label class="field">
               <span>Analyze model</span>
-              <select id="analyze-model" multiple size="4"><option value="">Inherit default model</option></select>
+              <div class="model-field-row">
+                <select id="analyze-model" multiple size="4"><option value="">Inherit default model</option></select>
+                <button type="button" class="icon-button model-rotate-button" data-rotate-for="analyze-model" aria-pressed="false" aria-label="Model Rotation" title="Model Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
+              </div>
             </label>
             <label class="field">
               <span>Implement model</span>
-              <select id="implement-model" multiple size="4"><option value="">Inherit default model</option></select>
+              <div class="model-field-row">
+                <select id="implement-model" multiple size="4"><option value="">Inherit default model</option></select>
+                <button type="button" class="icon-button model-rotate-button" data-rotate-for="implement-model" aria-pressed="false" aria-label="Model Rotation" title="Model Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
+              </div>
             </label>
-            <small class="field-hint">Select one or more models in configured order. No selection or the blank option means inherit/default. The first model is tried first; later models are fallbacks on rate limit.</small>
+            <small class="field-hint">Select one or more models in configured order. No selection or the blank option means inherit/default. The first model is tried first; later models are fallbacks on rate limit. Press the arrows to rotate through the selection each step; rotation is off by default.</small>
             <label class="field">
               <span>Rate-limit pause <small>seconds</small></span>
               <input type="number" id="rate-limit-seconds" min="5" max="600" step="1" value="60">
@@ -266,21 +286,33 @@
             </label>
             <label class="field">
               <span>Default model <small>optional fallback</small></span>
-              <select id="project-model" multiple size="4"><option value="">Inherit global</option></select>
+              <div class="model-field-row">
+                <select id="project-model" multiple size="4"><option value="">Inherit global</option></select>
+                <button type="button" class="icon-button model-rotate-button" data-rotate-for="project-model" aria-pressed="false" aria-label="Model Rotation" title="Model Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
+              </div>
             </label>
             <label class="field">
               <span>Seed model <small>optional</small></span>
-              <select id="project-seed-model" multiple size="4"><option value="">Inherit default model</option></select>
+              <div class="model-field-row">
+                <select id="project-seed-model" multiple size="4"><option value="">Inherit default model</option></select>
+                <button type="button" class="icon-button model-rotate-button" data-rotate-for="project-seed-model" aria-pressed="false" aria-label="Model Rotation" title="Model Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
+              </div>
             </label>
             <label class="field">
               <span>Analyze model <small>optional</small></span>
-              <select id="project-analyze-model" multiple size="4"><option value="">Inherit default model</option></select>
+              <div class="model-field-row">
+                <select id="project-analyze-model" multiple size="4"><option value="">Inherit default model</option></select>
+                <button type="button" class="icon-button model-rotate-button" data-rotate-for="project-analyze-model" aria-pressed="false" aria-label="Model Rotation" title="Model Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
+              </div>
             </label>
             <label class="field">
               <span>Implement model <small>optional</small></span>
-              <select id="project-implement-model" multiple size="4"><option value="">Inherit default model</option></select>
+              <div class="model-field-row">
+                <select id="project-implement-model" multiple size="4"><option value="">Inherit default model</option></select>
+                <button type="button" class="icon-button model-rotate-button" data-rotate-for="project-implement-model" aria-pressed="false" aria-label="Model Rotation" title="Model Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
+              </div>
             </label>
-            <small class="field-hint">Select one or more models in configured order. No selection or the blank option means inherit/default. The first model is tried first; later models are fallbacks on rate limit.</small>
+            <small class="field-hint">Select one or more models in configured order. No selection or the blank option means inherit/default. The first model is tried first; later models are fallbacks on rate limit. Press the arrows to rotate through the selection each step; the toggle is saved on the new project.</small>
             <details class="block-policy">
               <summary>Block policy overrides <small>blank inherits global</small></summary>
               <div class="block-policy-fields">
@@ -396,13 +428,25 @@
         <div class="section-body" id="section-runner-body">
           <div class="policy-summary mono" id="drawer-model">—</div>
           <div class="editor-actions">
-            <select id="drawer-model-input" aria-label="Project default model override" multiple size="4"><option value="">Inherit global</option></select>
-            <select id="drawer-seed-model" aria-label="Project seed model override" multiple size="4"><option value="">Inherit default model</option></select>
-            <select id="drawer-analyze-model" aria-label="Project analyze model override" multiple size="4"><option value="">Inherit default model</option></select>
-            <select id="drawer-implement-model" aria-label="Project implement model override" multiple size="4"><option value="">Inherit default model</option></select>
+            <div class="model-field-row">
+              <select id="drawer-model-input" aria-label="Project default model override" multiple size="4"><option value="">Inherit global</option></select>
+              <button type="button" class="icon-button model-rotate-button" data-rotate-for="drawer-model-input" aria-pressed="false" aria-label="Model Rotation" title="Model Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
+            </div>
+            <div class="model-field-row">
+              <select id="drawer-seed-model" aria-label="Project seed model override" multiple size="4"><option value="">Inherit default model</option></select>
+              <button type="button" class="icon-button model-rotate-button" data-rotate-for="drawer-seed-model" aria-pressed="false" aria-label="Model Rotation" title="Model Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
+            </div>
+            <div class="model-field-row">
+              <select id="drawer-analyze-model" aria-label="Project analyze model override" multiple size="4"><option value="">Inherit default model</option></select>
+              <button type="button" class="icon-button model-rotate-button" data-rotate-for="drawer-analyze-model" aria-pressed="false" aria-label="Model Rotation" title="Model Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
+            </div>
+            <div class="model-field-row">
+              <select id="drawer-implement-model" aria-label="Project implement model override" multiple size="4"><option value="">Inherit default model</option></select>
+              <button type="button" class="icon-button model-rotate-button" data-rotate-for="drawer-implement-model" aria-pressed="false" aria-label="Model Rotation" title="Model Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
+            </div>
             <button class="button small" id="save-project-model" type="button">Save models</button>
           </div>
-          <small class="field-hint">Select one or more models in configured order. No selection or the blank option means inherit/default. The first model is tried first; later models are fallbacks on rate limit.</small>
+          <small class="field-hint">Select one or more models in configured order. No selection or the blank option means inherit/default. The first model is tried first; later models are fallbacks on rate limit. Press the arrows to rotate through the selection each step; saving pins that toggle to this project instead of the global default.</small>
         </div>
       </section>
 

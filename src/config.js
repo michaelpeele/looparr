@@ -136,6 +136,18 @@ function modelFieldForPhase(phase) {
   return 'seedModel';
 }
 
+const MODEL_ROTATION_FIELDS = ['modelRotation', 'seedRotation', 'analyzeRotation', 'implementRotation'];
+const ROTATION_FIELD_BY_MODEL_FIELD = {
+  model: 'modelRotation',
+  seedModel: 'seedRotation',
+  analyzeModel: 'analyzeRotation',
+  implementModel: 'implementRotation'
+};
+
+function rotationFieldForModelField(field) {
+  return ROTATION_FIELD_BY_MODEL_FIELD[field] || 'modelRotation';
+}
+
 const DEFAULT_SETTINGS = {
   maxConcurrent: 2,
   mode: 'parallel',
@@ -144,6 +156,10 @@ const DEFAULT_SETTINGS = {
   seedModel: 'opencode/big-pickle',
   analyzeModel: 'opencode/big-pickle',
   implementModel: 'opencode/big-pickle',
+  modelRotation: false,
+  seedRotation: false,
+  analyzeRotation: false,
+  implementRotation: false,
   rateLimitPauseSeconds: 60,
   blockThreshold: 2,
   cooloffSeconds: 0,
@@ -185,6 +201,10 @@ function normalizedLiftScope(value, fallback) {
   return value.trim().slice(0, 2000);
 }
 
+function normalizedRotation(value) {
+  return typeof value === 'boolean' ? value : null;
+}
+
 function normalizedModel(value, fallback, label = 'Model') {
   if (value === undefined || value === null || typeof value !== 'string') return fallback;
   try {
@@ -202,6 +222,10 @@ function normalizeProject(project) {
     seedModel: normalizedModel(project.seedModel, '', MODEL_FIELD_LABELS.seedModel),
     analyzeModel: normalizedModel(project.analyzeModel, '', MODEL_FIELD_LABELS.analyzeModel),
     implementModel: normalizedModel(project.implementModel, '', MODEL_FIELD_LABELS.implementModel),
+    modelRotation: normalizedRotation(project.modelRotation),
+    seedRotation: normalizedRotation(project.seedRotation),
+    analyzeRotation: normalizedRotation(project.analyzeRotation),
+    implementRotation: normalizedRotation(project.implementRotation),
     blockThreshold: normalizedBlockThreshold(project.blockThreshold, null),
     cooloffSeconds: normalizedCooloff(project.cooloffSeconds, null),
     temporaryLiftScope: normalizedLiftScope(project.temporaryLiftScope, ''),
@@ -220,6 +244,9 @@ function normalizeSettings(settings) {
   }
   normalized.promptCliToolsNote = normalized.promptCliToolsNote === true;
   normalized.stickyAddTaskRow = normalized.stickyAddTaskRow === true;
+  for (const field of MODEL_ROTATION_FIELDS) {
+    normalized[field] = normalized[field] === true;
+  }
   normalized.cooloffSeconds = normalizedCooloff(normalized.cooloffSeconds, DEFAULT_SETTINGS.cooloffSeconds);
   for (const [field, legacy] of Object.entries(LEGACY_PROMPT_TEMPLATES)) {
     if (normalized[field] === legacy) normalized[field] = CURRENT_PROMPT_TEMPLATES[field];
@@ -262,6 +289,14 @@ function resolveCooloff(project, settings) {
   return normalized.cooloffSeconds ?? globalCooloff ?? DEFAULT_SETTINGS.cooloffSeconds;
 }
 
+function resolveRotation(project, settings, modelField = 'model') {
+  const field = rotationFieldForModelField(modelField);
+  const normalized = normalizeProject(project) || {};
+  if (typeof normalized[field] === 'boolean') return normalized[field];
+  const globalSettings = settings || {};
+  return globalSettings[field] === true;
+}
+
 function defaults() {
   return { settings: { ...DEFAULT_SETTINGS }, projects: [] };
 }
@@ -300,7 +335,10 @@ module.exports = {
   LEGACY_PROMPT_TEMPLATES,
   CURRENT_PROMPT_TEMPLATES,
   MODEL_PHASE_FIELDS,
+  MODEL_ROTATION_FIELDS,
   modelFieldForPhase,
+  rotationFieldForModelField,
+  resolveRotation,
   defaults,
   loadConfig,
   saveConfig,
