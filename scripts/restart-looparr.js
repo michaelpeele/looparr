@@ -107,6 +107,31 @@ function dockerStatus() {
   }
 }
 
+// Run the compose rebuild/recreate in its own session (new process group) with
+// HUP/INT/TERM/QUIT ignored, so killing the agent session that launched this
+// restart cannot tear down `docker compose` mid-recreate and leave a
+// created-but-never-started replacement container (observed 2026-11-23 15:48:
+// compose was killed between container creation and container start).
+// The parent still waits on the child and runs the normal post-restart checks.
+function runDetachedDockerCommand() {
+  const wrapper = `trap '' HUP INT TERM QUIT\n${DOCKER_COMMAND}`;
+  const result = spawnSync('bash', ['-c', wrapper], {
+    cwd: REPO_ROOT,
+    stdio: 'inherit',
+    detached: true
+  });
+  if (result.error) {
+    const wrapped = new Error(`Detached docker command failed: ${result.error.message}`);
+    wrapped.status = result.status ?? null;
+    throw wrapped;
+  }
+  if (result.status !== 0) {
+    const wrapped = new Error(`Docker rebuild/recreate exited ${result.status ?? 'unknown'}.`);
+    wrapped.status = result.status ?? null;
+    throw wrapped;
+  }
+}
+
 function isRunningHealthy(status) {
   const lines = String(status).split('\n').filter(Boolean);
   if (lines.length < 2) return false;
@@ -165,7 +190,7 @@ async function main() {
   writeRestartContinueMarker();
   console.log('[looparr] Rebuilding and recreating looparr');
   try {
-    execSync(DOCKER_COMMAND, { cwd: REPO_ROOT, stdio: 'inherit' });
+    runDetachedDockerCommand();
   } catch (error) {
     removeRestartContinueMarker();
     console.error(`[looparr] Docker command failed (${error.status ?? 'unknown'}).`);
