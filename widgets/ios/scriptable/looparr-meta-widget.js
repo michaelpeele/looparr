@@ -6,11 +6,16 @@
 // v1
 
 const BASE_URL = 'https://looparr.tail0307d.ts.net';
-const CACHE_PATH = FileManager.local().documentsDirectory() + 'looparr-meta-widget.json';
+const fm = FileManager.local();
+const CACHE_PATH = fm.joinPath(fm.documentsDirectory(), 'looparr-meta-widget.json');
 
+// The cache only exists after the first successful fetch. Scriptable throws on
+// readString for a missing path, so guard with fileExists instead of relying on
+// the catch alone.
 function readCache() {
   try {
-    return JSON.parse(FileManager.local().readString(CACHE_PATH));
+    if (!fm.fileExists(CACHE_PATH)) return null;
+    return JSON.parse(fm.readString(CACHE_PATH));
   } catch (e) {
     return null;
   }
@@ -18,7 +23,7 @@ function readCache() {
 
 function writeCache(payload) {
   try {
-    FileManager.local().writeString(CACHE_PATH, JSON.stringify(payload));
+    fm.writeString(CACHE_PATH, JSON.stringify(payload));
   } catch (e) {}
 }
 

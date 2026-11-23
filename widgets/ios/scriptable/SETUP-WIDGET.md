@@ -80,10 +80,12 @@ comes from the server.
 
 ## Offline behavior
 
-The last good payload is cached at
-`FileManager.local().documentsDirectory() + 'looparr-meta-widget.json'`.
-When the request fails, the cached card renders with an **Offline** marker; with
-no cache it falls back to a short "server unreachable" view.
+The last good payload is cached at `Documents/looparr-meta-widget.json` in
+Scriptable's local container (created by the first successful fetch; the script
+checks `fileExists` before reading, so a fresh install does not raise a
+missing-file error). When the request fails, the cached card renders with an
+**Offline** marker; with no cache it falls back to a short "server unreachable"
+view.
 
 ## Adding a field
 
