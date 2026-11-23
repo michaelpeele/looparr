@@ -16,6 +16,11 @@ const BASE_URL = (
 ).replace(/\/$/, '');
 
 const DOCKER_COMMAND = 'docker compose build looparr && docker compose up -d looparr';
+const RESTART_CONTINUE_FILE = (
+  process.env.LOOPARR_RESTART_CONTINUE_FILE ||
+  path.join(REPO_ROOT, '.looparr', 'restart-continue.json')
+);
+const RESTART_CONTINUE_MESSAGE = 'Restart complete continue.';
 
 function reportEvent(event, fields = {}) {
   console.log(JSON.stringify({ event, ...fields }));
@@ -49,14 +54,17 @@ async function getState() {
   return res.json();
 }
 
-async function prepare() {
-  const res = await fetch(`${BASE_URL}/api/auto-resume/prepare`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ reason: 'planned-restart' })
-  });
-  if (!res.ok) throw new Error(`POST /api/auto-resume/prepare failed (${res.status})`);
-  return res.json();
+function writeRestartContinueMarker() {
+  fs.mkdirSync(path.dirname(RESTART_CONTINUE_FILE), { recursive: true });
+  fs.writeFileSync(
+    RESTART_CONTINUE_FILE,
+    `${JSON.stringify({ message: RESTART_CONTINUE_MESSAGE, writtenAt: new Date().toISOString() }, null, 2)}\n`,
+    'utf8'
+  );
+}
+
+function removeRestartContinueMarker() {
+  try { fs.unlinkSync(RESTART_CONTINUE_FILE); } catch { /* no marker */ }
 }
 
 function planNextTask(project) {
@@ -135,31 +143,6 @@ async function main() {
     return;
   }
 
-  let result;
-  try {
-    result = await prepare();
-  } catch (error) {
-    console.error(`[looparr] Resume preparation failed: ${error.message}`);
-    console.error('[looparr] No rebuild started.');
-    reportError('RESUME_PREPARE_FAILED', error.message);
-    process.exitCode = 1;
-    return;
-  }
-
-  if (result.gated === false) {
-    console.error('[looparr] Resume intent capture is gated off for this instance.');
-    console.error('[looparr] Run against the looparr container with HOSTNAME=looparr.');
-    console.error('[looparr] No rebuild started.');
-    reportError('RESUME_INTENT_GATED', 'resume intent capture is gated off');
-    process.exitCode = 1;
-    return;
-  }
-
-  const prepared = Array.isArray(result.prepared) ? result.prepared : [];
-  const skipped = Array.isArray(result.skipped) ? result.skipped : [];
-  console.log(`[looparr] Prepared intent for: ${prepared.join(', ') || '(none)'}`);
-  console.log(`[looparr] Skipped: ${skipped.map((item) => item.id).join(', ') || '(none)'}`);
-
   try {
     const state = await getState();
     if (clearStaleIntents(collectStaleIntents(state.projects))) {
@@ -179,10 +162,12 @@ async function main() {
     return;
   }
 
+  writeRestartContinueMarker();
   console.log('[looparr] Rebuilding and recreating looparr');
   try {
     execSync(DOCKER_COMMAND, { cwd: REPO_ROOT, stdio: 'inherit' });
   } catch (error) {
+    removeRestartContinueMarker();
     console.error(`[looparr] Docker command failed (${error.status ?? 'unknown'}).`);
     reportError('DOCKER_RESTART_FAILED', 'docker rebuild failed', {
       status: error.status ?? null

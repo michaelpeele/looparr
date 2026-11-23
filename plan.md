@@ -36,7 +36,7 @@ Stale production assets have shipped three times. For every batch that changes s
 
 ## Bootstrap batch
 
-- [ ] Remove project count from top right of home page
+- [x] Remove project count from top right of home page. Implemented 2026-11-23: removed host-projects count from home header (pre-existing local UI edits in `public/index.html`, `public/app.js`, `README.md`). Restart-safety fix: `scripts/restart-looparr.js` no longer calls `/api/auto-resume/prepare`; dry-run makes zero API writes and zero Docker calls; real restart writes `.looparr/restart-continue.json` before Docker and removes it on Docker failure. `src/engine.js` consumes marker in `startStep()` and injects through `promptPreamble()` for resumed non-seed phases, deleting marker after successful read. `docker-compose.yml` bind-mounts `./.looparr:/app/.looparr:rw` so container can consume host marker. Live verified 2026-11-23 on port 4188: dry-run left state unchanged with no prepare/Docker/marker; real restart healthy on new image `sha256:31bed8768f50f4de50141cd0fe499a172e5b6527c1fcd24a93bca3a8806e5051` (container `133b9ac83de740747e0867581b453e1924bf01bffd38aaeb84c16809365a8462`), marker consumed, one active executor (`runKey 5e3e8abfd4f836cbc683b7396c3a6f11`), resumed prompt contained `Restart complete continue.`; served HTML `6b0840afd3e01dd477be28dc7c7771ba2a06587c60a32d256135a410064b9874`, app.js `8d114dcd2ffe82955742c18adb7b00ec4cacf01fe4b637e7a1e9a7b331eb0773`, styles.css `5b4ce9cbbdc6c63e4aeca9e433f854889b72572fc397ea71a7522815c523673b` match local; `/api/state` returns projects and settings.
 - [x] Add container and Tailscale Serve deployment files
 - [x] Add host-side OpenCode execution bridge
 - [x] Verify local API, SSE, bridge health, Serve, and Funnel status

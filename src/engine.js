@@ -764,9 +764,30 @@ function isMetaPromptHandoff(text) {
 }
 
 const CLI_TOOLS_NOTE = 'Note: required CLI tools may be installed during this task. If a needed command is missing, install it (prefer the project\'s documented package manager) before continuing.';
+const RESTART_CONTINUE_MESSAGE = 'Restart complete continue.';
 
-function promptPreamble() {
-  return config.settings.promptCliToolsNote === true ? CLI_TOOLS_NOTE : '';
+function restartContinueFile() {
+  return process.env.LOOPARR_RESTART_CONTINUE_FILE ||
+    path.join(path.resolve(__dirname, '..'), '.looparr', 'restart-continue.json');
+}
+
+function consumeRestartContinueMessage() {
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(restartContinueFile(), 'utf8'));
+  } catch {
+    return '';
+  }
+  try { fs.unlinkSync(restartContinueFile()); } catch { /* no marker */ }
+  const message = typeof parsed?.message === 'string' ? parsed.message.trim() : '';
+  return message === RESTART_CONTINUE_MESSAGE ? message : '';
+}
+
+function promptPreamble(extra = '') {
+  const parts = [];
+  if (config.settings.promptCliToolsNote === true) parts.push(CLI_TOOLS_NOTE);
+  if (extra) parts.push(extra);
+  return parts.join('\n\n');
 }
 
 function shortCommand(command, args) {
@@ -1082,7 +1103,12 @@ async function startStep(project) {
       );
     }
 
-    const preamble = promptPreamble();
+    let continuationMessage = '';
+    if (rt.restartContinuePending) {
+      if (phase !== 'seed') continuationMessage = consumeRestartContinueMessage();
+      rt.restartContinuePending = false;
+    }
+    const preamble = promptPreamble(continuationMessage);
     // Future: append enabled promptSnippets here (see .project_documents/RESEARCH-prompt-snippets.md).
     if (preamble) prompt = `${preamble}\n\n${prompt}`;
 
@@ -1460,6 +1486,7 @@ async function resumeOnStart() {
       rt.error = '';
       rt.currentTask = taskText;
       rt.nextPhase = phase;
+      rt.restartContinuePending = phase !== 'seed';
       appendLog(project.id, 'system', `↻ Auto-resume after restart (phase ${phase}).`);
       if (intent.status === 'paused') {
         // A project paused before restart must not wake up running: honor the

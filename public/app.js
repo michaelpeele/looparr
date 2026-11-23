@@ -34,7 +34,6 @@
     envSettingsStatus: $('env-settings-status'),
     hostRunner: $('host-runner'),
     hostRunnerDetail: $('host-runner-detail'),
-    hostProjects: $('host-projects'),
     hostSetup: $('host-setup'),
     addForm: $('add-form'),
     projectPath: $('project-path'),
@@ -74,7 +73,6 @@
     addStatus: $('add-status'),
     projectGrid: $('project-grid'),
     emptyState: $('empty-state'),
-    projectCount: $('project-count'),
     drawerBackdrop: $('drawer-backdrop'),
     drawer: $('drawer'),
     drawerClose: $('drawer-close'),
@@ -1201,8 +1199,7 @@
       ? `${detail} · ${modelParts.join(' · ')}`
       : detail;
     const setupCount = projects.filter(isPlanSetup).length;
-    dom.hostProjects.textContent = String(projects.length);
-    dom.hostSetup.textContent = setupCount ? `${setupCount} need setup` : 'all configured';
+    if (dom.hostSetup) dom.hostSetup.textContent = setupCount ? `${setupCount} need setup` : 'all configured';
   }
 
   /* ---------- cards ---------- */
@@ -1425,7 +1422,6 @@
     existing.forEach((card) => card.remove());
 
     dom.emptyState.hidden = projects.length > 0;
-    dom.projectCount.textContent = `${projects.length} project${projects.length === 1 ? '' : 's'}`;
   }
 
   function flashCard(card, message) {

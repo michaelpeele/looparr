@@ -21,6 +21,7 @@ services:
       LOOPARR_EXECUTOR_TOKEN: ${LOOPARR_EXECUTOR_TOKEN:-}
     volumes:
       - ./data:/app/data:rw
+      - ./.looparr:/app/.looparr:rw
       - ./.env:/app/.env:rw
       - ${LOOPARR_PROJECTS_ROOT:-/home/michaelpeele/ai-projects}:${LOOPARR_PROJECTS_ROOT:-/home/michaelpeele/ai-projects}:rw
     healthcheck:

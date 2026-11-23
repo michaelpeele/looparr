@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const http = require('node:http');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 const { once } = require('node:events');
@@ -15,6 +16,7 @@ const CONFIG_PATH = path.join(TEMP_DIR, 'config.json');
 const FIXTURE_PATH = path.join(TEMP_DIR, 'fake-runner.js');
 const BIN_DIR = path.join(TEMP_DIR, 'bin');
 const DOCKER_MARKER = path.join(TEMP_DIR, 'docker-was-called');
+const RESTART_CONTINUE_TEST_FILE = path.join(TEMP_DIR, 'restart-continue.json');
 const PORT = '4200';
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 
@@ -24,6 +26,7 @@ process.env.CONFIG_PATH = CONFIG_PATH;
 process.env.LOOPARR_PROJECTS_ROOT = PROJECTS_ROOT;
 process.env.HOSTNAME = 'test-host';
 delete process.env.LOOPARR_ALLOW_RESUME_INTENT;
+process.env.LOOPARR_RESTART_CONTINUE_FILE = RESTART_CONTINUE_TEST_FILE;
 
 const configStore = require(path.join(REPO_ROOT, 'src/config.js'));
 const planLib = require(path.join(REPO_ROOT, 'src/plan.js'));
@@ -45,7 +48,10 @@ function createFixture() {
     + `  label: 'test runner',\n`
     + `  description: 'keeps test projects active without invoking a real agent',\n`
     + `  ensureServer: async () => null,\n`
-    + `  buildCommand: ({ cwd }) => ({ command: ${JSON.stringify(process.execPath)}, args: ['-e', ${JSON.stringify(childScript)}], options: { cwd } }),\n`
+    + `  buildCommand: ({ cwd, prompt }) => {\n`
+    + `    require("fs").appendFileSync(require("path").join(cwd, ".looparr", "fake-prompts.log"), JSON.stringify({ at: new Date().toISOString(), prompt }) + "\\n");\n`
+    + `    return { command: ${JSON.stringify(process.execPath)}, args: ['-e', ${JSON.stringify(childScript)}], options: { cwd } };\n`
+    + `  },\n`
     + `  isRateLimit: () => false\n`
     + `});\n`;
   fs.writeFileSync(FIXTURE_PATH, source, 'utf8');
@@ -94,9 +100,21 @@ async function waitForServer(child) {
     if (child && (child.exitCode !== null || child.signalCode !== null)) {
       throw new Error(`Server exited early: ${child.testOutput || ''}`);
     }
+    if (child && child.testOutput.includes('EADDRINUSE')) {
+      throw new Error(`Server port in use: ${child.testOutput}`);
+    }
     try {
       const response = await fetch(`${BASE_URL}/api/state`);
-      if (response.ok) return;
+      if (response.ok) {
+        await delay(300);
+        if (child && child.testOutput.includes('EADDRINUSE')) {
+          throw new Error(`Server port in use: ${child.testOutput}`);
+        }
+        if (child && (child.exitCode !== null || child.signalCode !== null)) {
+          throw new Error(`Server exited after responding: ${child.testOutput || ''}`);
+        }
+        return;
+      }
       lastError = new Error(`HTTP ${response.status}`);
     } catch (error) {
       lastError = error;
@@ -107,17 +125,30 @@ async function waitForServer(child) {
 }
 
 async function spawnServer(gated) {
-  const child = spawn(process.execPath, ['server.js'], {
-    cwd: REPO_ROOT,
-    env: serverEnv(gated),
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
-  child.testOutput = '';
-  child.stdout.on('data', (chunk) => { child.testOutput += chunk.toString(); });
-  child.stderr.on('data', (chunk) => { child.testOutput += chunk.toString(); });
-  servers.push(child);
-  await waitForServer(child);
-  return child;
+  let lastError;
+  for (let spawnAttempt = 0; spawnAttempt < 3; spawnAttempt += 1) {
+    const child = spawn(process.execPath, ['server.js'], {
+      cwd: REPO_ROOT,
+      env: serverEnv(gated),
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    child.testOutput = '';
+    child.stdout.on('data', (chunk) => { child.testOutput += chunk.toString(); });
+    child.stderr.on('data', (chunk) => { child.testOutput += chunk.toString(); });
+    servers.push(child);
+    try {
+      await waitForServer(child);
+      return child;
+    } catch (error) {
+      lastError = error;
+      await killServer(child);
+      if (!String(error && error.message).includes('EADDRINUSE') && !String(error && error.message).includes('port in use')) {
+        throw error;
+      }
+      await delay(250);
+    }
+  }
+  throw lastError;
 }
 
 async function killServer(child) {
@@ -260,14 +291,24 @@ async function startAndWait(id) {
 
 async function waitForChildPid(project) {
   const file = path.join(project.path, '.looparr', 'fake-child.pid');
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
     if (fs.existsSync(file)) {
       const pid = Number(fs.readFileSync(file, 'utf8').trim());
       if (Number.isInteger(pid) && pid > 0) return pid;
     }
     await delay(50);
   }
-  throw new Error(`Fake child pid missing for ${project.id}`);
+  const looparrDir = path.join(project.path, '.looparr');
+  const entries = fs.existsSync(looparrDir) ? fs.readdirSync(looparrDir) : [];
+  const prompts = readPrompts(project);
+  const state = await getState().catch(() => null);
+  const projectState = state ? state.projects.find((entry) => entry.id === project.id) : null;
+  throw new Error(
+    `Fake child pid missing for ${project.id}`
+    + `\n.looparr entries: ${entries.join(', ')}`
+    + `\nprompts: ${prompts.length}`
+    + `\nproject: ${projectState ? JSON.stringify({ active: projectState.active, status: projectState.status, paused: projectState.paused, currentTask: projectState.currentTask }) : 'missing'}`
+  );
 }
 
 async function waitForPidGone(pid) {
@@ -281,6 +322,80 @@ async function waitForPidGone(pid) {
     await delay(50);
   }
   throw new Error(`Fake child ${pid} still alive`);
+}
+
+function promptLogPath(project) {
+  return path.join(project.path, '.looparr', 'fake-prompts.log');
+}
+
+function readPrompts(project) {
+  const file = promptLogPath(project);
+  if (!fs.existsSync(file)) return [];
+  return fs.readFileSync(file, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line).prompt);
+}
+
+async function waitForPrompts(project, count) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const prompts = readPrompts(project);
+    if (prompts.length >= count) return prompts;
+    await delay(50);
+  }
+  throw new Error(`Prompt log for ${project.id} never reached ${count} entries`);
+}
+
+function writeRestartContinueMarkerForTest(message = 'Restart complete continue.') {
+  fs.mkdirSync(path.dirname(RESTART_CONTINUE_TEST_FILE), { recursive: true });
+  fs.writeFileSync(
+    RESTART_CONTINUE_TEST_FILE,
+    `${JSON.stringify({ message, writtenAt: new Date().toISOString() }, null, 2)}\n`,
+    'utf8'
+  );
+}
+
+async function startApiWriteSpy(target) {
+  const writes = [];
+  const upstream = String(target).replace(/\/$/, '');
+  const server = http.createServer(async (req, res) => {
+    if (req.method !== 'GET') {
+      writes.push({ method: req.method, url: req.url });
+      res.writeHead(403, { 'content-type': 'text/plain' });
+      res.end('blocked');
+      return;
+    }
+    try {
+      const response = await fetch(`${upstream}${req.url}`, {
+        method: 'GET',
+        headers: { Accept: req.headers.accept || 'application/json' }
+      });
+      const body = await response.text();
+      res.writeHead(response.status, {
+        'content-type': response.headers.get('content-type') || 'application/json'
+      });
+      res.end(body);
+    } catch (error) {
+      res.writeHead(502, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message }));
+    }
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const { port } = server.address();
+  return {
+    url: `http://127.0.0.1:${port}`,
+    writes,
+    close: async () => {
+      if (!server.listening) return;
+      await new Promise((resolve) => {
+        server.close(resolve);
+        if (server.closeAllConnections) server.closeAllConnections();
+      });
+    }
+  };
 }
 
 function countSeedLogs(projectState) {
@@ -468,6 +583,75 @@ async function main() {
   assert.ok(readAudit(analyzeProject.id).some((entry) => entry.event === 'resume-on-start' && entry.phase === 'analyze'), 'analyze audit phase');
   assertPlannedIntentConsumed(analyzeProject.id, 'analyze intent consumed');
 
+  // 9b. Restart-continue marker is injected once, then consumed for good.
+  const markerProject = await createProjectViaApi('restart-continue-resume', true);
+  fs.writeFileSync(path.join(markerProject.path, '.looparr', 'next_prompt.txt'), 'non-empty handoff', 'utf8');
+  fs.writeFileSync(path.join(markerProject.path, '.looparr', 'handoff_task.txt'), markerProject.task, 'utf8');
+  fs.rmSync(RESTART_CONTINUE_TEST_FILE, { force: true });
+  writeRestartContinueMarkerForTest();
+  writeIntentFor(markerProject.id, {
+    nextPhase: 'analyze',
+    currentTask: markerProject.task,
+    status: 'analyze',
+    reason: 'container-shutdown'
+  });
+  const markerPromptsBefore = readPrompts(markerProject);
+  server = await restartServer(server, true);
+
+  const markerPid = await waitForChildPid(projectById(markerProject.id));
+  const markerPrompts = await waitForPrompts(markerProject, markerPromptsBefore.length + 1);
+  const markerNewPrompts = markerPrompts.slice(markerPromptsBefore.length);
+  assertEqual(markerNewPrompts.length, 1, 'one new prompt after marker resume');
+  assert.ok(
+    markerNewPrompts.some((prompt) => prompt.includes('Restart complete continue.')),
+    'marker message injected into analyze prompt'
+  );
+  assert.equal(fs.existsSync(RESTART_CONTINUE_TEST_FILE), false, 'restart marker consumed');
+  assertEqual(findProject(await getState(), markerProject.id).active, true, 'marker resume active');
+  assertEqual(countAudit(markerProject.id, 'resume-on-start'), 1, 'one marker resume-on-start');
+  assertEqual(
+    fs.readFileSync(path.join(markerProject.path, '.looparr', 'fake-child.pid'), 'utf8').trim().split(/\s+/).length,
+    1,
+    'one fake child pid after marker resume'
+  );
+
+  await stopAllProjects();
+  await waitForPidGone(markerPid);
+  fs.rmSync(path.join(markerProject.path, '.looparr', 'fake-child.pid'), { force: true });
+  await killServer(server);
+  fs.rmSync(RESTART_CONTINUE_TEST_FILE, { force: true });
+  fs.writeFileSync(path.join(markerProject.path, '.looparr', 'next_prompt.txt'), 'non-empty handoff', 'utf8');
+  fs.writeFileSync(path.join(markerProject.path, '.looparr', 'handoff_task.txt'), markerProject.task, 'utf8');
+  writeIntentFor(markerProject.id, {
+    nextPhase: 'analyze',
+    currentTask: markerProject.task,
+    status: 'analyze',
+    reason: 'container-shutdown'
+  });
+  const noMarkerPromptsBefore = readPrompts(markerProject);
+  server = await spawnServer(true);
+
+  const noMarkerPid = await waitForChildPid(projectById(markerProject.id));
+  const noMarkerPrompts = await waitForPrompts(markerProject, noMarkerPromptsBefore.length + 1);
+  const noMarkerNewPrompts = noMarkerPrompts.slice(noMarkerPromptsBefore.length);
+  assertEqual(noMarkerNewPrompts.length, 1, 'one new prompt without marker');
+  assert.ok(
+    !noMarkerNewPrompts.some((prompt) => prompt.includes('Restart complete continue.')),
+    'no marker message without restart marker'
+  );
+  assert.notEqual(noMarkerPid, markerPid, 'second restart spawned a fresh child');
+  assert.equal(fs.existsSync(RESTART_CONTINUE_TEST_FILE), false, 'no marker created for second resume');
+  assertEqual(findProject(await getState(), markerProject.id).active, true, 'no-marker resume active');
+  assertEqual(countAudit(markerProject.id, 'resume-on-start'), 2, 'one resume-on-start per restart');
+  assertEqual(
+    fs.readFileSync(path.join(markerProject.path, '.looparr', 'fake-child.pid'), 'utf8').trim().split(/\s+/).length,
+    1,
+    'one fake child pid without marker'
+  );
+
+  await stopAllProjects();
+  await waitForPidGone(noMarkerPid);
+
   // 10. Degraded phase without handoff.
   const degradedProject = await createProjectViaApi('degraded-resume', true);
   try { fs.unlinkSync(path.join(degradedProject.path, '.looparr', 'next_prompt.txt')); } catch { /* absent */ }
@@ -619,25 +803,48 @@ async function main() {
   // 15. Restart helper dry run.
   const helperProject = await createProjectViaApi('helper-dry-run', true);
   await startAndWait(helperProject.id);
+  const helperStateBefore = findProject(await getState(), helperProject.id);
+  fs.rmSync(RESTART_CONTINUE_TEST_FILE, { force: true });
+  const writeSpy = await startApiWriteSpy(BASE_URL);
   const helperEnv = {
     ...process.env,
     LOOPARR_BASE_URL: BASE_URL,
+    LOOPARR_RESTART_CONTINUE_FILE: RESTART_CONTINUE_TEST_FILE,
     LOOPARR_RESTART_LOCK_PATH: path.join(TEMP_DIR, 'restart.lock'),
     LOOPARR_PROMOTIONS_LOG: path.join(TEMP_DIR, 'promotions.log'),
     PATH: `${BIN_DIR}:${process.env.PATH || ''}`
   };
   delete helperEnv.LOOPARR_ALLOW_RESUME_INTENT;
-  const helper = spawnSync(process.execPath, ['scripts/restart-looparr.js', '--dry-run'], {
-    cwd: REPO_ROOT,
-    env: helperEnv,
-    encoding: 'utf8'
-  });
-  assertEqual(helper.status, 0, `restart helper dry-run status\n${helper.stdout}\n${helper.stderr}`);
-  assert.ok(helper.stdout.includes('docker compose build looparr && docker compose up -d looparr'), 'helper prints Docker command');
-  assert.ok(helper.stdout.includes('Dry run: Docker was not called.'), 'helper reports dry run');
-  assert.ok(helper.stdout.includes(helperProject.id), 'helper prints prepared project id');
-  assert.equal(fs.existsSync(DOCKER_MARKER), false, 'dry run did not call Docker');
-  assertNoSecrets(`${helper.stdout}\n${helper.stderr}`, 'restart helper output');
+  const originalHelperBaseUrl = helperEnv.LOOPARR_BASE_URL;
+  helperEnv.LOOPARR_BASE_URL = writeSpy.url;
+  try {
+    const helperChild = spawn(process.execPath, ['scripts/restart-looparr.js', '--dry-run'], {
+      cwd: REPO_ROOT,
+      env: helperEnv,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let helperStdout = '';
+    let helperStderr = '';
+    helperChild.stdout.on('data', (chunk) => { helperStdout += chunk.toString(); });
+    helperChild.stderr.on('data', (chunk) => { helperStderr += chunk.toString(); });
+    const [helperStatus] = await once(helperChild, 'exit');
+    const helper = { status: helperStatus, stdout: helperStdout, stderr: helperStderr };
+    assertEqual(helper.status, 0, `restart helper dry-run status\n${helper.stdout}\n${helper.stderr}`);
+    assert.ok(helper.stdout.includes('docker compose build looparr && docker compose up -d looparr'), 'helper prints Docker command');
+    assert.ok(helper.stdout.includes('Dry run: Docker was not called.'), 'helper reports dry run');
+    assertEqual(writeSpy.writes.length, 0, 'dry run made no write requests');
+    assert.equal(fs.existsSync(RESTART_CONTINUE_TEST_FILE), false, 'dry run wrote no restart marker');
+    assert.equal(fs.existsSync(DOCKER_MARKER), false, 'dry run did not call Docker');
+    const helperStateAfter = findProject(await getState(), helperProject.id);
+    assertEqual(helperStateAfter.active, true, 'helper project stays active after dry run');
+    for (const key of ['paused', 'status', 'currentTask', 'nextPhase', 'autoResumePending']) {
+      assertEqual(helperStateAfter[key], helperStateBefore[key], `dry run preserved ${key}`);
+    }
+    assertNoSecrets(`${helper.stdout}\n${helper.stderr}`, 'restart helper output');
+  } finally {
+    await writeSpy.close();
+    helperEnv.LOOPARR_BASE_URL = originalHelperBaseUrl;
+  }
 
   // 16. Restart helper clears stale planned intent before restarting.
   const helperStaleProject = await createProjectViaApi('helper-stale-intent', true);
@@ -760,6 +967,7 @@ async function main() {
   const healthyPs = '  "compose ps looparr") printf \'NAME SERVICE STATUS\\nlooparr looparr Up (healthy)\\n\' ;;';
   writeDockerStub([
     `printf '%s\\n' "$*" >> ${JSON.stringify(DOCKER_MARKER)}`,
+    `if [ -f ${JSON.stringify(RESTART_CONTINUE_TEST_FILE)} ]; then printf 'restart-continue:%s\\n' "$(cat ${JSON.stringify(RESTART_CONTINUE_TEST_FILE)})" >> ${JSON.stringify(DOCKER_MARKER)}; fi`,
     'case "$*" in',
     '  "compose build looparr") exit 1 ;;',
     healthyPs,
@@ -774,6 +982,12 @@ async function main() {
   assertEqual(failedRestart.status, 1, `failed restart status\n${failedRestart.stdout}\n${failedRestart.stderr}`);
   assert.ok(failedRestart.stderr.includes('Docker command failed (1).'), 'restart reports Docker failure');
   assert.ok(failedRestart.stderr.includes('DOCKER_RESTART_FAILED'), 'restart reports structured Docker error');
+  const failedDockerMarker = fs.readFileSync(DOCKER_MARKER, 'utf8');
+  assert.ok(
+    failedDockerMarker.includes('restart-continue:') && failedDockerMarker.includes('Restart complete continue.'),
+    'restart marker present at Docker time'
+  );
+  assert.equal(fs.existsSync(RESTART_CONTINUE_TEST_FILE), false, 'failed restart removed marker');
   assertNoSecrets(`${failedRestart.stdout}\n${failedRestart.stderr}`, 'failed restart output');
 
   fs.rmSync(DOCKER_MARKER, { force: true });
@@ -794,6 +1008,7 @@ async function main() {
   assert.ok(retryMarker.includes('compose build looparr'), 'retry rebuilt image');
   assert.ok(retryMarker.includes('compose up -d looparr'), 'retry recreated container');
   assertNoSecrets(`${retriedRestart.stdout}\n${retriedRestart.stderr}`, 'retried restart output');
+  fs.rmSync(RESTART_CONTINUE_TEST_FILE, { force: true });
 
   // 19. Stale intent found after restart is cleared without another restart.
   const postRestartProject = await createProjectViaApi('helper-post-restart', true);

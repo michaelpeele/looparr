@@ -759,3 +759,12 @@ Live Vibe task through production:
   confirmed the served picker contains it.
 - Verified `POST /v1/chat/completions` with `model: coding-safe` (tools payload) returns 200 and
   `opencode run -m omniroute/coding-safe` prints OK. `npm test` passes.
+
+## Restart-safe active executor and continuation marker (2026-11-23)
+
+- `scripts/restart-looparr.js` no longer calls `/api/auto-resume/prepare`; dry-run makes zero API writes and zero Docker calls. Real restart writes `.looparr/restart-continue.json` (`{"message":"Restart complete continue.","writtenAt":...}`) before Docker and removes it if Docker fails. `.looparr/next_prompt.txt` is not edited.
+- `src/engine.js` adds `restartContinueFile()`, `consumeRestartContinueMessage()`, and `promptPreamble(extra='')`. `resumeOnStart()` sets `rt.restartContinuePending = phase !== 'seed';` so resumed analyze/implement steps inject the marker even for pre-existing `planned-restart` intents. `startStep()` consumes the marker only for resumed non-seed phases, deletes it after successful read, and injects through `promptPreamble()`.
+- `docker-compose.yml` bind-mounts `./.looparr:/app/.looparr:rw` so the container engine (`/app/.looparr/...`) can read/unlink the host-written marker.
+- Tests: `scripts/test-auto-resume.js` extended with prompt logging, API write spy, dry-run zero-POST/state assertions, restart-continue marker injection + one-time consume/no-duplicate-active-run coverage, and Docker marker presence/removal assertions. `npm run test:auto-resume` and full `npm test` pass.
+- Live verification (port 4188, 2026-11-23): dry-run left state unchanged with no prepare/Docker/marker. Real restart rebuilt/recreated healthy container on image `sha256:31bed8768f50f4de50141cd0fe499a172e5b6527c1fcd24a93bca3a8806e5051` (container `133b9ac83de740747e0867581b453e1924bf01bffd38aaeb84c16809365a8462`), marker consumed, one active executor (`runKey 5e3e8abfd4f836cbc683b7396c3a6f11`), resumed prompt contained `Restart complete continue.`. Served HTML `6b0840afd3e01dd477be28dc7c7771ba2a06587c60a32d256135a410064b9874`, app.js `8d114dcd2ffe82955742c18adb7b00ec4cacf01fe4b637e7a1e9a7b331eb0773`, styles.css `5b4ce9cbbdc6c63e4aeca9e433f854889b72572fc397ea71a7522815c523673b` match local; `/api/state` returns projects and settings.
+- Phase 2 (not implemented): true same-session resume analysis prompt at `docs/restart-same-session-phase2-prompt.md` (untracked, intentionally not staged).

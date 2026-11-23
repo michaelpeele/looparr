@@ -84,7 +84,7 @@ Use the add form in the dashboard:
 
 Looparr uses a server-side folder browser, not a browser folder picker. Browser folders are not visible to the server. The folder dropdown lists directories directly under `LOOPARR_PROJECTS_ROOT`. **Browse server folders** navigates subdirectories under that root, and selecting a directory fills the path with the server/container path. **Add new folder** creates a real directory under the current browse directory, or under the root when used from the Add Project row. You can still type any absolute server/container path that exists. The server rejects paths that do not exist or are not directories.
 
-A directory without a valid `plan.md` is still added. It appears as **Setup Needed** until the plan has at least one tracked checklist item. Open the project drawer, create or edit `plan.md`, then save it. The host strip shows `N need setup` while any project needs this step, or `all configured` when every project has a valid plan. Press **Start** after setup is complete.
+A directory without a valid `plan.md` is still added. It appears as **Setup Needed** until the plan has at least one tracked checklist item. Open the project drawer, create or edit `plan.md`, then save it. The host strip **Setup** card shows `N need setup` while any project needs this step, or `all configured` when every project has a valid plan. Press **Start** after setup is complete.
 
 Projects and settings persist in `config.json` next to `server.js`. That file is gitignored. Each project gets a hidden `.looparr/next_prompt.txt` handoff file, also gitignored.
 
@@ -280,7 +280,7 @@ Tailscale state persists in `./looparr-tailscale-data`. Looparr config persists 
 
 In the hosted **Add Project** form, use the **Server-side project directory** field. Paths shown and entered are server/container paths, not browser-local paths. The folder dropdown and server-side browser list directories under `LOOPARR_PROJECTS_ROOT`, normally `/home/michaelpeele/ai-projects`. Browse navigates subdirectories under that root; selecting one fills the absolute path. **Add new folder** creates a real directory under the current browse directory, or under the root from the Add Project row. You can also enter an absolute path such as `/home/michaelpeele/ai-projects/example`. The server checks that the path exists and is a directory. `~` expands to `/home/michaelpeele` because the container sets `HOME=/home/michaelpeele`.
 
-If the directory has no valid `plan.md`, Looparr adds it anyway and marks it **Setup Needed**. The project card says to create `plan.md` in the drawer, then press **Start**. The drawer offers a format guide, an **Insert starter plan** button, and an editable `plan.md` textarea. Save the plan there; Looparr reads the saved file through the mount. The host strip reports the number of projects needing setup, or `all configured` when none do.
+If the directory has no valid `plan.md`, Looparr adds it anyway and marks it **Setup Needed**. The project card says to create `plan.md` in the drawer, then press **Start**. The drawer offers a format guide, an **Insert starter plan** button, and an editable `plan.md` textarea. Save the plan there; Looparr reads the saved file through the mount. The host strip **Setup** card reports the number of projects needing setup (`N need setup`), or `all configured` when none do.
 
 ### Verify
 
