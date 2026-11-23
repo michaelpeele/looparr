@@ -186,6 +186,69 @@ function loadShowCompletedFunctions(options = {}) {
   return helpers;
 }
 
+function loadChecklistRenderer(appSource, editingTaskIndex = -1) {
+  const renderSource = extractFunction(appSource, 'function renderChecklist(plan)');
+  const dom = {
+    checklist: {
+      innerHTML: '',
+      contains: () => false,
+      querySelectorAll: () => [],
+      querySelector: () => null
+    }
+  };
+  const documentStub = { activeElement: {} };
+  const app = { drawerId: 'demo', showCompleted: true };
+  const factory = new Function(
+    'app',
+    'dom',
+    'document',
+    'editingTaskIndex',
+    'esc',
+    'updateToggleCompletedButton',
+    'updatePlanControls',
+    'restoreChecklistFocus',
+    'linkPlanReferences',
+    `${renderSource}\nreturn { renderChecklist, app, dom };`
+  );
+  const helpers = factory(
+    app,
+    dom,
+    documentStub,
+    editingTaskIndex,
+    String,
+    () => {},
+    () => {},
+    () => {},
+    () => {}
+  );
+  return {
+    render(plan) {
+      helpers.renderChecklist(plan);
+      return helpers.dom.checklist.innerHTML;
+    }
+  };
+}
+
+function checklistRows(html) {
+  return html
+    .split(/(?=<div class="check-item)/)
+    .filter((row) => row.startsWith('<div class="check-item'));
+}
+
+function checklistActionList(row) {
+  const controlsStart = row.indexOf('<div class="task-controls">');
+  const labelStart = row.indexOf('<div class="check-label">');
+  assert.ok(controlsStart >= 0 && labelStart > controlsStart, 'rendered controls precede label');
+  const controls = row.slice(controlsStart, labelStart);
+  return [...controls.matchAll(/data-action="([a-z-]+)"/g)].map((match) => match[1]);
+}
+
+function checklistButtonDisabled(row, action) {
+  const match = row.match(new RegExp(`<button[^>]*data-action="${action}"[^>]*>`));
+  assert.ok(match, `rendered control found: ${action}`);
+  return /\sdisabled(?:\s|>)/.test(match[0]);
+}
+
 function makeStorageMock(options = {}) {
   const entries = options.initial || {};
   const storageMap = new Map(Object.keys(entries).map((name) => [name, entries[name]]));
@@ -343,15 +406,57 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(appSource, 'data-action="remove-task"', 'app remove task action');
   assertIncludes(appSource, 'class="task-actions"', 'app task action group');
   assertIncludes(appSource, 'class="task-controls"', 'app grouped task controls wrapper');
-  const labelMarkupStart = appSource.indexOf('<div class="check-label">');
   const controlsMarkupStart = appSource.indexOf('<div class="task-controls">');
+  const labelMarkupStart = appSource.indexOf('<div class="check-label">');
   const dragMarkupStart = appSource.indexOf('data-action="drag"');
   const moveMarkupStart = appSource.indexOf('<div class="task-move">');
   const actionsMarkupStart = appSource.indexOf('<div class="task-actions">');
   assert.ok(
-    labelMarkupStart > 0 && controlsMarkupStart > labelMarkupStart && dragMarkupStart > controlsMarkupStart
+    controlsMarkupStart > 0 && labelMarkupStart > controlsMarkupStart && dragMarkupStart > controlsMarkupStart
       && moveMarkupStart > dragMarkupStart && actionsMarkupStart > moveMarkupStart,
-    'app task controls wrapper follows the label and groups drag, move and actions in order'
+    'app task controls wrapper precedes the label and groups drag, move and actions in order'
+  );
+  const checklistPlan = {
+    tasks: [
+      { index: 0, text: 'Short task', checked: false },
+      { index: 1, text: 'Long task with dependency', checked: true }
+    ],
+    dependencyStatus: {
+      tasks: { 1: { dependencies: [0], blocked: true, reason: 'Needs first task' } }
+    }
+  };
+  const normalRows = checklistRows(loadChecklistRenderer(appSource).render(checklistPlan));
+  assertEqual(normalRows.length, 2, 'rendered checklist row count');
+  const expectedActions = 'drag,move-top,move-up,move-down,move-bottom,edit-task,remove-task';
+  const expectedDisabled = ['true,true,false,false', 'false,false,true,true'];
+  normalRows.forEach((row, index) => {
+    assertIncludes(row, '<div class="task-controls">', `row ${index} controls first`);
+    assert.ok(row.indexOf('<div class="check-label">') > row.indexOf('<div class="task-controls">'), `row ${index} label follows controls`);
+    assertEqual(checklistActionList(row).join(','), expectedActions, `row ${index} control set`);
+    assertEqual(
+      ['move-top', 'move-up', 'move-down', 'move-bottom'].map((action) => checklistButtonDisabled(row, action)).join(','),
+      expectedDisabled[index],
+      `row ${index} move-button disabled states`
+    );
+    assertEqual((row.match(/<button[^>]*data-task-index="\d+"/g) || []).length, 7, `row ${index} control indexes`);
+  });
+  assertIncludes(normalRows[1], 'task-deps warn', 'dependency warning stays in label after controls');
+  const editingRows = checklistRows(loadChecklistRenderer(appSource, 1).render(checklistPlan));
+  assertEqual(editingRows.length, 2, 'editing checklist row count');
+  assertEqual(
+    checklistActionList(editingRows[0]).join(','),
+    expectedActions,
+    'non-editing row keeps edit action'
+  );
+  assertEqual(
+    checklistActionList(editingRows[1]).join(','),
+    expectedActions.replace('edit-task', 'save-task'),
+    'editing row swaps to save action without moving controls'
+  );
+  assertEqual(
+    ['move-top', 'move-up', 'move-down', 'move-bottom'].map((action) => checklistButtonDisabled(editingRows[1], action)).join(','),
+    expectedDisabled[1],
+    'editing row keeps disabled states'
   );
   assertIncludes(appSource, 'save-task-button', 'app save task button class');
   assertIncludes(appSource, 'remove-task-button', 'app remove task button class');
@@ -391,20 +496,29 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(cssSource, '.task-edit-input', 'css edit input');
   assertIncludes(cssSource, ':focus-visible', 'css focus outline');
   assertIncludes(cssSource, '.task-controls', 'css grouped task controls');
+  assertIncludes(cssSource, '.checklist { --task-controls-rail: 240px; display: grid; gap: 6px; margin-bottom: 12px; }', 'css checklist control rail');
+  assertIncludes(cssSource, 'grid-template-columns: var(--task-controls-rail) minmax(0, 1fr);', 'css fixed checklist grid rail');
+  assertIncludes(cssSource, 'align-items: start;', 'css rail top alignment');
+  assertIncludes(cssSource, '.task-controls { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; flex-wrap: nowrap; }', 'css non-wrapping task controls');
+  assertIncludes(cssSource, 'scrollbar-gutter: stable;', 'css stable drawer scrollbar gutter');
+  assertIncludes(cssSource, '.drawer-control-status {', 'css drawer control status block');
+  assertIncludes(cssSource, 'left: var(--drawer-gutter);', 'css anchored drawer status');
+  assertIncludes(cssSource, '#task-status {', 'css reserved task status block');
+  assertIncludes(cssSource, 'flex: 0 0 90px;', 'css reserved task status width');
   assertIncludes(cssSource, '@media (max-width: 900px)', 'css narrow breakpoint');
   const cssNarrowStart = cssSource.indexOf('@media (max-width: 900px)');
   const cssNarrowEnd = cssSource.indexOf('@media (max-width: 640px)');
   const cssNarrow = cssSource.slice(cssNarrowStart, cssNarrowEnd);
-  assertIncludes(cssNarrow, '.check-item { flex-wrap: wrap; gap: 6px 4px; }', 'css narrow checklist wrapping');
-  assertIncludes(cssNarrow, '.check-label { flex: 1 1 100%; min-width: 0; }', 'css narrow full-width label');
-  assertIncludes(cssNarrow, '.task-controls { flex: 1 1 100%; flex-wrap: wrap; justify-content: flex-start; gap: 4px; }', 'css narrow controls wrapping rule');
+  assertIncludes(cssNarrow, '.checklist { --task-controls-rail: 332px; }', 'css narrow touch control rail');
   assertIncludes(cssNarrow, '.task-controls .move-button, .task-controls .drag-handle, .task-controls .icon-button { width: 44px; height: 44px; }', 'css narrow 44x44 controls rule');
   const cssNarrowestStart = cssSource.indexOf('@media (max-width: 520px)');
   const cssNarrowestEnd = cssSource.indexOf('@media (min-width: 901px)');
   const cssNarrowest = cssSource.slice(cssNarrowestStart, cssNarrowestEnd);
-  assert.ok(!/\.task-move\s*\{[^}]*flex:\s*1 1 100%/.test(cssNarrowest), 'css 520px must not force the move group onto its own line');
-  assert.ok(!/\.task-actions\s*\{[^}]*flex:\s*1 1 100%/.test(cssNarrowest), 'css 520px must not force the actions group onto its own line');
-  assert.ok(!/\.check-label\s*\{[^}]*flex:\s*1 1 calc\(100% - 52px\)/.test(cssNarrowest), 'css 520px must not narrow the label beside the handle');
+  assertIncludes(cssNarrowest, '.drawer-toolbar { --drawer-gutter: 16px; }', 'css narrowest status gutter');
+  assertIncludes(cssNarrowest, '.check-item { grid-template-columns: minmax(0, 1fr); row-gap: 6px; }', 'css narrowest stacked checklist row');
+  assertIncludes(cssNarrowest, '.task-controls { grid-row: 1; width: 100%; flex-wrap: wrap; justify-content: flex-start; }', 'css narrowest fixed control row');
+  assertIncludes(cssNarrowest, '.task-actions { flex-basis: 100%; }', 'css narrowest actions line');
+  assertIncludes(cssNarrowest, '.check-label { grid-row: 2; }', 'css narrowest label row');
 
   assertIncludes(indexHtml, 'class="view" data-view', 'index view wrapper');
   assertIncludes(indexHtml, 'data-view="projects"', 'index projects view');

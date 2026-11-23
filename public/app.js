@@ -1907,12 +1907,6 @@
         : '';
       return `
       <div class="check-item${task.checked ? ' checked' : ''}" data-task-index="${taskIndex}">
-        <div class="check-label">
-          <input type="checkbox" data-index="${task.index}" ${task.checked ? 'checked' : ''}>
-          <span class="check-index">${task.index + 1}</span>
-          ${taskText}
-          ${depsMarkup}
-        </div>
         <div class="task-controls">
           <button class="move-button drag-handle" type="button" data-action="drag" data-task-index="${taskIndex}" title="Drag to reorder task" aria-label="Drag to reorder task">☰</button>
           <div class="task-move">
@@ -1927,6 +1921,12 @@
               : `<button class="icon-button edit-task-button" type="button" data-action="edit-task" data-task-index="${taskIndex}" aria-label="Edit task" title="Edit task">✎</button>`}
             <button class="icon-button remove-task-button" type="button" data-action="remove-task" data-task-index="${taskIndex}" aria-label="Delete task" title="Delete task">✕</button>
           </div>
+        </div>
+        <div class="check-label">
+          <input type="checkbox" data-index="${task.index}" ${task.checked ? 'checked' : ''}>
+          <span class="check-index">${task.index + 1}</span>
+          ${taskText}
+          ${depsMarkup}
         </div>
       </div>`;
     }).join('');
