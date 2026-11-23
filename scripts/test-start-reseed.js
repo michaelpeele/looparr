@@ -129,6 +129,7 @@ async function main() {
       autoResumeOnStart: true
     });
     fs.writeFileSync(handoffPath, OLD_HANDOFF);
+    fs.writeFileSync(path.join(projectDir, '.looparr', 'handoff_task.txt'), TASK);
     autoResume.writeIntent(project, {
       reason: 'planned-restart',
       nextPhase: 'implement',

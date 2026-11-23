@@ -458,6 +458,7 @@ async function main() {
   // 9. Analyze phase preservation with handoff.
   const analyzeProject = await createProjectViaApi('analyze-resume', true);
   fs.writeFileSync(path.join(analyzeProject.path, '.looparr', 'next_prompt.txt'), 'non-empty handoff', 'utf8');
+  fs.writeFileSync(path.join(analyzeProject.path, '.looparr', 'handoff_task.txt'), analyzeProject.task, 'utf8');
   writeIntentFor(analyzeProject.id, { nextPhase: 'analyze', currentTask: analyzeProject.task, status: 'analyze' });
   server = await restartServer(server, true);
   state = await getState();
@@ -549,6 +550,36 @@ async function main() {
   assert.ok(resumedRate.resumeAt >= futureResumeAt, 'future resumeAt restored');
   assertEqual(resumedRate.active, true, 'rate-limited project stays active');
   assert.ok(!resumedRate.logs.some((entry) => String(entry.text).startsWith('▶ SEED')), 'start() did not clear resumeAt');
+
+  // 13b. Handoff provenance mismatch degrades to seed and clears the handoff:
+  // a restart checkpoint must never push a handoff written for another task
+  // into analyze/implement.
+  const mismatchProject = await createProjectViaApi('provenance-mismatch', true);
+  const mismatchHandoff = path.join(mismatchProject.path, '.looparr', 'next_prompt.txt');
+  fs.writeFileSync(mismatchHandoff, 'Implement the OLD task, not the current one.', 'utf8');
+  fs.writeFileSync(path.join(mismatchProject.path, '.looparr', 'handoff_task.txt'), 'Old completed task', 'utf8');
+  writeIntentFor(mismatchProject.id, { nextPhase: 'implement', currentTask: mismatchProject.task, status: 'implement' });
+  server = await restartServer(server, true);
+  state = await getState();
+  const resumedMismatch = findProject(state, mismatchProject.id);
+  assertEqual(resumedMismatch.active, true, 'mismatch resume active');
+  assert.equal(fs.existsSync(mismatchHandoff), false, 'mismatched stale handoff cleared');
+  assert.equal(fs.existsSync(path.join(mismatchProject.path, '.looparr', 'handoff_task.txt')), false, 'mismatched provenance cleared');
+  assert.ok(resumedMismatch.logs.some((entry) => String(entry.text).includes('Auto-resume after restart (phase seed).')), 'mismatch degrades to seed');
+  assert.ok(readAudit(mismatchProject.id).some((entry) => entry.event === 'resume-degraded' && entry.cause === 'handoff-provenance-mismatch'), 'provenance audit present');
+  assertPlannedIntentConsumed(mismatchProject.id, 'mismatch intent consumed');
+
+  // 13c. A paused intent stays paused across restart; no step starts.
+  const pausedProject = await createProjectViaApi('paused-resume', true);
+  writeIntentFor(pausedProject.id, { currentTask: pausedProject.task, status: 'paused' });
+  server = await restartServer(server, true);
+  state = await getState();
+  const resumedPaused = findProject(state, pausedProject.id);
+  assertEqual(resumedPaused.paused, true, 'paused intent stays paused');
+  assertEqual(resumedPaused.active, true, 'paused resume keeps project active');
+  assertEqual(resumedPaused.status, 'paused', 'paused status restored');
+  await delay(300);
+  assert.ok(!findProject(await getState(), pausedProject.id).logs.some((entry) => String(entry.text).startsWith('▶ SEED')), 'paused project starts no step');
 
   // 14. Audit redaction and bounded rotation.
   const probe = { id: 'audit-probe', name: 'audit-probe', path: path.join(PROJECTS_ROOT, 'audit-probe') };

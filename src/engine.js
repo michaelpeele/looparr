@@ -484,7 +484,35 @@ function answerPath(project) {
   return path.join(project.path, '.looparr', 'next_prompt.txt');
 }
 
+function handoffTaskPath(project) {
+  return path.join(project.path, '.looparr', 'handoff_task.txt');
+}
+
+// Provenance for the current .looparr/next_prompt.txt: which looparr task the
+// handoff was validated for. Fresh sessions and restart checkpoints use it to
+// refuse to run an implement/analyze handoff written for a different task.
+function readHandoffTask(project) {
+  try {
+    return fs.readFileSync(handoffTaskPath(project), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+function stampHandoffTask(project, taskText) {
+  try {
+    fs.mkdirSync(path.join(project.path, '.looparr'), { recursive: true });
+    fs.writeFileSync(handoffTaskPath(project), `${taskText}\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function clearHandoff(project) {
+  try {
+    fs.unlinkSync(handoffTaskPath(project));
+  } catch { /* absent */ }
   try {
     fs.unlinkSync(answerPath(project));
     return true;
@@ -787,9 +815,12 @@ function commitRetry(project, rt, runner, phase, message) {
 // entitlement and billing failures are terminal, and every candidate is tried
 // at most once per step so a broken list cannot loop.
 function tryNextCandidate(project, rt, runner, phase, code) {
+  // A zero exit is a completed step. Output text that merely mentions 429 or
+  // provider-error wording (echoed prompts, commit bodies, reports) must never
+  // be read as a live provider error on a successful run.
+  if (code === 0) return false;
   if (!runner || !runner.isRateLimit) return false;
   const isRate = runner.isRateLimit(rt.stepOutput) === true;
-  if (code === 0 && !isRate) return false;
   const verdict = classifyFailure(rt.stepOutput, { isRateLimit: (text) => runner.isRateLimit(text) });
   if (verdict !== 'advance') return false;
   const models = modelsFor(project, phase, runner);
@@ -894,7 +925,7 @@ async function spawnRunnerAttempt(project, rt, runner, options) {
 
 function handleClose(project, rt, code, task, phase, runner) {
   try {
-    if (runner && runner.isRateLimit && runner.isRateLimit(rt.stepOutput)) {
+    if (code !== 0 && runner && runner.isRateLimit && runner.isRateLimit(rt.stepOutput)) {
       const pauseMs = rateLimitPauseMs();
       const saturated = modelsFor(project, phase, runner)[rt.modelIndex] || '';
       if (saturated) rotationStore.markCooling(saturated, Date.now() + pauseMs);
@@ -930,6 +961,7 @@ function handleClose(project, rt, code, task, phase, runner) {
         emitState();
         return;
       }
+      stampHandoffTask(project, task.text);
       rt.nextPhase = phase === 'seed' ? 'analyze' : 'implement';
     } else {
       const current = planLib.readPlan(project.path);
@@ -1027,6 +1059,7 @@ async function startStep(project) {
       prompt = renderPrompt('seedPromptTemplate', { task: task.text, planPath: plan.planPath });
       files = [];
       try { fs.unlinkSync(promptFile); } catch { /* no stale handoff */ }
+      try { fs.unlinkSync(handoffTaskPath(project)); } catch { /* no stale handoff */ }
     } else {
       let handoff = '';
       try { handoff = fs.readFileSync(promptFile, 'utf8').trim(); } catch { /* missing */ }
@@ -1373,6 +1406,17 @@ async function resumeOnStart() {
           });
         }
       }
+      // A restart checkpoint must never push a handoff written for another
+      // task into analyze/implement: the run would execute a stale or wrong
+      // implementation prompt. Old checkpoints and unknown provenance degrade
+      // to a fresh seed, which also clears the stale handoff.
+      if (phase !== 'seed' && readHandoffTask(project) !== taskText) {
+        phase = 'seed';
+        clearHandoff(project);
+        autoResume.appendAudit(project, 'resume-degraded', {
+          phase, task: taskText, reason: intent.reason, cause: 'handoff-provenance-mismatch'
+        });
+      }
       if (intent.currentTask !== taskText) {
         autoResume.appendAudit(project, 'resume-degraded', {
           phase, task: taskText, reason: intent.reason, cause: 'task-no-longer-next'
@@ -1417,7 +1461,14 @@ async function resumeOnStart() {
       rt.currentTask = taskText;
       rt.nextPhase = phase;
       appendLog(project.id, 'system', `↻ Auto-resume after restart (phase ${phase}).`);
-      if (intent.resumeAt && intent.resumeAt > Date.now()) {
+      if (intent.status === 'paused') {
+        // A project paused before restart must not wake up running: honor the
+        // user's pause across restarts.
+        rt.paused = true;
+        rt.resumeAt = null;
+        rt.status = 'paused';
+        emitState();
+      } else if (intent.resumeAt && intent.resumeAt > Date.now()) {
         rt.resumeAt = intent.resumeAt;
         rt.status = 'rateLimited';
         emitState();

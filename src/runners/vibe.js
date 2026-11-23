@@ -61,6 +61,22 @@ function buildCommand({ prompt, cwd, files = [], model = '', runKey, projectId, 
   };
 }
 
+// Vibe streams every event as NDJSON on stdout, including full echoes of the
+// user turn and assistant messages. Those echoes legitimately quote rate-limit
+// wording (a plan task may quote a historical `429` log line, a commit may
+// widen the pattern), so the classifier must not read message events as the
+// runner's own provider error signal. Genuine provider errors arrive on
+// stderr or as non-message events, which stay intact.
+const ECHO_MESSAGE_EVENT_RE = /^\s*\{[\s\S]*"role"\s*:\s*"(?:user|assistant)"/;
+
+function isRateLimit(text) {
+  const scrubbed = String(text)
+    .split(/\r?\n/)
+    .filter((line) => !ECHO_MESSAGE_EVENT_RE.test(line))
+    .join('\n');
+  return opencode.isRateLimit(scrubbed);
+}
+
 module.exports = {
   id: 'vibe',
   label: 'Mistral Vibe',
@@ -69,7 +85,7 @@ module.exports = {
     : 'Local Mistral Vibe; fresh vibe run per step, capped at $0.',
   models: MODELS,
   buildCommand,
-  isRateLimit: opencode.isRateLimit,
+  isRateLimit,
   cancelStaleRuns: opencode.cancelStaleRuns,
   listActiveRuns: opencode.listActiveRuns
 };
