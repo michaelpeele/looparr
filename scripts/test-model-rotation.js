@@ -24,6 +24,9 @@ const RL_OK = 'opencode/rotation-ok';
 const RL_THIRD = 'opencode/rotation-third';
 const ERR_MODEL = 'opencode/error-model';
 const ERR_OK = 'opencode/error-ok';
+const PRE_MODEL = 'opencode/predispatch-model';
+const PRE_OK = 'opencode/predispatch-ok';
+const PRE_THIRD = 'opencode/predispatch-third';
 const AUTH_MODEL = 'opencode/auth-model';
 
 process.env.PORT = '4201';
@@ -130,6 +133,9 @@ async function startFakeExecutor() {
       if (payload.model === ERR_MODEL) {
         frames.push({ stream: 'err', text: 'Error: provider returned [400]: unsupported property reasoning_details\n' });
         frames.push({ exit: 1 });
+      } else if (payload.model === PRE_MODEL) {
+        frames.push({ stream: 'err', text: 'SessionError: Service temporarily unavailable: all targets were skipped by pre-dispatch filters\n' });
+        frames.push({ exit: 1 });
       } else if (payload.model === AUTH_MODEL) {
         frames.push({ stream: 'err', text: 'Error: 401 invalid api key\n' });
         frames.push({ exit: 1 });
@@ -197,6 +203,13 @@ async function runProject(project, totalTasks) {
 
 function modelsFor(run, phase) {
   return run.filter((attempt) => attempt.phase === phase).map((attempt) => attempt.model);
+}
+
+function readCooldowns() {
+  const statePath = path.join(TEMP_DIR, 'rotation-state.json');
+  if (!fs.existsSync(statePath)) return {};
+  const saved = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  return saved && typeof saved.cooldowns === 'object' && saved.cooldowns ? saved.cooldowns : {};
 }
 
 async function testApiContract() {
@@ -298,6 +311,34 @@ async function testProviderErrorFallback() {
   assert.ok(
     logs.some((line) => line.startsWith('Model failure on')),
     `the model switch is logged; got: ${logs.filter((line) => line.startsWith('Model failure')).join(' | ') || 'no line'}`
+  );
+}
+
+async function testPreDispatchFallback() {
+  const project = await createProject('predispatch-fallback', ['predispatch task'], {
+    implementModel: `${PRE_MODEL},${PRE_OK},${PRE_THIRD}`,
+    implementRotation: true
+  });
+  const run = await runProject(project, 1);
+  assert.deepEqual(
+    modelsFor(run, 'implement'),
+    [PRE_MODEL, PRE_OK],
+    'pre-dispatch failure advances one model, then succeeds'
+  );
+  const state = await getState();
+  const logs = findProject(state, project.id).logs.map((entry) => entry.text);
+  assert.ok(
+    logs.includes(`Model failure on ${PRE_MODEL}; retrying with ${PRE_OK}.`),
+    `the model switch is logged; got: ${logs.filter((line) => line.startsWith('Model failure')).join(' | ') || 'no line'}`
+  );
+  assert.ok(
+    !logs.some((line) => /cooling|Cooloff|All candidates rate limited/i.test(line)),
+    `pre-dispatch failure does not use rate-limit semantics; got: ${logs.join(' | ')}`
+  );
+  assertEqual(
+    readCooldowns()[PRE_MODEL],
+    undefined,
+    'pre-dispatch failure records no cooldown'
   );
 }
 
@@ -406,6 +447,7 @@ async function main() {
     await testRotationPerField();
     await testRotationAfterRateLimit();
     await testProviderErrorFallback();
+    await testPreDispatchFallback();
     await testTerminalAuthError();
     await testRunnerListValidation();
     await testServedMarkup();

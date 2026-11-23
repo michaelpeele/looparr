@@ -5,6 +5,7 @@ const https = require('https');
 const path = require('path');
 const { spawn, execFileSync } = require('child_process');
 const { validateModelId } = require('../model-list');
+const { normalizeOpenCodeSessionId, opencodeSessionExists } = require('./opencode-session');
 
 const SERVER_PORT = 4096;
 const SERVER_URL = `http://localhost:${SERVER_PORT}`;
@@ -20,10 +21,6 @@ const BRIDGE_CLIENT = path.join(__dirname, '..', '..', 'scripts', 'bridge-client
 const MODELS = [
   'omniroute/auto',
   'omniroute/auto/coding',
-  // OmniRoute combo (priority: opencode-zen/big-pickle -> ds/deepseek-v4-pro ->
-  // opencode-zen/kimi-k2.7-code). One picker entry, provider fallback inside
-  // OmniRoute; kimi and deepseek are not reachable directly from OpenCode.
-  'omniroute/coding-safe',
   'opencode/big-pickle',
   'opencode/tidepool-alpha-free',
   'opencode/hy4-flash-free',
@@ -35,6 +32,10 @@ const MODELS = [
   'opencode/beam-free',
   'opencode/mimo-v2.6-flash-free',
   'opencode/nemotron-3.5-lightning-free',
+  // OmniRoute combo (priority: opencode-zen/big-pickle -> ds/deepseek-v4-pro ->
+  // opencode-zen/kimi-k2.7-code). One picker entry, provider fallback inside
+  // OmniRoute; kimi and deepseek are not reachable directly from OpenCode.
+  'omniroute/coding-safe',
   // The Kilo Gateway lane runs through OpenCode: repo-root `opencode.json`
   // declares the keyless `kilo` provider, so these ids resolve here as well as
   // in the Kilo CLI runner.
@@ -122,12 +123,18 @@ async function ensureServer() {
   return serverPromise;
 }
 
-function buildCommand({ prompt, cwd, url = SERVER_URL, files = [], model = '', runKey, projectId, phase, task }) {
+function buildCommand({ prompt, cwd, url = SERVER_URL, files = [], model = '', runKey, projectId, phase, task, sessionId = '' }) {
   if (model) validateModelId(model, 'Model');
+  const normalizedSessionId = normalizeOpenCodeSessionId(sessionId);
+  if (sessionId && !normalizedSessionId) {
+    throw new Error('invalid opencode sessionId');
+  }
   if (EXECUTOR_URL) {
     if (typeof runKey !== 'string' || !runKey.trim()) {
       throw new Error('runKey is required in bridge mode');
     }
+    const payload = { runner: 'opencode', prompt, cwd, files, url, model, runKey, projectId, phase, task };
+    if (normalizedSessionId) payload.sessionId = normalizedSessionId;
     return {
       command: process.execPath,
       args: [BRIDGE_CLIENT],
@@ -137,16 +144,19 @@ function buildCommand({ prompt, cwd, url = SERVER_URL, files = [], model = '', r
           ...process.env,
           LOOPARR_EXECUTOR_URL: EXECUTOR_URL,
           LOOPARR_EXECUTOR_TOKEN: EXECUTOR_TOKEN,
-          LOOPARR_TASK_PAYLOAD: JSON.stringify({ runner: 'opencode', prompt, cwd, files, url, model, runKey, projectId, phase, task })
+          LOOPARR_TASK_PAYLOAD: JSON.stringify(payload)
         },
         shell: false
       }
     };
   }
-  const args = ['run', getAttachFlag(), url, '--auto'];
+  const args = ['run', getAttachFlag(), url, '--auto', '--format', 'json'];
   if (model) args.push('--model', model);
   for (const file of files) {
     if (file) args.push('--file', file);
+  }
+  if (normalizedSessionId && opencodeSessionExists({ cwd, sessionId: normalizedSessionId })) {
+    args.push('--session', normalizedSessionId);
   }
   args.push(String(prompt));
   return {

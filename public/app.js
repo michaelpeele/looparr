@@ -158,7 +158,6 @@
     opencode: [
       'omniroute/auto',
       'omniroute/auto/coding',
-      'omniroute/coding-safe',
       'opencode/big-pickle',
       'opencode/tidepool-alpha-free',
       'opencode/hy4-flash-free',
@@ -170,6 +169,7 @@
       'opencode/beam-free',
       'opencode/mimo-v2.6-flash-free',
       'opencode/nemotron-3.5-lightning-free',
+      'omniroute/coding-safe',
       'kilo/kilo-auto/free',
       'kilo/openrouter/free',
       'kilo/reflection/beam-free',

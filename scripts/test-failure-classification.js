@@ -12,10 +12,13 @@ const cases = [
   ['advance', 'Error: 503 service unavailable', {}],
   ['advance', 'Error: model not found', {}],
   ['advance', 'read ECONNRESET', {}],
+  ['advance', 'SessionError: Service temporarily unavailable: all targets were skipped by pre-dispatch filters', {}],
+  ['stop', 'Error: billing: subscription required', {}],
   ['stop', 'Error: 401 invalid api key', {}],
   ['stop', 'Error: 403 forbidden', {}],
   ['stop', 'payment required: out of credits', {}],
   ['stop', 'handoff missing', {}],
+  ['stop', 'rotation success', {}],
   ['stop', '', {}]
 ];
 
