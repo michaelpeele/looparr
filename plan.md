@@ -166,6 +166,7 @@ Stale production assets have shipped three times. For every batch that changes s
 ## Desktop layout and drawer batch
 
 - [ ] (plan) Promotion concurrency lock — see [PLAN-promotion-lock.md](.project_documents/PLAN-promotion-lock.md)
+- [ ] (plan) Watchdog timer — see [PLAN-watchdog-timer.md](.project_documents/PLAN-watchdog-timer.md)
 - [ ] Link GitHub repo, push to origin with tag as v1.0
 - [ ] Publish docker container with multi arch testing similar to how we did Curatarr. Link docker container repo link to project so button appears
 - [ ] Add GitHub button to project detail on home page and detail page, if a GitHub repo is linked. Add a whale icon to link to docker image repo if one is linked.
