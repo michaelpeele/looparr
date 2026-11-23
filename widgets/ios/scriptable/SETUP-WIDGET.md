@@ -87,6 +87,27 @@ missing-file error). When the request fails, the cached card renders with an
 **Offline** marker; with no cache it falls back to a short "server unreachable"
 view.
 
+## Refresh cadence
+
+iOS decides when a widget snapshot is rebuilt. A script can only ask for the
+next opportunity with `ListWidget.refreshAfterDate`, which
+`looparr-meta-widget.js` sets to five minutes (`REFRESH_AFTER_MINUTES`).
+
+That is a hint, not a schedule. WidgetKit budgets roughly 40-70 refreshes a day
+for a frequently viewed widget (about every 15-60 minutes) and skips refreshes
+when the phone is low on battery or the widget is rarely seen. Asking for a
+shorter interval does not guarantee faster updates and spends the same budget,
+so one to five minutes is the practical floor.
+
+The `Retry Ns` countdown comes from the server payload and reflects the backoff
+at snapshot time. It does not tick between refreshes; the next snapshot shows
+the new value.
+
+None of these rebuild the home-screen snapshot: tapping the widget (it opens the
+dashboard), running the script inside Scriptable (it shows an in-app preview),
+or restarting Looparr. Only the system's next scheduled refresh picks up new
+data, so the widget can trail the dashboard by a few minutes.
+
 ## Adding a field
 
 1. Add it in `buildCard()` (`src/widget-payload.js`).

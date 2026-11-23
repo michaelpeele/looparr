@@ -6,6 +6,9 @@
 // v1
 
 const BASE_URL = 'https://looparr.tail0307d.ts.net';
+// Earliest refresh the script asks for. iOS decides the real schedule and
+// budgets roughly 40-70 refreshes a day, so a lower value is not a guarantee.
+const REFRESH_AFTER_MINUTES = 5;
 const fm = FileManager.local();
 const CACHE_PATH = fm.joinPath(fm.documentsDirectory(), 'looparr-meta-widget.json');
 
@@ -267,6 +270,7 @@ function renderChoose(w, payload, offline) {
 
 async function run() {
   const w = new ListWidget();
+  w.refreshAfterDate = new Date(Date.now() + REFRESH_AFTER_MINUTES * 60 * 1000);
   w.backgroundColor = new Color('#111114');
   w.spacing = 8;
   w.setPadding(14, 14, 14, 14);
