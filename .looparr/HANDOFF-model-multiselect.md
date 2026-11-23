@@ -33,11 +33,43 @@ Previously blocked on 2026-11-21: `opencode run --model` takes one `provider/mod
 - `plan.md`
 - `.looparr/HANDOFF-model-multiselect.md` (this file)
 
+Current working-tree hashes (re-measured 2026-11-23; values below for drifted files differ from the 2026-11-22 handoff baselines because later tasks touched them):
+
+- `README.md`: `50ed882001d8780abc50e75181050512b547bba1263f19f07abf1b3ea499c73d`
+- `public/app.js`: `fffbbad9d5c8a8a2111d1d16e5648ae2a5dac618e8e4a8e5f641ff1269b162a6`
+- `public/index.html`: `6b0840afd3e01dd477be28dc7c7771ba2a06587c60a32d256135a410064b9874`
+- `scripts/host-executor.js`: `815e1a18d389a8c476594547dd4003392179a05b9c17a3511fe72a348581d0d2`
+- `scripts/test-model-selector.js`: `71b51c5f3aa55f7a14f7036dafce458e41470d4f2b8e99a93506d76b13503860`
+- `server.js`: `7dc56583647e02cfcbd81a2c1a1e509ba5abff42fc860ef6bad2c697fe2685fe`
+- `src/config.js`: `8f7b7fe0f2717524fd3c7132abefd9a3a7480c5f77a7d3e2238e74e71f03cb73`
+- `src/engine.js`: `640626846bb20fb33e845e3f1d4ce2fad8d671d6c0c519f1dc8df9fb4d8e8a08`
+- `src/model-list.js`: `e980e697998805b72adb4541b76b9932353c3510679e0e298e68f736b8ef859b` (unchanged from the 2026-11-22 handoff)
+- `src/runners/opencode.js`: `24f128e05a68a07132871ca8011e94a3455440e207e9ac5ca19c18f22ba67ffc`
+
 Pre-existing untracked paths `.tmp-browser-fixture/`, `.tmp-browser-sticky/`, and `looparr-a-open.yml` were left untouched. `.looparr/next_prompt.txt` was not edited or deleted.
 
 ## Validation
 
 Commands run in order:
+
+### Re-verification (2026-11-23)
+
+The closeout step re-verified the working tree end to end after the later 2026-11-23 tasks (runner rotation, provider-error fallback, drawer stability) drifted the source files:
+
+1. `node --check` on `src/model-list.js`, `src/engine.js`, `server.js`, `src/runners/opencode.js`, `public/app.js` — passed.
+2. `node scripts/test-model-selector.js` — passed: `model-selector smoke tests passed`.
+3. `npm test` — passed all 29 suites.
+4. `npm run restart:looparr -- --dry-run` — passed; printed the Docker command, did not call Docker.
+5. Grep checks — `grep -c 'multiple size="4"' public/index.html` is 12 (the 4 global, 4 project-setup, and 4 drawer model selectors); the runner rotation task added 3 additional `multiple size="3"` selectors (lines 142, 287, 436), out of scope here. `sed -n '154p' src/runners/opencode.js` shows exactly one `args.push('--model', model)` per invocation. `grep -n "modelFallbackPending\|runnerSupportsModel" src/engine.js` finds both: `runnerSupportsModel` filters the candidate list per runner so a `kilo/*` id never reaches a local or bridge `opencode` run, and `modelFallbackPending`/`modelAttemptRunKey` keep the same task, phase, and run key across retries.
+6. Production asset hashes — served `http://localhost:4188/` and `/app.js` hashes equal local `public/index.html` and `public/app.js`; container source hashes equal local source for all served files. No rebuild was required because production already matched the working tree.
+
+Served asset hashes at closeout (differ from the 2026-11-22 handoff values because later tasks drifted the files):
+
+- `/` and `public/index.html`: `6b0840afd3e01dd477be28dc7c7771ba2a06587c60a32d256135a410064b9874`
+- `/app.js` and `public/app.js`: `fffbbad9d5c8a8a2111d1d16e5648ae2a5dac618e8e4a8e5f641ff1269b162a6`
+- `/styles.css` and `public/styles.css`: `fb9ec0536057b348710366f0769a16ed122bd2f30e27ecdf5065ca5cd88c8964`
+
+Original validation (2026-11-22):
 
 1. `node --check` on every changed JS file — passed.
 2. `node scripts/test-model-selector.js` — passed: `model-selector smoke tests passed`.
@@ -64,18 +96,18 @@ Focused tests cover global and per-project comma round-trips, dedupe and canonic
 
 ## Source hashes
 
-Hashes taken after implementation and tests, before this handoff and the `plan.md` marker edit:
+Hashes taken after implementation and tests, before this handoff and the `plan.md` marker edit. Re-measured 2026-11-23 at closeout; drifted files now carry current working-tree hashes because later 2026-11-23 tasks (runner rotation, provider-error fallback, drawer stability) touched them. `src/model-list.js` is unchanged.
 
-- `README.md`: `086998813db4db115523303d5ffdbd8c710262f4ee950ea312fd2c3a040c4176`
-- `public/app.js`: `d39ef4c6df12dd6f2f1a30e2c043b2b2af0e99369e2f17804b261c25004558e3`
-- `public/index.html`: `fddc2ec74b396c8f6466dcf9fa6eaa31d4e45f594d09df23faecc65b3e0c04f8`
-- `scripts/host-executor.js`: `36a5ee0f879c729d2c498144dbaad49d572d138a4149ab42ef29e152edc57c46`
-- `scripts/test-model-selector.js`: `0e58288d296433cf2e93d85359ac6ab4e7ae5203f435ec0284dd1958fb818e3a`
-- `server.js`: `7a0d53687410e801662c0dc2a2ba225b48e7d408e8e2b618d3ac68eb86f449e9`
-- `src/config.js`: `a20b62f7ed93fc23e5c301cfe1309e674b5b0b35dac95cd9938c6640ab936c72`
-- `src/engine.js`: `2ac3dc7d69e01d07f9a8f12a6d6092eb60e865271ae915b60434327831f93ad1`
-- `src/model-list.js`: `e980e697998805b72adb4541b76b9932353c3510679e0e298e68f736b8ef859b`
-- `src/runners/opencode.js`: `dce4c400b8dfb312cda00d9ef4fb264610322ab2dde1e5877d5e94e94651afbd`
+- `README.md`: `50ed882001d8780abc50e75181050512b547bba1263f19f07abf1b3ea499c73d`
+- `public/app.js`: `fffbbad9d5c8a8a2111d1d16e5648ae2a5dac618e8e4a8e5f641ff1269b162a6`
+- `public/index.html`: `6b0840afd3e01dd477be28dc7c7771ba2a06587c60a32d256135a410064b9874`
+- `scripts/host-executor.js`: `815e1a18d389a8c476594547dd4003392179a05b9c17a3511fe72a348581d0d2`
+- `scripts/test-model-selector.js`: `71b51c5f3aa55f7a14f7036dafce458e41470d4f2b8e99a93506d76b13503860`
+- `server.js`: `7dc56583647e02cfcbd81a2c1a1e509ba5abff42fc860ef6bad2c697fe2685fe`
+- `src/config.js`: `8f7b7fe0f2717524fd3c7132abefd9a3a7480c5f77a7d3e2238e74e71f03cb73`
+- `src/engine.js`: `640626846bb20fb33e845e3f1d4ce2fad8d671d6c0c519f1dc8df9fb4d8e8a08`
+- `src/model-list.js`: `e980e697998805b72adb4541b76b9932353c3510679e0e298e68f736b8ef859b` (unchanged from 2026-11-22 handoff)
+- `src/runners/opencode.js`: `24f128e05a68a07132871ca8011e94a3455440e207e9ac5ca19c18f22ba67ffc`
 
 ## Residual limits
 
