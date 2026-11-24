@@ -19,9 +19,6 @@ const BRIDGE_CLIENT = path.join(__dirname, '..', '..', 'scripts', 'bridge-client
 // Ids OpenCode can resolve. Keep in step with the equivalent default settings
 // and `public/app.js`; the Kilo Gateway ids belong to the Kilo CLI runner.
 const MODELS = [
-  'omniroute/auto',
-  'omniroute/auto/coding',
-  'opencode/big-pickle',
   'opencode/tidepool-alpha-free',
   'opencode/hy4-flash-free',
   'opencode/iceman-free',
@@ -32,22 +29,15 @@ const MODELS = [
   'opencode/beam-free',
   'opencode/mimo-v2.6-flash-free',
   'opencode/nemotron-3.5-lightning-free',
-  // OmniRoute combo (priority: opencode-zen/big-pickle -> ds/deepseek-v4-pro ->
-  // opencode-zen/kimi-k2.7-code). One picker entry, provider fallback inside
-  // OmniRoute; kimi and deepseek are not reachable directly from OpenCode.
-  'omniroute/coding-safe',
   // The Kilo Gateway lane runs through OpenCode: repo-root `opencode.json`
-  // declares the keyless `kilo` provider, so these ids resolve here as well as
-  // in the Kilo CLI runner.
-  'kilo/kilo-auto/free',
-  'kilo/openrouter/free',
+  // declares the keyless `kilo` provider, so explicit free ids resolve here as
+  // well as in the Kilo CLI runner. Router and rate-limited ids are refused.
+  'kilo/baidu/ernie-5.5-flash-preview:free',
   'kilo/reflection/beam-free',
   'kilo/recursive/flint-v1.0:free',
-  'kilo/nvidia/nemotron-3.5-super-vl:free',
   'kilo/nvidia/nemotron-3-ultra-550b-a55b:free',
   'kilo/nvidia/nemotron-3.5-lightning:free',
   'kilo/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
-  'kilo/baidu/ernie-5.5-flash-preview:free',
   'kilo/inclusionai/ling-3.2-flash:free',
   'kilo/particle-ai/particle-1:free',
   'kilo/liquid/lfm-3-1.7b:free'

@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { normalizeOpenCodeSessionId } = require('./runners/opencode-session');
 
 const STATE_NAME = 'auto-resume-state.json';
 const LOG_NAME = 'auto-resume.log';
@@ -77,6 +78,69 @@ function appendAudit(project, event, fields = {}) {
   }
 }
 
+const SNAPSHOT_MAX_STEP_OUTPUT = 4000;
+const SNAPSHOT_MAX_ROTATION_ENTRIES = 50;
+const SNAPSHOT_MAX_PLAN_KEYS = 20;
+const SNAPSHOT_MAX_PLAN_STRING = 500;
+const SNAPSHOT_KEY_MAX = 64;
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+// Serializable projection of the runtime for crash/restart resume. Only JSON
+// primitives survive; strings are redacted and bounded, objects are capped. A
+// live child process is intentionally not represented (it is re-run via runKey).
+function sanitizeSnapshot(input) {
+  if (!isPlainObject(input)) return undefined;
+  const out = {};
+  if (isPlainObject(input.stepTask) && Number.isInteger(Number(input.stepTask.index))) {
+    out.stepTask = {
+      index: Number(input.stepTask.index),
+      text: redactText(input.stepTask.text ?? '', STATE_TASK_MAX_CHARS)
+    };
+  }
+  if (typeof input.stepOutput === 'string' && input.stepOutput) {
+    out.stepOutput = redactText(input.stepOutput, SNAPSHOT_MAX_STEP_OUTPUT);
+  }
+  if (Number.isInteger(input.modelIndex) && input.modelIndex >= 0) out.modelIndex = input.modelIndex;
+  if (typeof input.modelAttemptRunKey === 'string' && input.modelAttemptRunKey.trim()) {
+    out.modelAttemptRunKey = input.modelAttemptRunKey.trim().slice(0, 128);
+  }
+  if (typeof input.rateLimitBackoffKey === 'string' && input.rateLimitBackoffKey.trim()) {
+    out.rateLimitBackoffKey = input.rateLimitBackoffKey.trim().slice(0, 128);
+  }
+  if (Number.isFinite(input.cooloffUntil) && input.cooloffUntil > 0) out.cooloffUntil = input.cooloffUntil;
+  if (isPlainObject(input.rotationCursor)) {
+    const cursor = {};
+    let count = 0;
+    for (const [key, value] of Object.entries(input.rotationCursor)) {
+      if (count >= SNAPSHOT_MAX_ROTATION_ENTRIES) break;
+      if (typeof key !== 'string' || !key || key.length > SNAPSHOT_KEY_MAX) continue;
+      if (!Number.isFinite(value)) continue;
+      cursor[key] = value;
+      count += 1;
+    }
+    if (count) out.rotationCursor = cursor;
+  }
+  const resumeSessionId = normalizeOpenCodeSessionId(input.resumeSessionId);
+  if (resumeSessionId) out.resumeSessionId = resumeSessionId;
+  if (isPlainObject(input.planPhaseSnapshot)) {
+    const plan = {};
+    let count = 0;
+    for (const [key, value] of Object.entries(input.planPhaseSnapshot)) {
+      if (count >= SNAPSHOT_MAX_PLAN_KEYS) break;
+      const type = typeof value;
+      if (type === 'string') plan[key] = redactText(value, SNAPSHOT_MAX_PLAN_STRING);
+      else if (type === 'number' && Number.isFinite(value)) plan[key] = value;
+      else if (type === 'boolean' || value === null) plan[key] = value;
+      count += 1;
+    }
+    if (Object.keys(plan).length) out.planPhaseSnapshot = plan;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 function writeIntent(project, fields) {
   const file = statePath(project);
   const capturedAtMs = Date.now();
@@ -95,6 +159,10 @@ function writeIntent(project, fields) {
   if (typeof fields.runKey === 'string' && fields.runKey.trim()) {
     intent.runKey = fields.runKey.trim().slice(0, 128);
   }
+  const sessionId = normalizeOpenCodeSessionId(fields.opencodeSessionId);
+  if (sessionId) intent.opencodeSessionId = sessionId;
+  const snapshot = sanitizeSnapshot(fields.snapshot);
+  if (snapshot) intent.snapshot = snapshot;
   try {
     fs.mkdirSync(looparrDir(project), { recursive: true });
     const temp = `${file}.tmp`;
@@ -138,6 +206,10 @@ function readIntent(project) {
       hostname: typeof data.hostname === 'string' ? data.hostname : ''
     };
     if (typeof data.runKey === 'string' && data.runKey.trim()) intent.runKey = data.runKey.trim().slice(0, 128);
+  const sessionId = normalizeOpenCodeSessionId(data.opencodeSessionId);
+  if (sessionId) intent.opencodeSessionId = sessionId;
+    const snapshot = sanitizeSnapshot(data.snapshot);
+    if (snapshot) intent.snapshot = snapshot;
     return { ok: true, intent };
   } catch {
     return { ok: false, reason: 'invalid' };
@@ -194,6 +266,10 @@ function consumeIntent(project) {
       hostname: typeof data.hostname === 'string' ? data.hostname : ''
     };
     if (typeof data.runKey === 'string' && data.runKey.trim()) intent.runKey = data.runKey.trim().slice(0, 128);
+  const sessionId = normalizeOpenCodeSessionId(data.opencodeSessionId);
+  if (sessionId) intent.opencodeSessionId = sessionId;
+    const snapshot = sanitizeSnapshot(data.snapshot);
+    if (snapshot) intent.snapshot = snapshot;
     return { ok: true, intent };
   } catch (error) {
     try { fs.unlinkSync(consuming); } catch { /* ignore */ }
@@ -213,6 +289,7 @@ module.exports = {
   logPath,
   redactText,
   appendAudit,
+  sanitizeSnapshot,
   writeIntent,
   readIntent,
   hasIntent,

@@ -80,11 +80,69 @@ function joinModelList(ids) {
   return unique.join(',');
 }
 
+// These ids route through paid gateway lanes. Keep them out of defaults,
+// catalogues, and stored settings; custom ids remain untouched.
+// opencode/big-pickle is free on the user's OpenCode account and stays allowed.
+const KNOWN_NON_FREE_MODEL_IDS = [
+  'omniroute/auto',
+  'omniroute/auto/coding',
+  'omniroute/coding-safe'
+];
+
+function isKnownNonFreeModel(value) {
+  return typeof value === 'string' && KNOWN_NON_FREE_MODEL_IDS.includes(value);
+}
+
+// Router ids resolve to a changing provider model, and the observed nvidia
+// free model hit a 429 sign-up gate. Never use these as defaults or fallbacks.
+const KNOWN_UNSTABLE_MODEL_IDS = [
+  'kilo/kilo-auto/free',
+  'kilo/openrouter/free',
+  'kilo/nvidia/nemotron-3.5-super-vl:free'
+];
+
+function isKnownUnstableModel(value) {
+  return typeof value === 'string' && KNOWN_UNSTABLE_MODEL_IDS.includes(value);
+}
+
+function isUnsupportedModel(value) {
+  return isKnownNonFreeModel(value) || isKnownUnstableModel(value);
+}
+
+function replaceKnownNonFreeModels(value, replacement = '') {
+  if (typeof value !== 'string') return value;
+  const replacements = modelList(replacement);
+  const result = [];
+  for (const id of modelList(value)) {
+    if (isKnownNonFreeModel(id)) result.push(...replacements);
+    else result.push(id);
+  }
+  return joinModelList(result);
+}
+
+function replaceKnownUnstableModels(value, replacement = '') {
+  if (typeof value !== 'string') return value;
+  const replacements = modelList(replacement);
+  const result = [];
+  for (const id of modelList(value)) {
+    if (isKnownUnstableModel(id)) result.push(...replacements);
+    else result.push(id);
+  }
+  return joinModelList(result);
+}
+
 module.exports = {
   MAX_MODEL_FIELD_LENGTH,
+  KNOWN_NON_FREE_MODEL_IDS,
+  KNOWN_UNSTABLE_MODEL_IDS,
   validateModelId,
   normalizeModelList,
   parseModelList,
   modelList,
   joinModelList,
+  isKnownNonFreeModel,
+  isKnownUnstableModel,
+  isUnsupportedModel,
+  replaceKnownNonFreeModels,
+  replaceKnownUnstableModels
 };

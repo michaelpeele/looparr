@@ -416,7 +416,105 @@ function assertNoSecrets(text, label) {
   assert.ok(!/https?:\/\//i.test(text), `${label}: URL leaked`);
 }
 
+function testIntentSessionFields() {
+  const projectPath = path.join(TEMP_DIR, 'session-field-project');
+  fs.mkdirSync(path.join(projectPath, '.looparr'), { recursive: true });
+  const project = { id: 'session-field-test', name: 'Session Field Test', path: projectPath };
+  const baseFields = {
+    reason: 'checkpoint',
+    nextPhase: 'seed',
+    status: 'seed',
+    currentTask: 'session field task',
+    resumeAt: null,
+    runKey: 'session-field-run-key',
+    pid: process.pid,
+    hostname: 'test-host'
+  };
+  const rawSessionId = 'ses_valid123';
+
+  autoResume.clearIntent(project);
+  const written = autoResume.writeIntent(project, { ...baseFields, opencodeSessionId: rawSessionId });
+  assert.equal(written.ok, true, 'valid session id intent writes');
+  assert.equal(written.intent.opencodeSessionId, rawSessionId, 'valid session id stored in intent');
+  assert.equal(autoResume.readIntent(project).intent.opencodeSessionId, rawSessionId, 'read preserves session id');
+  assert.equal(autoResume.consumeIntent(project).intent.opencodeSessionId, rawSessionId, 'consume preserves session id');
+
+  autoResume.writeIntent(project, { ...baseFields, opencodeSessionId: 'not-a-session; rm -rf /' });
+  assert.ok(!('opencodeSessionId' in autoResume.readIntent(project).intent), 'invalid session id omitted');
+
+  const statePath = autoResume.statePath(project);
+  const oldIntent = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  delete oldIntent.opencodeSessionId;
+  fs.writeFileSync(statePath, JSON.stringify(oldIntent), { mode: 0o600 });
+  assert.ok(!('opencodeSessionId' in autoResume.readIntent(project).intent), 'old intent without session id stays valid');
+  autoResume.clearIntent(project);
+
+  const audit = fs.readFileSync(autoResume.logPath(project), 'utf8');
+  assert.ok(!audit.includes(rawSessionId), 'audit log contains no raw session id');
+}
+
+function testSnapshotFields(engine) {
+  const projectPath = path.join(TEMP_DIR, 'snapshot-project');
+  fs.mkdirSync(path.join(projectPath, '.looparr'), { recursive: true });
+  const project = { id: 'snapshot-test', name: 'Snapshot Test', path: projectPath, autoResumeOnStart: true };
+  autoResume.clearIntent(project);
+
+  const savedEnv = process.env.LOOPARR_ALLOW_RESUME_INTENT;
+  process.env.LOOPARR_ALLOW_RESUME_INTENT = '1';
+  try {
+    const rt = {
+      active: false,
+      status: 'error',
+      currentTask: 'Implement the snapshot',
+      nextPhase: 'implement',
+      error: 'implement step exited with code 1',
+      modelIndex: 2,
+      modelAttemptRunKey: 'attempt-key',
+      rateLimitBackoffKey: 'backoff-key',
+      rotationCursor: { 'model-a': 1, 'model-b': 2 },
+      resumeSessionId: 'ses_snapshot123',
+      stepTask: { index: 3, text: 'Implement the snapshot' },
+      stepOutput: 'boom https://secret.example/path token=abcd1234',
+      planPhaseSnapshot: { taskText: 'Implement the snapshot', foo: 'bar' }
+    };
+    const written = engine.writeCheckpointIntent(project, rt);
+    assert.equal(written, true, 'error checkpoint writes');
+
+    const checked = autoResume.readIntent(project);
+    assert.ok(checked.ok, 'error intent readable');
+    assert.equal(checked.intent.status, 'error', 'error status persisted');
+    assert.equal(checked.intent.nextPhase, 'implement', 'phase persisted');
+    assert.ok(checked.intent.snapshot, 'snapshot persisted');
+    assert.equal(checked.intent.snapshot.modelIndex, 2, 'snapshot modelIndex');
+    assert.equal(checked.intent.snapshot.resumeSessionId, 'ses_snapshot123', 'snapshot resumeSessionId');
+    assert.equal(checked.intent.snapshot.stepTask.index, 3, 'snapshot stepTask index');
+    assert.deepEqual(checked.intent.snapshot.rotationCursor, { 'model-a': 1, 'model-b': 2 }, 'snapshot rotationCursor');
+    assert.ok(!checked.intent.snapshot.stepOutput.includes('abcd1234'), 'snapshot stepOutput redacts token');
+    assert.ok(!/https?:\/\//.test(checked.intent.snapshot.stepOutput), 'snapshot stepOutput redacts url');
+
+    const raw = fs.readFileSync(autoResume.statePath(project), 'utf8');
+    assertNoSecrets(raw, 'snapshot file');
+
+    const data = JSON.parse(raw);
+    delete data.snapshot;
+    fs.writeFileSync(autoResume.statePath(project), JSON.stringify(data), { mode: 0o600 });
+    const legacy = autoResume.readIntent(project);
+    assert.ok(legacy.ok, 'legacy intent without snapshot readable');
+    assert.ok(!('snapshot' in legacy.intent), 'legacy intent omits snapshot');
+
+    const data2 = JSON.parse(raw);
+    data2.snapshot = ['not', 'an', 'object'];
+    fs.writeFileSync(autoResume.statePath(project), JSON.stringify(data2), { mode: 0o600 });
+    assert.ok(!('snapshot' in autoResume.readIntent(project).intent), 'array snapshot ignored');
+  } finally {
+    if (savedEnv === undefined) delete process.env.LOOPARR_ALLOW_RESUME_INTENT;
+    else process.env.LOOPARR_ALLOW_RESUME_INTENT = savedEnv;
+    autoResume.clearIntent(project);
+  }
+}
+
 async function main() {
+  testIntentSessionFields();
   fs.rmSync(TEMP_DIR, { recursive: true, force: true });
   fs.mkdirSync(PROJECTS_ROOT, { recursive: true });
   createFixture();
@@ -426,6 +524,7 @@ async function main() {
   }, null, 2));
 
   const engine = require(path.join(REPO_ROOT, 'src/engine.js'));
+  testSnapshotFields(engine);
   const keyProject = { id: 'run-key-project', path: path.join(PROJECTS_ROOT, 'run-key-project') };
   const keyTask = 'Task with spaces';
   const expectedRunKey = crypto.createHash('sha256')

@@ -1,7 +1,7 @@
 'use strict';
 
 const path = require('path');
-const { buildKiloArgs } = require('../kilo-command');
+const { buildKiloArgs, resolveKiloModel } = require('../kilo-command');
 const opencode = require('./opencode');
 
 const EXECUTOR_URL = process.env.LOOPARR_EXECUTOR_URL
@@ -12,24 +12,23 @@ const BRIDGE_CLIENT = path.join(__dirname, '..', '..', 'scripts', 'bridge-client
 const KILO_BIN = process.env.KILO_BIN || 'kilo';
 
 // Keyless Kilo Gateway free catalogue. Keep in step with the `kilo/*` ids in
-// `public/app.js`; these are the only model ids this runner accepts.
+// `public/app.js`; these are the only model ids this runner accepts. Router ids
+// and the observed-rate-limited nvidia model are rejected by the runner index.
 const MODELS = [
-  'kilo/kilo-auto/free',
-  'kilo/openrouter/free',
+  'kilo/baidu/ernie-5.5-flash-preview:free',
   'kilo/reflection/beam-free',
   'kilo/recursive/flint-v1.0:free',
-  'kilo/nvidia/nemotron-3.5-super-vl:free',
   'kilo/nvidia/nemotron-3-ultra-550b-a55b:free',
   'kilo/nvidia/nemotron-3.5-lightning:free',
   'kilo/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
-  'kilo/baidu/ernie-5.5-flash-preview:free',
   'kilo/inclusionai/ling-3.2-flash:free',
   'kilo/particle-ai/particle-1:free',
   'kilo/liquid/lfm-3-1.7b:free'
 ];
 
 function buildCommand({ prompt, cwd, files = [], model = '', runKey, projectId, phase, task }) {
-  const args = buildKiloArgs({ prompt, files, model });
+  const resolvedModel = resolveKiloModel(model);
+  const args = buildKiloArgs({ prompt, files, model: resolvedModel });
   if (EXECUTOR_URL) {
     if (typeof runKey !== 'string' || !runKey.trim()) {
       throw new Error('runKey is required in bridge mode');
@@ -48,7 +47,7 @@ function buildCommand({ prompt, cwd, files = [], model = '', runKey, projectId, 
             prompt,
             cwd,
             files,
-            model,
+            model: resolvedModel,
             runKey,
             projectId,
             phase,

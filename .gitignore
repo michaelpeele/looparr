@@ -10,3 +10,4 @@ data/*
 looparr-tailscale-data/
 .playwright-mcp/
 screenshots/
+data/logs/

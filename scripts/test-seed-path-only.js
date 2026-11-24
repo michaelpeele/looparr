@@ -72,7 +72,7 @@ function testSeedPayloads() {
 function testCommandLineArgs() {
   const kiloArgs = buildKiloArgs({ prompt: 'go', files: [] });
   assert.ok(!kiloArgs.includes('--file'), 'kilo seed args contain no --file');
-  assert.deepEqual(kiloArgs, ['run', '--auto', '--format', 'json', 'go'], 'kilo seed args are bare');
+  assert.deepEqual(kiloArgs, ['run', '--auto', '--format', 'json', '--model', 'kilo/baidu/ernie-5.5-flash-preview:free', 'go'], 'kilo seed args use the explicit free model');
 
   const vibeArgs = buildVibeArgs({ prompt: 'go', files: [] });
   assert.ok(!vibeArgs.some((arg) => typeof arg === 'string' && arg.includes(CONTEXT_HEADER)), 'vibe seed args have no Project files line');

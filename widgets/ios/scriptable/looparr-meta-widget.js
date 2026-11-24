@@ -36,10 +36,21 @@ function initials(name) {
   return (words[0] || '?')[0].toUpperCase();
 }
 
-function iconURL(card) {
-  if (!card.iconPath) return BASE_URL + '/apple-touch-icon.png';
+function iconURLs(card) {
   const version = card.iconVersion ? '?v=' + encodeURIComponent(card.iconVersion) : '';
-  return BASE_URL + card.iconPath + version;
+  const urls = [];
+
+  if (card.iconPath) {
+    urls.push(BASE_URL + card.iconPath + version);
+    // Older cached payloads can still carry the SVG endpoint. Native clients
+    // cannot decode SVG, so retry the PNG endpoint derived from that path.
+    const pngPath = card.iconPath.endsWith('.png') ? card.iconPath : card.iconPath + '.png';
+    const pngURL = BASE_URL + pngPath + version;
+    if (!urls.includes(pngURL)) urls.push(pngURL);
+  }
+
+  urls.push(BASE_URL + '/apple-touch-icon.png');
+  return urls;
 }
 
 async function loadImage(url) {
@@ -48,6 +59,14 @@ async function loadImage(url) {
   } catch (e) {
     return null;
   }
+}
+
+async function loadIcon(card) {
+  for (const url of iconURLs(card)) {
+    const image = await loadImage(url);
+    if (image) return image;
+  }
+  return null;
 }
 
 function addIconTile(parent, image, card) {
@@ -164,7 +183,7 @@ async function renderCard(w, card, offline) {
   head.spacing = 10;
   head.centerAlignContent();
 
-  addIconTile(head, await loadImage(iconURL(card)), card);
+  addIconTile(head, await loadIcon(card), card);
 
   const info = head.addStack();
   info.layoutVertically();

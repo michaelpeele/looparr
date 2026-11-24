@@ -2,7 +2,17 @@
 
 const fs = require('fs');
 const path = require('path');
-const { normalizeModelList } = require('./model-list');
+const { DEFAULT_KILO_MODEL } = require('./kilo-command');
+const {
+  normalizeModelList,
+  replaceKnownNonFreeModels,
+  replaceKnownUnstableModels
+} = require('./model-list');
+
+const DEFAULT_OPENCODE_MODEL = 'opencode/big-pickle';
+const DEFAULT_VIBE_MODEL = 'zai-glm-5-3-flash-vibe-free';
+const DEFAULT_MODEL_IDS = [DEFAULT_OPENCODE_MODEL, DEFAULT_KILO_MODEL, DEFAULT_VIBE_MODEL].join(',');
+const DEFAULT_PLAN_MODEL_IDS = [DEFAULT_OPENCODE_MODEL, DEFAULT_KILO_MODEL].join(',');
 
 const CONFIG_PATH = path.resolve(process.env.CONFIG_PATH || path.join(__dirname, '..', 'config.json'));
 
@@ -302,11 +312,11 @@ const DEFAULT_SETTINGS = {
   mode: 'parallel',
   globalRunner: 'opencode',
   runnerRotation: false,
-  model: 'opencode/big-pickle',
-  seedModel: 'opencode/big-pickle',
-  analyzeModel: 'opencode/big-pickle',
-  implementModel: 'opencode/big-pickle',
-  planModel: 'opencode/big-pickle',
+  model: DEFAULT_MODEL_IDS,
+  seedModel: DEFAULT_MODEL_IDS,
+  analyzeModel: DEFAULT_MODEL_IDS,
+  implementModel: DEFAULT_MODEL_IDS,
+  planModel: DEFAULT_PLAN_MODEL_IDS,
   modelRotation: false,
   seedRotation: false,
   analyzeRotation: false,
@@ -388,6 +398,12 @@ function normalizedModel(value, fallback, label = 'Model') {
   }
 }
 
+function normalizedFreeModel(value, fallback, label = 'Model') {
+  const withoutPaid = replaceKnownNonFreeModels(value, '');
+  const withoutUnstable = replaceKnownUnstableModels(withoutPaid, DEFAULT_KILO_MODEL);
+  return normalizedModel(withoutUnstable, fallback, label);
+}
+
 function normalizedRunner(value, fallback) {
   if (value === undefined || value === null) return fallback;
   try {
@@ -403,11 +419,11 @@ function normalizeProject(project) {
     ...project,
     runner: normalizedRunner(project.runner, ''),
     runnerRotation: normalizedRotation(project.runnerRotation),
-    model: normalizedModel(project.model, '', MODEL_FIELD_LABELS.model),
-    seedModel: normalizedModel(project.seedModel, '', MODEL_FIELD_LABELS.seedModel),
-    analyzeModel: normalizedModel(project.analyzeModel, '', MODEL_FIELD_LABELS.analyzeModel),
-    implementModel: normalizedModel(project.implementModel, '', MODEL_FIELD_LABELS.implementModel),
-    planModel: normalizedModel(project.planModel, '', MODEL_FIELD_LABELS.planModel),
+    model: normalizedFreeModel(project.model, '', MODEL_FIELD_LABELS.model),
+    seedModel: normalizedFreeModel(project.seedModel, '', MODEL_FIELD_LABELS.seedModel),
+    analyzeModel: normalizedFreeModel(project.analyzeModel, '', MODEL_FIELD_LABELS.analyzeModel),
+    implementModel: normalizedFreeModel(project.implementModel, '', MODEL_FIELD_LABELS.implementModel),
+    planModel: normalizedFreeModel(project.planModel, '', MODEL_FIELD_LABELS.planModel),
     modelRotation: normalizedRotation(project.modelRotation),
     seedRotation: normalizedRotation(project.seedRotation),
     analyzeRotation: normalizedRotation(project.analyzeRotation),
@@ -427,7 +443,7 @@ function normalizeSettings(settings) {
     const fallback = Object.prototype.hasOwnProperty.call(normalized, field) && typeof normalized[field] === 'string'
       ? ''
       : DEFAULT_SETTINGS[field];
-    normalized[field] = normalizedModel(normalized[field], fallback, MODEL_FIELD_LABELS[field]);
+    normalized[field] = normalizedFreeModel(normalized[field], fallback, MODEL_FIELD_LABELS[field]);
   }
   normalized.promptCliToolsNote = normalized.promptCliToolsNote === true;
   normalized.stickyAddTaskRow = normalized.stickyAddTaskRow === true;

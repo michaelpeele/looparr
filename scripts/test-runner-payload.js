@@ -8,11 +8,12 @@ process.env.LOOPARR_EXECUTOR_TOKEN = 'test-executor-token';
 delete process.env.KILO_BIN;
 delete process.env.VIBE_BIN;
 
-const { getRunner, listRunners, runnerSupportsModel } = require('../src/runners');
+const { getRunner, listRunners, runnerSupportsModel, resolveRunnerModels } = require('../src/runners');
 const kilo = require('../src/runners/kilo');
 const vibe = require('../src/runners/vibe');
 const { buildKiloArgs } = require('../src/kilo-command');
 const { buildVibeArgs, CONTEXT_HEADER } = require('../src/vibe-command');
+const { isKnownNonFreeModel } = require('../src/model-list');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 
@@ -37,27 +38,45 @@ function testModelCatalogues() {
     'vibe advertises its account free-lane id and alias'
   );
   assert.ok(
-    opencodeModels.every((id) => id.startsWith('opencode/') || id.startsWith('omniroute/') || id.startsWith('kilo/')),
-    'opencode accepts its own ids plus the Kilo Gateway lane'
+    opencodeModels.every((id) => id.startsWith('opencode/') || id.startsWith('kilo/')),
+    'opencode advertises only free OpenCode ids plus the Kilo Gateway lane'
   );
   assert.ok(kiloModels.every((id) => id.startsWith('kilo/')), 'kilo ids stay in its namespace');
-  assert.equal(runnerSupportsModel(getRunner('kilo'), 'kilo/kilo-auto/free'), true, 'kilo accepts its own ids');
-  assert.equal(runnerSupportsModel(getRunner('kilo'), 'opencode/big-pickle'), false, 'kilo rejects opencode ids');
-  assert.equal(runnerSupportsModel(getRunner('opencode'), 'kilo/kilo-auto/free'), true, 'opencode resolves kilo gateway ids');
-  assert.equal(runnerSupportsModel(getRunner('vibe'), 'opencode/big-pickle'), false, 'vibe rejects opencode ids');
-  assert.equal(runnerSupportsModel(getRunner('vibe'), 'kilo/kilo-auto/free'), false, 'vibe rejects kilo ids');
+  assert.equal(runnerSupportsModel(getRunner('kilo'), 'kilo/baidu/ernie-5.5-flash-preview:free'), true, 'kilo accepts its own ids');
+  assert.equal(runnerSupportsModel(getRunner('kilo'), 'opencode/tidepool-alpha-free'), false, 'kilo rejects opencode ids');
+  assert.equal(runnerSupportsModel(getRunner('kilo'), 'custom/provider-model'), false, 'kilo rejects custom ids');
+  assert.equal(runnerSupportsModel(getRunner('opencode'), 'kilo/baidu/ernie-5.5-flash-preview:free'), true, 'opencode resolves kilo gateway ids');
+  assert.equal(runnerSupportsModel(getRunner('vibe'), 'opencode/tidepool-alpha-free'), false, 'vibe rejects opencode ids');
+  assert.equal(runnerSupportsModel(getRunner('vibe'), 'kilo/baidu/ernie-5.5-flash-preview:free'), false, 'vibe rejects kilo ids');
+  for (const id of ['kilo/kilo-auto/free', 'kilo/openrouter/free', 'kilo/nvidia/nemotron-3.5-super-vl:free']) {
+    for (const runnerId of ['opencode', 'kilo', 'vibe']) {
+      assert.equal(runnerSupportsModel(getRunner(runnerId), id), false, `${runnerId} rejects unsupported ${id}`);
+    }
+  }
   assert.equal(runnerSupportsModel(getRunner('vibe'), 'zai-glm-5-3-flash-vibe-free'), true, 'vibe accepts its free id');
   assert.equal(runnerSupportsModel(getRunner('vibe'), 'zai-glm-5-3-flash'), true, 'vibe accepts its free alias');
   assert.equal(runnerSupportsModel(getRunner('opencode'), 'zai-glm-5-3-flash'), false, 'opencode rejects vibe aliases');
   assert.equal(runnerSupportsModel(getRunner('opencode'), 'custom/provider-model'), true, 'unclaimed custom ids stay allowed');
   assert.equal(runnerSupportsModel(getRunner('vibe'), 'custom/provider-model'), true, 'custom ids stay allowed on vibe');
+
+  let skipped = [];
+  let fallback = '';
+  const resolvedKilo = resolveRunnerModels(getRunner('kilo'), 'opencode/big-pickle,omniroute/auto', {
+    onSkip: (dropped) => { skipped = dropped; },
+    onFallback: (id) => { fallback = id; }
+  });
+  assert.deepEqual(skipped, ['opencode/big-pickle', 'omniroute/auto'], 'opencode and omniroute ids are skipped for Kilo');
+  assert.equal(isKnownNonFreeModel('opencode/big-pickle'), false, 'big-pickle stays available on OpenCode');
+  assert.deepEqual(resolvedKilo.models, ['kilo/baidu/ernie-5.5-flash-preview:free'], 'Kilo falls back to its first free model');
+  assert.equal(fallback, 'kilo/baidu/ernie-5.5-flash-preview:free', 'Kilo fallback callback receives the free model');
+  assert.equal(resolvedKilo.usedFallback, true, 'Kilo fallback is reported');
 }
 
 function testKiloArgs() {
   const args = buildKiloArgs({
     prompt: 'implement the task',
     files: ['/project/plan.md', '/project/.looparr/next_prompt.txt'],
-    model: 'kilo/kilo-auto/free'
+    model: 'kilo/baidu/ernie-5.5-flash-preview:free'
   });
   assert.deepEqual(args, [
     'run',
@@ -65,7 +84,7 @@ function testKiloArgs() {
     '--format',
     'json',
     '--model',
-    'kilo/kilo-auto/free',
+    'kilo/baidu/ernie-5.5-flash-preview:free',
     'implement the task',
     '--file',
     '/project/plan.md',
@@ -73,10 +92,14 @@ function testKiloArgs() {
     '/project/.looparr/next_prompt.txt'
   ], 'kilo invocation puts the prompt before the greedy --file array');
 
-  assert.deepEqual(buildKiloArgs({ prompt: 'go' }), ['run', '--auto', '--format', 'json', 'go'], 'model is optional');
+  assert.deepEqual(
+    buildKiloArgs({ prompt: 'go' }),
+    ['run', '--auto', '--format', 'json', '--model', 'kilo/baidu/ernie-5.5-flash-preview:free', 'go'],
+    'blank model uses explicit free default'
+  );
   assert.deepEqual(
     buildKiloArgs({ prompt: 'go', files: [] }),
-    ['run', '--auto', '--format', 'json', 'go'],
+    ['run', '--auto', '--format', 'json', '--model', 'kilo/baidu/ernie-5.5-flash-preview:free', 'go'],
     'empty files list produces no --file arg'
   );
   assert.throws(() => buildKiloArgs({ prompt: '   ' }), /prompt is required/, 'blank prompt is rejected');
@@ -125,7 +148,7 @@ function testKiloBridgePayload() {
     prompt: 'go',
     cwd: '/project',
     files: ['/project/plan.md'],
-    model: 'kilo/kilo-auto/free',
+    model: 'kilo/baidu/ernie-5.5-flash-preview:free',
     runKey: 'kilo-run-1',
     projectId: 'p1',
     phase: 'implement',
@@ -135,7 +158,7 @@ function testKiloBridgePayload() {
   assert.deepEqual(built.args, [path.join(REPO_ROOT, 'scripts', 'bridge-client.js')], 'bridge client is the entry point');
   const payload = JSON.parse(built.options.env.LOOPARR_TASK_PAYLOAD);
   assert.equal(payload.runner, 'kilo', 'payload carries the kilo runner id');
-  assert.equal(payload.model, 'kilo/kilo-auto/free', 'payload carries the model');
+  assert.equal(payload.model, 'kilo/baidu/ernie-5.5-flash-preview:free', 'payload carries the model');
   assert.deepEqual(payload.files, ['/project/plan.md'], 'payload carries file attachments');
   assert.equal(built.options.env.LOOPARR_EXECUTOR_URL, 'http://127.0.0.1:4187', 'payload targets the executor');
   assert.throws(
@@ -154,6 +177,7 @@ function testKiloBridgePayload() {
     task: 'Task'
   });
   const seedPayload = JSON.parse(seedBuilt.options.env.LOOPARR_TASK_PAYLOAD);
+  assert.equal(seedPayload.model, 'kilo/baidu/ernie-5.5-flash-preview:free', 'kilo seed payload carries explicit free model');
   assert.deepEqual(seedPayload.files, [], 'kilo seed payload carries no files');
   const bridgeArgs = seedBuilt.args.slice(1).join(' ');
   assert.ok(!bridgeArgs.includes('--file'), 'kilo seed bridge args have no --file');
@@ -202,13 +226,13 @@ function testOpencodeBridgePayload() {
     prompt: 'go',
     cwd: '/project',
     files: [],
-    model: 'opencode/big-pickle',
+    model: 'opencode/tidepool-alpha-free',
     runKey: 'opencode-run-1',
     projectId: 'p1'
   });
   const payload = JSON.parse(built.options.env.LOOPARR_TASK_PAYLOAD);
   assert.equal(payload.runner, 'opencode', 'opencode payload carries its runner id');
-  assert.equal(payload.model, 'opencode/big-pickle', 'opencode payload carries the model');
+  assert.equal(payload.model, 'opencode/tidepool-alpha-free', 'opencode payload carries the model');
   assert.deepEqual(payload.files, [], 'opencode payload carries no files for files: []');
   assert.ok(
     !built.args.slice(1).join(' ').includes('--file'),

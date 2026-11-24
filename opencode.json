@@ -8,15 +8,12 @@
         "baseURL": "https://api.kilo.ai/api/gateway"
       },
       "models": {
-        "kilo-auto/free": { "name": "Kilo Auto Free (router)" },
-        "openrouter/free": { "name": "OpenRouter Free (router)" },
+        "baidu/ernie-5.5-flash-preview:free": { "name": "ERNIE 5.5 Flash Preview (free)" },
         "reflection/beam-free": { "name": "Reflection Beam Free" },
         "recursive/flint-v1.0:free": { "name": "Flint 1.0 (free)" },
-        "nvidia/nemotron-3.5-super-vl:free": { "name": "Nemotron 3.5 Super VL (free)" },
         "nvidia/nemotron-3-ultra-550b-a55b:free": { "name": "Nemotron 3 Ultra (free)" },
         "nvidia/nemotron-3.5-lightning:free": { "name": "Nemotron 3.5 Lightning (free)" },
         "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": { "name": "Nemotron 3 Nano Omni (free)" },
-        "baidu/ernie-5.5-flash-preview:free": { "name": "ERNIE 5.5 Flash Preview (free)" },
         "inclusionai/ling-3.2-flash:free": { "name": "Ling 3.2 Flash (free)" },
         "particle-ai/particle-1:free": { "name": "Particle-1 (free)" },
         "liquid/lfm-3-1.7b:free": { "name": "LFM 3 1.7B (free)" }

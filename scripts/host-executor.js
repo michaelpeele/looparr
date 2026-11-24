@@ -8,6 +8,11 @@ const { execFileSync, spawn } = require('child_process');
 const { ensureKiloProvider } = require('../src/opencode-provider');
 const { buildKiloArgs } = require('../src/kilo-command');
 const { buildVibeArgs } = require('../src/vibe-command');
+const {
+  normalizeOpenCodeSessionId,
+  opencodeSessionExists,
+  createOpenCodeSessionCapture
+} = require('../src/runners/opencode-session');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DEFAULT_PROJECTS_ROOT = '/home/michaelpeele/ai-projects';
@@ -315,7 +320,9 @@ function validateRun(payload) {
   const projectId = typeof payload.projectId === 'string' && payload.projectId.trim()
     ? payload.projectId.trim().slice(0, 128)
     : '';
-  return { prompt: payload.prompt, cwd, files: checkedFiles, model, runner, runKey: payload.runKey, projectId };
+  const sessionId = normalizeOpenCodeSessionId(payload.sessionId);
+  const sessionInvalid = typeof payload.sessionId === 'string' && payload.sessionId.trim() !== '' && !sessionId;
+  return { prompt: payload.prompt, cwd, files: checkedFiles, model, runner, runKey: payload.runKey, projectId, sessionId, sessionInvalid };
 }
 
 function wait(ms) {
@@ -384,6 +391,8 @@ async function handleRun(req, res) {
 
   let command;
   let args;
+  let sessionCapture = null;
+  let sessionFrame = '';
   if (payload.runner === 'kilo') {
     command = kiloBin;
     try {
@@ -406,11 +415,25 @@ async function handleRun(req, res) {
       return sendJson(res, 500, { error: error.message });
     }
     const flag = getAttachFlag();
-    args = ['run', flag, serverUrl, '--auto'];
+    args = ['run', flag, serverUrl, '--auto', '--format', 'json'];
+    let resumeSessionId = '';
+    if (payload.sessionInvalid) {
+      sessionFrame = '[host-executor] session-invalid; starting fresh run\n';
+    } else if (payload.sessionId) {
+      if (opencodeSessionExists({ cwd: payload.cwd, sessionId: payload.sessionId, bin: opencodeBin })) {
+        resumeSessionId = payload.sessionId;
+        sessionFrame = `[host-executor] opencode run --session ${resumeSessionId} (resume)\n`;
+      } else {
+        sessionFrame = '[host-executor] session-missing; starting fresh run\n';
+      }
+    }
+    if (resumeSessionId) args.push('--session', resumeSessionId);
     if (payload.model) args.push('--model', payload.model);
     for (const file of payload.files) args.push('--file', file);
     args.push(payload.prompt);
     command = opencodeBin;
+    sessionCapture = createOpenCodeSessionCapture();
+    payload.sessionId = resumeSessionId;
   }
 
   res.writeHead(200, {
@@ -420,6 +443,7 @@ async function handleRun(req, res) {
     'x-accel-buffering': 'no'
   });
   res.flushHeaders?.();
+  if (sessionFrame) frame(res, { stream: 'err', text: sessionFrame });
 
   const releaseReplacement = await replaceActiveRun(payload.runKey, res);
 
@@ -447,6 +471,7 @@ async function handleRun(req, res) {
     projectId: payload.projectId,
     cwd: payload.cwd,
     startedAt: new Date().toISOString(),
+    opencodeSessionId: payload.sessionId || '',
     finish: null
   };
   entry.finish = (code) => {
@@ -460,13 +485,24 @@ async function handleRun(req, res) {
   activeRuns.set(payload.runKey, entry);
   releaseReplacement();
 
-  child.stdout.on('data', (chunk) => frame(res, { stream: 'out', text: chunk.toString() }));
+  child.stdout.on('data', (chunk) => {
+    if (sessionCapture) {
+      sessionCapture.push(chunk);
+      const captured = sessionCapture.sessionId;
+      if (captured) entry.opencodeSessionId = captured;
+    }
+    frame(res, { stream: 'out', text: chunk.toString() });
+  });
   child.stderr.on('data', (chunk) => frame(res, { stream: 'err', text: chunk.toString() }));
   child.on('error', (error) => {
     frame(res, { stream: 'err', text: `[host-executor] ${error.message}\n` });
     entry.finish(1);
   });
   child.on('close', (code, signal) => {
+    if (sessionCapture) {
+      const captured = sessionCapture.finish();
+      if (captured) entry.opencodeSessionId = captured;
+    }
     if (finished) return;
     if (signal && code === null) {
       frame(res, { stream: 'err', text: `[host-executor] ${payload.runner} run terminated by ${signal}\n` });
@@ -543,7 +579,8 @@ const server = http.createServer((req, res) => {
       runner: entry.runner || 'opencode',
       projectId: entry.projectId || '',
       cwd: entry.cwd || '',
-      startedAt: entry.startedAt
+      startedAt: entry.startedAt,
+      ...(entry.opencodeSessionId ? { opencodeSessionId: entry.opencodeSessionId } : {})
     }));
     return sendJson(res, 200, active);
   }

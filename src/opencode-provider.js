@@ -9,18 +9,15 @@ const KILO_PROVIDER_NAME = 'Kilo Gateway (free)';
 const KILO_PROVIDER_PACKAGE = 'aisdk:@ai-sdk/openai-compatible';
 const KILO_BASE_URL = 'https://api.kilo.ai/api/gateway';
 
-// Free lane only. Paid gateway ids resolve too but are intentionally absent so a
-// rotation can never spend credits by accident.
+// Explicit free ids only. Paid, router, and observed-failing ids are absent so
+// a rotation never changes provider model or retries a rate-limited gateway id.
 const KILO_MODELS = Object.freeze({
-  'kilo-auto/free': 'Kilo Auto Free (router)',
-  'openrouter/free': 'OpenRouter Free (router)',
+  'baidu/ernie-5.5-flash-preview:free': 'ERNIE 5.5 Flash Preview (free)',
   'reflection/beam-free': 'Reflection Beam Free',
   'recursive/flint-v1.0:free': 'Flint 1.0 (free)',
-  'nvidia/nemotron-3.5-super-vl:free': 'Nemotron 3.5 Super VL (free)',
   'nvidia/nemotron-3-ultra-550b-a55b:free': 'Nemotron 3 Ultra (free)',
   'nvidia/nemotron-3.5-lightning:free': 'Nemotron 3.5 Lightning (free)',
   'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free': 'Nemotron 3 Nano Omni (free)',
-  'baidu/ernie-5.5-flash-preview:free': 'ERNIE 5.5 Flash Preview (free)',
   'inclusionai/ling-3.2-flash:free': 'Ling 3.2 Flash (free)',
   'particle-ai/particle-1:free': 'Particle-1 (free)',
   'liquid/lfm-3-1.7b:free': 'LFM 3 1.7B (free)'

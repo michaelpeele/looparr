@@ -22,15 +22,12 @@ const RATE_LIMIT_MODEL = 'opencode/rate-limited';
 const FALLBACK_MODEL = 'opencode/fallback-ok';
 const PLAN_TASK = 'fallback task';
 const KILO_FREE_MODELS = [
-  'kilo/kilo-auto/free',
-  'kilo/openrouter/free',
+  'kilo/baidu/ernie-5.5-flash-preview:free',
   'kilo/reflection/beam-free',
   'kilo/recursive/flint-v1.0:free',
-  'kilo/nvidia/nemotron-3.5-super-vl:free',
   'kilo/nvidia/nemotron-3-ultra-550b-a55b:free',
   'kilo/nvidia/nemotron-3.5-lightning:free',
   'kilo/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
-  'kilo/baidu/ernie-5.5-flash-preview:free',
   'kilo/inclusionai/ling-3.2-flash:free',
   'kilo/particle-ai/particle-1:free',
   'kilo/liquid/lfm-3-1.7b:free'
@@ -204,13 +201,13 @@ async function testRunnerForwarding() {
     prompt: 'do work',
     cwd: DEMO_DIR,
     url: BASE_URL,
-    model: 'opencode/big-pickle'
+    model: 'opencode/tidepool-alpha-free'
   });
   assertEqual(localCommand.command, 'opencode', 'local command');
   const modelFlags = localCommand.args.filter((arg) => arg === '--model');
   assertEqual(modelFlags.length, 1, 'local --model count');
   const localModel = localCommand.args[modelFlags.length ? localCommand.args.indexOf('--model') + 1 : -1];
-  assertEqual(localModel, 'opencode/big-pickle', 'local model value');
+  assertEqual(localModel, 'opencode/tidepool-alpha-free', 'local model value');
   assert.ok(!String(localModel).includes(','), 'local --model carries a single id');
 
   const emptyCommand = local.buildCommand({ prompt: 'do work', cwd: DEMO_DIR, url: BASE_URL, model: '' });
@@ -231,14 +228,14 @@ async function testRunnerForwarding() {
   assert.deepEqual(payload.files, ['one.txt'], 'bridge files');
   assertEqual(payload.runKey, 'test-run-key', 'bridge run key');
 
-  const autoCommand = local.buildCommand({
+  const freeModelCommand = local.buildCommand({
     prompt: 'do work',
     cwd: DEMO_DIR,
     url: BASE_URL,
-    model: 'omniroute/auto/coding'
+    model: 'opencode/nemotron-3.5-lightning-free'
   });
-  assert.ok(autoCommand.args.includes('--model'), 'auto/coding args include --model');
-  assertEqual(autoCommand.args[autoCommand.args.indexOf('--model') + 1], 'omniroute/auto/coding', 'auto/coding model value reaches --model');
+  assert.ok(freeModelCommand.args.includes('--model'), 'free model args include --model');
+  assertEqual(freeModelCommand.args[freeModelCommand.args.indexOf('--model') + 1], 'opencode/nemotron-3.5-lightning-free', 'free model value reaches --model');
 
   assert.throws(() => local.buildCommand({
     prompt: 'do work',
@@ -290,9 +287,10 @@ async function testServedModelOptions() {
   const response = await fetch(`${BASE_URL}/app.js`);
   assertEqual(response.status, 200, 'GET /app.js status');
   const text = await response.text();
-  assert.ok(text.includes('omniroute/auto/coding'), 'served app.js includes omniroute/auto/coding');
-  assert.ok(text.includes("'omniroute/auto'"), 'served app.js includes omniroute/auto entry');
-  assert.ok(text.includes("'omniroute/coding-safe'"), 'served app.js includes the coding-safe combo entry');
+  assert.ok(!text.includes('omniroute/auto/coding'), 'served app.js excludes omniroute/auto/coding');
+  assert.ok(!text.includes("'omniroute/auto'"), 'served app.js excludes omniroute/auto entry');
+  assert.ok(!text.includes("'omniroute/coding-safe'"), 'served app.js excludes the coding-safe combo entry');
+  assert.ok(text.includes("'opencode/tidepool-alpha-free'"), 'served app.js includes a free OpenCode model');
   for (const id of KILO_FREE_MODELS) {
     assert.ok(text.includes(`'${id}'`), `served app.js includes ${id}`);
   }
@@ -331,13 +329,13 @@ async function testServedModelOptions() {
 async function testCommaModelRoundTrips(projectId) {
   const globalLists = {
     model: ' opencode/global-a , opencode/global-b , opencode/global-a ',
-    seedModel: 'omniroute/auto,omniroute/auto/coding',
+    seedModel: 'opencode/tidepool-alpha-free,opencode/hy4-flash-free',
     analyzeModel: 'opencode/analyze-a,opencode/analyze-b',
     implementModel: 'opencode/implement-a,opencode/implement-b'
   };
   const expectedGlobal = {
     model: 'opencode/global-a,opencode/global-b',
-    seedModel: 'omniroute/auto,omniroute/auto/coding',
+    seedModel: 'opencode/tidepool-alpha-free,opencode/hy4-flash-free',
     analyzeModel: 'opencode/analyze-a,opencode/analyze-b',
     implementModel: 'opencode/implement-a,opencode/implement-b'
   };
@@ -356,13 +354,13 @@ async function testCommaModelRoundTrips(projectId) {
 
   const projectLists = {
     model: ' opencode/project-a , opencode/project-b , opencode/project-a ',
-    seedModel: 'omniroute/auto/coding,omniroute/auto',
+    seedModel: 'opencode/hy4-flash-free,opencode/tidepool-alpha-free',
     analyzeModel: 'opencode/project-analyze-a,opencode/project-analyze-b',
     implementModel: 'opencode/project-implement-a,opencode/project-implement-b'
   };
   const expectedProject = {
     model: 'opencode/project-a,opencode/project-b',
-    seedModel: 'omniroute/auto/coding,omniroute/auto',
+    seedModel: 'opencode/hy4-flash-free,opencode/tidepool-alpha-free',
     analyzeModel: 'opencode/project-analyze-a,opencode/project-analyze-b',
     implementModel: 'opencode/project-implement-a,opencode/project-implement-b'
   };
@@ -518,9 +516,9 @@ async function main() {
     assertEqual(state.settings.maxConcurrent, 4, 'preserved maxConcurrent');
     assertEqual(state.settings.mode, 'serial', 'preserved mode');
     assertEqual(state.settings.rateLimitPauseSeconds, 12, 'preserved rateLimitPauseSeconds');
-    assertEqual(state.settings.seedModel, 'opencode/big-pickle', 'fresh seed model default');
-    assertEqual(state.settings.analyzeModel, 'opencode/big-pickle', 'fresh analyze model default');
-    assertEqual(state.settings.implementModel, 'opencode/big-pickle', 'fresh implement model default');
+    assertEqual(state.settings.seedModel, 'opencode/big-pickle,kilo/baidu/ernie-5.5-flash-preview:free,zai-glm-5-3-flash-vibe-free', 'fresh seed model default');
+    assertEqual(state.settings.analyzeModel, 'opencode/big-pickle,kilo/baidu/ernie-5.5-flash-preview:free,zai-glm-5-3-flash-vibe-free', 'fresh analyze model default');
+    assertEqual(state.settings.implementModel, 'opencode/big-pickle,kilo/baidu/ernie-5.5-flash-preview:free,zai-glm-5-3-flash-vibe-free', 'fresh implement model default');
 
     const settingsPatch = await api('PATCH', '/api/settings', {
       model: 'opencode/global-plain',
@@ -594,16 +592,16 @@ async function main() {
     });
     assertEqual(badCreate.status, 400, 'invalid project create model status');
 
-    // omniroute models (auto and auto/coding) round-trip unchanged.
-    const autoCodingSettings = await api('PATCH', '/api/settings', { model: 'omniroute/auto/coding' });
-    assertEqual(autoCodingSettings.status, 200, 'omniroute/auto/coding settings patch status');
+    // Free model ids round-trip unchanged.
+    const freeSettings = await api('PATCH', '/api/settings', { model: 'opencode/nemotron-3.5-lightning-free' });
+    assertEqual(freeSettings.status, 200, 'free model settings patch status');
     state = await getState();
-    assertEqual(state.settings.model, 'omniroute/auto/coding', 'settings model round-trips omniroute/auto/coding');
-    const autoProject = await api('PATCH', `/api/projects/${encodeURIComponent(projectId)}`, { model: 'omniroute/auto' });
-    assertEqual(autoProject.status, 200, 'omniroute/auto project patch status');
+    assertEqual(state.settings.model, 'opencode/nemotron-3.5-lightning-free', 'settings model round-trips free model');
+    const freeProject = await api('PATCH', `/api/projects/${encodeURIComponent(projectId)}`, { model: 'opencode/beam-free' });
+    assertEqual(freeProject.status, 200, 'free model project patch status');
     state = await getState();
     project = findProject(state, projectId);
-    assertEqual(project.model, 'omniroute/auto', 'project model round-trips omniroute/auto');
+    assertEqual(project.model, 'opencode/beam-free', 'project model round-trips free model');
 
     await testCommaModelRoundTrips(projectId);
     await testEngineFallback();

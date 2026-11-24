@@ -293,7 +293,7 @@ function testPlanHelpersAndConfig() {
   assert.equal(engineLib.planDocSlug('(PLAN) Add Widget, v2!'), 'add-widget-v2', 'planDocSlug is slug-safe');
   assert.ok(/^[a-z0-9-]+$/.test(engineLib.planDocSlug('(plan) Any odd "text"')), 'planDocSlug alphanumeric + hyphens only');
   const defaults = configStore.DEFAULT_SETTINGS;
-  assert.equal(defaults.planModel, 'opencode/big-pickle', 'planModel concrete default (not omniroute/coding-safe)');
+  assert.equal(defaults.planModel, 'opencode/big-pickle,kilo/baidu/ernie-5.5-flash-preview:free', 'planModel free default');
   assert.equal(defaults.planRotation, false, 'planRotation default off');
   const normalized = configStore.normalizeProject({
     id: 'p', name: 'P', path: '/tmp/p', planModel: 'opencode/x,opencode/y', planRotation: true
@@ -346,9 +346,9 @@ async function testUiAssets() {
 /* ---- settings + templates ------------------------------------------------ */
 
 async function testSettingsAndTemplates() {
-  let response = await api('PATCH', '/api/settings', { planModel: 'opencode/big-pickle', planRotation: true });
+  let response = await api('PATCH', '/api/settings', { planModel: 'kilo/baidu/ernie-5.5-flash-preview:free', planRotation: true });
   assertEqual(response.status, 200, 'settings plan model PATCH');
-  assert.equal(response.body.settings.planModel, 'opencode/big-pickle', 'settings planModel saved');
+  assert.equal(response.body.settings.planModel, 'kilo/baidu/ernie-5.5-flash-preview:free', 'settings planModel saved');
   assert.equal(response.body.settings.planRotation, true, 'settings planRotation saved');
 
   response = await api('PATCH', '/api/settings', { planModel: '--bad' });

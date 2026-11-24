@@ -19,7 +19,7 @@ function project(overrides = {}) {
     activeModel: '',
     runner: 'opencode',
     effectiveRunners: 'opencode,kilo',
-    effectiveModel: 'opencode/big-pickle',
+    effectiveModel: 'opencode/tidepool-alpha-free',
     progress: { completed: 0, total: 0 },
     iconVersion: 'v1',
     resumeAt: null,
@@ -47,14 +47,14 @@ assert.equal(widget.buildCard(missingPlan, NOW).error, '', 'setup error is not s
 // The runner line sits under the current task, so an active step wins over the
 // configured list.
 assert.equal(
-  widget.runnerModelText(project({ activeRunner: 'kilo', activeModel: 'kilo/kilo-auto/free' })),
-  'kilo · kilo/kilo-auto/free',
+  widget.runnerModelText(project({ activeRunner: 'kilo', activeModel: 'kilo/baidu/ernie-5.5-flash-preview:free' })),
+  'kilo · kilo/baidu/ernie-5.5-flash-preview:free',
   'active runner/model'
 );
-assert.equal(widget.runnerModelText(project()), 'opencode · opencode/big-pickle', 'idle fallback');
+assert.equal(widget.runnerModelText(project()), 'opencode · opencode/tidepool-alpha-free', 'idle fallback');
 assert.equal(
   widget.runnerModelText(project({ runner: '' })),
-  'opencode + kilo · opencode/big-pickle',
+  'opencode + kilo · opencode/tidepool-alpha-free',
   'configured runner list joins'
 );
 assert.equal(widget.runnerModelText(project({ runner: '', effectiveRunners: '', effectiveModel: '' })), '', 'empty line');

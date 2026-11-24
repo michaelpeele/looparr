@@ -8,11 +8,13 @@ const chokidar = require('chokidar');
 
 const configStore = require('./config');
 const autoResume = require('./auto-resume');
+const logStore = require('./log-store');
 const bus = require('./events');
 const planLib = require('./plan');
 const iconLib = require('./icon');
-const { getRunner, listRunners, runnerSupportsModel } = require('./runners');
+const { getRunner, listRunners, resolveRunnerModels } = require('./runners');
 const { modelList, joinModelList } = require('./model-list');
+const { normalizeOpenCodeSessionId, createOpenCodeSessionCapture } = require('./runners/opencode-session');
 
 const config = configStore.loadConfig();
 const runtime = new Map();
@@ -74,6 +76,7 @@ function ensureRuntime(project) {
       modelIndex: 0,
       modelAttemptRunKey: '',
       modelFallbackPending: false,
+      rateLimitBackoffKey: '',
       rotationCursor: {},
       rotationLists: {},
       stepTask: null,
@@ -81,10 +84,21 @@ function ensureRuntime(project) {
       icon: null,
       iconVersion: null,
       activeRunner: '',
-      activeModel: ''
+      activeModel: '',
+      opencodeSessionId: '',
+      resumeSessionId: ''
     };
     runtime.set(project.id, rt);
     applyRuntimeIcon(rt, iconLib.findIcon(project.path));
+    // Hydration: restore the newest log file's entries so a restart keeps history.
+    try {
+      const entries = logStore.readRecent(project.id, LOG_LIMIT);
+      if (entries.length) {
+        rt.logs = entries;
+        const maxSeq = Math.max(...entries.map((e) => e.seq), 0);
+        if (maxSeq > logSeq) logSeq = maxSeq;
+      }
+    } catch { /* ignore hydration errors */ }
   }
   return rt;
 }
@@ -108,7 +122,7 @@ function effectiveRunnerRotation(project) {
 }
 
 function modelsFor(project, phase, runner) {
-  return effectiveModelList(project, phase).filter((id) => runnerSupportsModel(runner, id));
+  return resolveRunnerModels(runner, effectiveModelList(project, phase)).models;
 }
 
 // Runner rotation needs the same cooldown awareness as model rotation: a runner
@@ -194,6 +208,7 @@ function appendLog(projectId, stream, text) {
     rt.logs.push(entry);
     if (rt.logs.length > LOG_LIMIT) rt.logs.splice(0, rt.logs.length - LOG_LIMIT);
     bus.emit('log', { projectId, ...entry });
+    logStore.append(projectId, entry);
   }
 }
 
@@ -543,11 +558,39 @@ function clearCheckpointIntent(project) {
   return autoResume.clearIntent(project);
 }
 
+// Serializable projection of the runtime for crash/restart resume. The auto-
+// resume layer redacts and bounds it; a live child is intentionally omitted so a
+// crash mid-step re-runs cleanly via runKey + session id.
+function snapshotRuntime(project, rt) {
+  if (!rt) return undefined;
+  const snapshot = {};
+  if (rt.stepTask && Number.isInteger(Number(rt.stepTask.index)) && typeof rt.stepTask.text === 'string') {
+    snapshot.stepTask = { index: Number(rt.stepTask.index), text: rt.stepTask.text };
+  }
+  if (typeof rt.stepOutput === 'string' && rt.stepOutput) snapshot.stepOutput = rt.stepOutput;
+  if (Number.isInteger(rt.modelIndex) && rt.modelIndex >= 0) snapshot.modelIndex = rt.modelIndex;
+  if (typeof rt.modelAttemptRunKey === 'string' && rt.modelAttemptRunKey) snapshot.modelAttemptRunKey = rt.modelAttemptRunKey;
+  if (typeof rt.rateLimitBackoffKey === 'string' && rt.rateLimitBackoffKey) snapshot.rateLimitBackoffKey = rt.rateLimitBackoffKey;
+  if (Number.isFinite(rt.cooloffUntil) && rt.cooloffUntil > 0) snapshot.cooloffUntil = rt.cooloffUntil;
+  if (rt.rotationCursor && typeof rt.rotationCursor === 'object' && !Array.isArray(rt.rotationCursor)) {
+    snapshot.rotationCursor = rt.rotationCursor;
+  }
+  if (typeof rt.resumeSessionId === 'string' && rt.resumeSessionId) snapshot.resumeSessionId = rt.resumeSessionId;
+  if (rt.planPhaseSnapshot && typeof rt.planPhaseSnapshot === 'object' && !Array.isArray(rt.planPhaseSnapshot)) {
+    snapshot.planPhaseSnapshot = rt.planPhaseSnapshot;
+  }
+  return Object.keys(snapshot).length ? snapshot : undefined;
+}
+
 function writeCheckpointIntent(project, rt) {
   if (project.autoResumeOnStart !== true) return false;
   if (!autoResume.shouldCaptureResumeIntent()) return false;
-  if (!rt || !rt.active || rt.paused || !rt.currentTask) return false;
-  if (rt.status === 'done' || rt.status === 'error') return false;
+  if (!rt || !rt.currentTask) return false;
+  if (rt.paused) return false;
+  if (rt.status === 'done') return false;
+  // Active steps checkpoint as before; an errored step (active=false) also
+  // checkpoints so its phase survives a restart instead of dropping to seed.
+  if (!rt.active && rt.status !== 'error') return false;
   const phase = autoResume.PHASES.has(rt.nextPhase) ? rt.nextPhase : 'seed';
   const runKey = runKeyFor(project, phase, rt.currentTask);
   const written = autoResume.writeIntent(project, {
@@ -558,7 +601,8 @@ function writeCheckpointIntent(project, rt) {
     resumeAt: rt.resumeAt,
     runKey,
     pid: process.pid,
-    hostname: process.env.HOSTNAME || ''
+    hostname: process.env.HOSTNAME || '',
+    snapshot: snapshotRuntime(project, rt)
   });
   return written.ok;
 }
@@ -879,6 +923,8 @@ function stop(id) {
   rt.nextPhase = 'seed';
   rt.stepTask = null;
   rt.planPhaseSnapshot = null;
+  rt.opencodeSessionId = '';
+  rt.resumeSessionId = '';
   if (fs.existsSync(autoResume.statePath(project))) {
     autoResume.clearIntent(project);
     autoResume.appendAudit(project, 'resume-cancelled', {
@@ -970,6 +1016,26 @@ function rateLimitRetry(project, rt, pauseMs) {
   }, pauseMs + 200);
 }
 
+function rateLimitBackoffKey(project, rt, phase, runnerId, model) {
+  const runKey = rt.modelAttemptRunKey || runKeyFor(project, phase, rt.currentTask || '');
+  return `${runKey}|${runnerId}|${model}`;
+}
+
+// A 429 gets one cooldown before failover. The next candidate is selected before
+// pausing so the resumed step starts on a different model, never the failed one.
+function pauseForRateLimitFailover(project, rt, phase, pauseMs, message) {
+  appendLog(project.id, 'system', `${message} Backing off once before failover.`);
+  rt.status = 'rateLimited';
+  rt.stepOutput = '';
+  rt.resumeAt = Date.now() + pauseMs;
+  rt.nextPhase = phase;
+  rt.modelFallbackPending = true;
+  rt.modelAttemptRunKey = runKeyFor(project, phase, rt.currentTask || '');
+  emitState();
+  rateLimitRetry(project, rt, pauseMs);
+  return true;
+}
+
 // A blank model means "whatever the selected runner uses by default", so the
 // log names that runner instead of always saying OpenCode.
 function defaultModelLabel(runner) {
@@ -1006,7 +1072,17 @@ function tryNextCandidate(project, rt, runner, phase, code) {
   if (!rt.tried) rt.tried = new Set();
   const currentModel = models[rt.modelIndex] || '';
   rt.tried.add(`${runner.id}:${currentModel}`);
-  if (isRate && currentModel) rotationStore.markCooling(currentModel, Date.now() + rateLimitPauseMs());
+  const pauseMs = rateLimitPauseMs();
+  const backoffKey = rateLimitBackoffKey(project, rt, phase, runner.id, currentModel);
+  const shouldBackoff = isRate && rt.rateLimitBackoffKey !== backoffKey;
+  if (isRate && currentModel) rotationStore.markCooling(currentModel, Date.now() + pauseMs);
+  const failover = (message) => {
+    if (shouldBackoff) {
+      rt.rateLimitBackoffKey = backoffKey;
+      return pauseForRateLimitFailover(project, rt, phase, pauseMs, message);
+    }
+    return commitRetry(project, rt, runner, phase, message);
+  };
   const now = Date.now();
   for (let step = 1; step <= models.length; step += 1) {
     const index = (rt.modelIndex + step) % models.length;
@@ -1021,11 +1097,7 @@ function tryNextCandidate(project, rt, runner, phase, code) {
       continue;
     }
     rt.modelIndex = index;
-    return commitRetry(
-      project,
-      rt,
-      runner,
-      phase,
+    return failover(
       `Model failure on ${currentModel || defaultModelLabel(runner)}; retrying with ${id || defaultModelLabel(runner)}.`
     );
   }
@@ -1039,19 +1111,13 @@ function tryNextCandidate(project, rt, runner, phase, code) {
     if (nextModel === undefined) continue;
     rt.modelIndex = Math.max(0, nextModels.indexOf(nextModel));
     rt.forcedRunnerId = id;
-    return commitRetry(
-      project,
-      rt,
-      nextRunner,
-      phase,
-      `Runner failure on ${runner.label}; retrying with ${nextRunner.label}.`
-    );
+    return failover(`Runner failure on ${runner.label}; retrying with ${nextRunner.label}.`);
   }
   return false;
 }
 
 async function spawnRunnerAttempt(project, rt, runner, options) {
-  const { prompt, url, files, model, runKey, phase, task, models } = options;
+  const { prompt, url, files, model, runKey, phase, task, models, sessionId = '' } = options;
   const built = runner.buildCommand({
     prompt,
     cwd: project.path,
@@ -1061,7 +1127,8 @@ async function spawnRunnerAttempt(project, rt, runner, options) {
     runKey,
     projectId: project.id,
     phase,
-    task
+    task,
+    sessionId
   });
   try {
     await runner.cancelStaleRuns?.({ projectId: project.id, cwd: project.path, keepRunKey: runKey });
@@ -1074,8 +1141,24 @@ async function spawnRunnerAttempt(project, rt, runner, options) {
   const token = rt.token;
   appendLog(project.id, 'system', shortCommand(built.command, built.args));
 
+  const sessionCapture = runner && runner.id === 'opencode' ? createOpenCodeSessionCapture() : null;
+  let checkpointRewritten = false;
+  const noteSessionId = (value) => {
+    const normalized = normalizeOpenCodeSessionId(value);
+    if (!normalized || normalized === rt.opencodeSessionId) return;
+    rt.opencodeSessionId = normalized;
+    if (!checkpointRewritten) {
+      writeCheckpointIntent(project, rt);
+      checkpointRewritten = true;
+    }
+  };
+
   if (child.stdout) child.stdout.on('data', (chunk) => {
     if (rt.token !== token) return;
+    if (sessionCapture) {
+      sessionCapture.push(chunk);
+      noteSessionId(sessionCapture.sessionId);
+    }
     rt.stepOutput += String(chunk);
     appendLog(project.id, 'out', chunk);
   });
@@ -1154,7 +1237,6 @@ function stateRunnerFor(project, rt) {
   return getRunner(rt.activeRunner || '');
 }
 
-
 function handleClose(project, rt, code, task, phase, runner) {
   try {
     if (code !== 0 && runner && runner.isRateLimit && runner.isRateLimit(rt.stepOutput)) {
@@ -1173,6 +1255,7 @@ function handleClose(project, rt, code, task, phase, runner) {
       rt.status = 'error';
       rt.active = false;
       rt.error = `${phase} step exited with code ${code}`;
+      writeCheckpointIntent(project, rt);
       appendLog(project.id, 'system', `✖ ${rt.error}`);
       emitState();
       return;
@@ -1342,8 +1425,10 @@ async function startStep(project) {
         { task: task.text, handoff }
       );
       if (phase === 'planWrite') {
-        // Snapshot plan.md/PLAN docs for exit validation before the fresh
-        // plan write session starts.
+        // Fresh sessions only: never pass a stored OpenCode session into a
+        // plan phase, and snapshot plan.md/PLAN docs for exit validation.
+        rt.resumeSessionId = '';
+        rt.opencodeSessionId = '';
         rt.planPhaseSnapshot = snapshotPlanForPlanWrite(project, task.text);
       }
     }
@@ -1362,6 +1447,8 @@ async function startStep(project) {
     rt.stepTask = task;
     rt.stepOutput = '';
     rt.resumeAt = null;
+    const resumeSessionId = runner.id === 'opencode' ? normalizeOpenCodeSessionId(rt.resumeSessionId) : '';
+    rt.opencodeSessionId = resumeSessionId;
     writeCheckpointIntent(project, rt);
     appendLog(project.id, 'system', `▶ ${phase.toUpperCase()} — ${task.text}`);
     emitState();
@@ -1370,16 +1457,25 @@ async function startStep(project) {
     const modelField = configStore.modelFieldForPhase(phase);
     const configuredModels = effectiveModelList(project, phase);
     // Model ids are scoped per runner, so an inherited or stale id for another
-    // provider can never reach this runner's CLI.
-    const models = configuredModels.filter((id) => runnerSupportsModel(runner, id));
-    const droppedModels = configuredModels.filter((id) => !models.includes(id));
-    if (droppedModels.length) {
-      appendLog(
-        project.id,
-        'system',
-        `Skipped model ids not valid for ${runner.label}: ${droppedModels.join(', ')}`
-      );
-    }
+    // provider can never reach this runner's CLI. When no configured id fits,
+    // fall back to the runner's first free catalogue id instead of a blank id.
+    const resolvedModels = resolveRunnerModels(runner, configuredModels, {
+      onSkip: (droppedModels) => {
+        appendLog(
+          project.id,
+          'system',
+          `Skipped model ids not valid for ${runner.label}: ${droppedModels.join(', ')}`
+        );
+      },
+      onFallback: (fallback) => {
+        appendLog(
+          project.id,
+          'system',
+          `No compatible configured model for ${runner.label}; using free default ${fallback}.`
+        );
+      }
+    });
+    const models = resolvedModels.models;
     const rotating = models.length > 1 && configStore.resolveRotation(project, config.settings, modelField);
     const isFallbackRetry = rt.modelFallbackPending === true && rt.modelAttemptRunKey === runKey;
     rt.modelFallbackPending = false;
@@ -1387,6 +1483,7 @@ async function startStep(project) {
       rt.modelAttemptRunKey = runKey;
       rt.modelIndex = 0;
       rt.tried = new Set();
+      rt.rateLimitBackoffKey = '';
     }
     if (rotating && !isFallbackRetry) {
       const picked = rotationStore.pick(models);
@@ -1422,8 +1519,10 @@ async function startStep(project) {
       runKey,
       phase,
       task,
+      sessionId: resumeSessionId,
       models
     });
+    rt.resumeSessionId = '';
   } catch (error) {
     rt.status = 'error';
     rt.active = false;
@@ -1455,6 +1554,7 @@ function eligibleProjects() {
 }
 
 function tick() {
+  logStore.prune(); // self-throttled to once per hour
   const limit = maxWorkers();
   let running = 0;
   for (const project of config.projects) {
@@ -1595,6 +1695,7 @@ async function prepareShutdownResume(reason) {
       currentTask,
       resumeAt: rt.resumeAt,
       runKey: runKey || undefined,
+      opencodeSessionId: normalizeOpenCodeSessionId(rt.opencodeSessionId) || undefined,
       pid: process.pid,
       hostname: process.env.HOSTNAME || ''
     });
@@ -1660,6 +1761,13 @@ async function resumeOnStart() {
       auditStaleIntent(project, intent);
       continue;
     }
+    const sessionId = normalizeOpenCodeSessionId(intent.opencodeSessionId);
+    let sessionUsable = Boolean(sessionId);
+    let sessionCause = sessionId ? 'session-resumed' : '';
+    if (intent.opencodeSessionId && !sessionId) {
+      sessionUsable = false;
+      sessionCause = 'session-invalid';
+    }
     let phase = autoResume.PHASES.has(intent.nextPhase) ? intent.nextPhase : 'seed';
     // Waiting plan states are not PHASES phases: they ride the checkpointed
     // status field and are restored only after the intent validates.
@@ -1690,6 +1798,8 @@ async function resumeOnStart() {
       })();
       if (isPlanPhaseIntent) {
         phase = intent.nextPhase;
+        sessionUsable = false;
+        sessionCause = 'plan-phase-fresh-session';
         if (intent.nextPhase === 'planWrite' && !resumeHandoffPresent) {
           phase = 'planQuestions';
           autoResume.appendAudit(project, 'resume-degraded', {
@@ -1697,6 +1807,7 @@ async function resumeOnStart() {
           });
         } else if (resumeHandoffPresent && readHandoffTask(project) !== taskText) {
           clearHandoff(project);
+          sessionCause = 'plan-handoff-stale';
           phase = 'planQuestions';
           autoResume.appendAudit(project, 'resume-degraded', {
             phase, task: taskText, reason: intent.reason, cause: 'handoff-provenance-mismatch'
@@ -1705,6 +1816,8 @@ async function resumeOnStart() {
       } else if (phase !== 'seed') {
         if (!resumeHandoffPresent) {
           phase = 'seed';
+          sessionUsable = false;
+          sessionCause = sessionId ? 'session-missing' : '';
           autoResume.appendAudit(project, 'resume-degraded', {
             phase, task: taskText, reason: intent.reason
           });
@@ -1713,9 +1826,12 @@ async function resumeOnStart() {
       // A restart checkpoint must never push a handoff written for another
       // task into analyze/implement: the run would execute a stale or wrong
       // implementation prompt. Old checkpoints and unknown provenance degrade
-      // to a fresh seed, which also clears the stale handoff.
+      // to a fresh seed, which also clears the stale handoff. Plan intents
+      // handled their provenance above.
       if (!isPlanPhaseIntent && phase !== 'seed' && readHandoffTask(project) !== taskText) {
         phase = 'seed';
+        sessionUsable = false;
+        sessionCause = sessionId ? 'session-missing' : '';
         clearHandoff(project);
         autoResume.appendAudit(project, 'resume-degraded', {
           phase, task: taskText, reason: intent.reason, cause: 'handoff-provenance-mismatch'
@@ -1726,6 +1842,8 @@ async function resumeOnStart() {
           phase, task: taskText, reason: intent.reason, cause: 'task-no-longer-next'
         });
         phase = 'seed';
+        sessionUsable = false;
+        sessionCause = sessionId ? 'session-missing' : '';
         clearHandoff(project);
       }
       try {
@@ -1765,12 +1883,40 @@ async function resumeOnStart() {
       rt.currentTask = taskText;
       rt.nextPhase = phase;
       rt.restartContinuePending = phase !== 'seed';
+      rt.opencodeSessionId = sessionUsable ? sessionId : '';
+      rt.resumeSessionId = '';
+      if (phase === 'planQuestions' || phase === 'planWrite') {
+        // Plan phases always run a fresh runner session across restarts.
+        rt.opencodeSessionId = '';
+        rt.resumeSessionId = '';
+        sessionUsable = false;
+        if (sessionId) sessionCause = 'plan-phase-fresh-session';
+      }
+      // Restore the serializable snapshot only when the intent was not degraded
+      // (phase still equals the intent's phase) and this is not a plan phase.
+      // Provenance and TTL already validated above; the snapshot never overrides
+      // those gates.
+      const isPlanPhaseResume = phase === 'planQuestions' || phase === 'planWrite';
+      const snap = intent.snapshot;
+      if (snap && !isPlanPhaseResume && phase === intent.nextPhase) {
+        if (snap.stepTask && Number.isInteger(snap.stepTask.index)) rt.stepTask = snap.stepTask;
+        if (typeof snap.stepOutput === 'string') rt.stepOutput = snap.stepOutput;
+        if (Number.isInteger(snap.modelIndex) && snap.modelIndex >= 0) rt.modelIndex = snap.modelIndex;
+        if (typeof snap.modelAttemptRunKey === 'string') rt.modelAttemptRunKey = snap.modelAttemptRunKey;
+        if (typeof snap.rateLimitBackoffKey === 'string') rt.rateLimitBackoffKey = snap.rateLimitBackoffKey;
+        if (Number.isFinite(snap.cooloffUntil) && snap.cooloffUntil > 0) rt.cooloffUntil = snap.cooloffUntil;
+        if (snap.rotationCursor && typeof snap.rotationCursor === 'object') rt.rotationCursor = snap.rotationCursor;
+        if (typeof snap.resumeSessionId === 'string' && snap.resumeSessionId) rt.resumeSessionId = snap.resumeSessionId;
+        if (snap.planPhaseSnapshot && typeof snap.planPhaseSnapshot === 'object') rt.planPhaseSnapshot = snap.planPhaseSnapshot;
+      }
       appendLog(project.id, 'system', `↻ Auto-resume after restart (phase ${phase}).`);
       if (waitingStatus && (phase === 'planWrite' || phase === 'analyze')) {
         // Restore the human-gated state instead of spawning: an answer PUT
         // (planWrite) or POST plan-confirm (analyze) resumes the flow.
         rt.resumeAt = null;
         rt.status = waitingStatus;
+        rt.opencodeSessionId = '';
+        rt.resumeSessionId = '';
         emitState();
       } else if (intent.status === 'paused') {
         // A project paused before restart must not wake up running: honor the
@@ -1778,18 +1924,28 @@ async function resumeOnStart() {
         rt.paused = true;
         rt.resumeAt = null;
         rt.status = 'paused';
+        rt.opencodeSessionId = '';
+        rt.resumeSessionId = '';
+        if (sessionId && sessionUsable) sessionCause = 'session-missing';
         emitState();
       } else if (intent.resumeAt && intent.resumeAt > Date.now()) {
         rt.resumeAt = intent.resumeAt;
         rt.status = 'rateLimited';
+        rt.opencodeSessionId = '';
+        rt.resumeSessionId = '';
+        if (sessionId && sessionUsable) sessionCause = 'session-missing';
         emitState();
       } else {
         rt.resumeAt = null;
         rt.status = 'idle';
+        rt.resumeSessionId = sessionUsable ? sessionId : '';
+        rt.opencodeSessionId = sessionUsable ? sessionId : '';
+        if (sessionId && !sessionUsable) sessionCause = 'session-missing';
         start(project.id);
       }
       autoResume.appendAudit(project, 'resume-on-start', {
-        phase, task: taskText, reason: intent.reason
+        phase, task: taskText, reason: intent.reason,
+        ...(sessionCause ? { cause: sessionCause } : {})
       });
     } catch {
       autoResume.appendAudit(project, 'resume-failed', {
@@ -1806,6 +1962,7 @@ function init() {
   }
   resumeOnStart();
   tickTimer = setInterval(tick, 1000);
+  logStore.prune();
 }
 
 function shutdown() {
@@ -1820,6 +1977,7 @@ function shutdown() {
   watchers.clear();
   const runner = getRunner('opencode');
   if (runner && runner.shutdown) runner.shutdown();
+  logStore.closeAll();
 }
 
 module.exports = {
@@ -1849,6 +2007,8 @@ module.exports = {
   prepareShutdownResume,
   runKeyFor,
   resumeOnStart,
+  writeCheckpointIntent,
+  snapshotRuntime,
   promptPreamble,
   isMetaPromptHandoff,
   renderPrompt,

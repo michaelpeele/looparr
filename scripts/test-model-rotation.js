@@ -126,7 +126,8 @@ async function startFakeExecutor() {
       attempts.push({
         model: payload.model || '',
         phase: payload.phase || '',
-        task: payload.task?.text || ''
+        task: payload.task?.text || '',
+        at: Date.now()
       });
 
       const frames = [];
@@ -294,6 +295,19 @@ async function testRotationAfterRateLimit() {
     [RL_MODEL, RL_OK, RL_THIRD],
     'rate-limit fallback advances inside the step, then rotation resumes past the served model'
   );
+  const logText = findProject(await getState(), project.id).logs.map((entry) => entry.text);
+  assert.ok(
+    logText.some((text) => text === `Model failure on ${RL_MODEL}; retrying with ${RL_OK}. Backing off once before failover.`),
+    'first 429 backs off once before failing over to the next model'
+  );
+  assert.ok(
+    logText.some((text) => text.startsWith('Provider backoff engaged. Retrying in')),
+    'backoff timer logs provider pause before the next attempt'
+  );
+  const limitedAt = run.find((attempt) => attempt.phase === 'implement' && attempt.model === RL_MODEL)?.at;
+  const okAt = run.find((attempt) => attempt.phase === 'implement' && attempt.model === RL_OK)?.at;
+  assert.ok(typeof limitedAt === 'number' && typeof okAt === 'number', 'fallback attempts carry timestamps');
+  assert.ok(okAt - limitedAt >= 4000, 'next model starts after the configured backoff pause');
 }
 
 async function testProviderErrorFallback() {

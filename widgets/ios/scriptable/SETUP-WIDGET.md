@@ -74,9 +74,15 @@ Rules worth knowing:
 5. Run the script inside Scriptable once. In-app, non-widget runs open the
    dashboard instead of building a card.
 
-Changing `BASE_URL` and the parameter are the only edits the meta-widget needs.
-Everything else — status text, colors, retry countdown, runner line, progress —
-comes from the server.
+Server-owned card data — status text, colors, retry countdown, runner line,
+progress, and icon path — needs no edit. Scriptable scripts do not update from
+the server automatically, so re-copy `looparr-meta-widget.js` into Scriptable
+whenever this file changes.
+
+The meta-widget loads icons in this order: the versioned `iconPath` from
+`/api/widget`, a PNG endpoint derived from that path, and finally
+`/apple-touch-icon.png`. This keeps the favicon visible when a cached payload
+still points at an SVG path that native Scriptable cannot decode.
 
 ## Offline behavior
 
