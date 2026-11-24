@@ -124,12 +124,12 @@ async function waitForServer(child) {
   throw new Error(`Server did not start: ${lastError && lastError.message}\n${child ? child.testOutput : ''}`);
 }
 
-async function spawnServer(gated) {
+async function spawnServer(gated, extraEnv = {}) {
   let lastError;
   for (let spawnAttempt = 0; spawnAttempt < 3; spawnAttempt += 1) {
     const child = spawn(process.execPath, ['server.js'], {
       cwd: REPO_ROOT,
-      env: serverEnv(gated),
+      env: { ...serverEnv(gated), ...extraEnv },
       stdio: ['ignore', 'pipe', 'pipe']
     });
     child.testOutput = '';
@@ -1393,6 +1393,8 @@ async function main() {
   );
   assert.equal(countAudit(hardProject.id, 'resume-on-start'), 1, 'hard recreation audited resume-on-start');
 
+  await testStandbyGate();
+
   await stopAllProjects();
   await killServer(server);
   console.log('auto-resume smoke tests passed');
@@ -1404,6 +1406,63 @@ function finish(code) {
   }
   fs.rmSync(TEMP_DIR, { recursive: true, force: true });
   process.exit(code);
+}
+
+async function testStandbyGate() {
+  // A healing-capable engine must not adopt a fresh mid-task checkpoint that a
+  // live primary wrote, but an errored primary checkpoint still resumes.
+  // resumeOnStart walks every configured project to reach standby-project, so
+  // poll for the audit line instead of asserting right after /api/state.
+  async function waitForAudit(id, event, present) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const found = readAudit(id).some((entry) => entry.event === event);
+      if (found === present) return;
+      await delay(100);
+    }
+    assert.fail(`audit ${event} (${present ? 'expected' : 'absent'}) not reached for ${id}`);
+  }
+  let server = await spawnServer(false, { LOOPARR_SELFHEAL: '1' });
+  const patched = await api('PATCH', '/api/settings', { selfHealing: true });
+  assertEqual(patched.status, 200, 'standby self-healing patch status');
+  const standby = await createProjectViaApi('standby-project', true);
+  writeForeignIntent(standby.id, 'analyze', 'analyze');
+
+  await killServer(server);
+  server = await spawnServer(false, { LOOPARR_SELFHEAL: '1' });
+  let state = await getState();
+  const held = findProject(state, standby.id);
+  assertEqual(held.active, false, 'primary mid-task: standby engine stays idle');
+  await waitForAudit(standby.id, 'resume-skipped-primary-live', true);
+  await waitForAudit(standby.id, 'resume-on-start', false);
+
+  writeForeignIntent(standby.id, 'error', 'analyze');
+  await killServer(server);
+  server = await spawnServer(false, { LOOPARR_SELFHEAL: '1' });
+  state = await getState();
+  findProject(state, standby.id);
+  await waitForAudit(standby.id, 'resume-on-start', true);
+  await killServer(server);
+}
+
+function writeForeignIntent(projectId, status, nextPhase) {
+  const dir = path.join(PROJECTS_ROOT, 'standby-project', '.looparr');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, autoResume.STATE_NAME),
+    JSON.stringify({
+      version: 1,
+      projectId,
+      capturedAt: new Date().toISOString(),
+      reason: 'checkpoint',
+      nextPhase,
+      status,
+      currentTask: 'Task standby-project',
+      resumeAt: null,
+      pid: 424242,
+      hostname: 'looparr'
+    }, null, 2) + '\n',
+    { encoding: 'utf8', mode: 0o600 }
+  );
 }
 
 main()

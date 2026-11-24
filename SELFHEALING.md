@@ -79,6 +79,12 @@ dev checkout — never in the prod container (the prod image has no `git`, no
   is actively healing, its fresh status file overrides the idle fallback and the
   pill progresses through the colors; once the file goes stale (TTL) prod falls
   back to idle. The setting alone never lets prod spawn a healer or run git.
+- **Standby gate.** A healing-capable engine can run beside the primary. At
+  boot, a fresh (under ~3 checkpoint intervals) non-error checkpoint written by
+  a different hostname means the primary is mid-task: the engine does not adopt
+  it, writes a `resume-skipped-primary-live` audit entry and a log line, and
+  stays idle. Errored checkpoints still resume, and a same-hostname engine
+  restarting into itself always resumes, so crash recovery is untouched.
 - **Merge on prod is a relay.** `POST /api/projects/:id/selfheal/merge` on prod
   validates the status file locally, then forwards an authenticated
   `POST /selfheal/merge` to the host executor (`scripts/host-executor.js`), which

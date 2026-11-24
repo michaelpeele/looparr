@@ -2409,6 +2409,33 @@ async function resumeOnStart() {
       auditStaleIntent(project, intent);
       continue;
     }
+    // Standby gate for the healing-capable engine. An active project
+    // checkpoints roughly every CHECKPOINT_INTERVAL_MS while some engine's
+    // tick steps it, so a fresh, non-error checkpoint written by another
+    // hostname means a live primary is mid-task: adopting it would dispatch
+    // the same step twice, so this engine stands by. An errored primary
+    // checkpoint still resumes (that is the state a healer round exists for),
+    // and same-hostname writers — an engine restarting into itself — always
+    // resume so crash recovery is untouched.
+    const capturedAtMs = Date.parse(intent.capturedAt);
+    const freshCheckpoint = Number.isFinite(capturedAtMs)
+      && Date.now() - capturedAtMs < CHECKPOINT_INTERVAL_MS * 3
+      && intent.reason === 'checkpoint';
+    const primaryStepping = freshCheckpoint
+      && Boolean(intent.hostname)
+      && intent.hostname !== (process.env.HOSTNAME || '')
+      && typeof intent.status === 'string'
+      && intent.status !== 'error';
+    if (selfHealingEnabled() && primaryStepping) {
+      autoResume.appendAudit(project, 'resume-skipped-primary-live', {
+        phase: intent.nextPhase,
+        task: intent.currentTask,
+        cause: `age=${Math.max(0, Date.now() - capturedAtMs)}ms;writer=${intent.hostname}`
+      });
+      appendLog(project.id, 'system', `✋ Primary engine "${intent.hostname}" is mid-task; standing by instead of resuming.`);
+      emitState();
+      continue;
+    }
     const sessionId = normalizeOpenCodeSessionId(intent.opencodeSessionId);
     let sessionUsable = Boolean(sessionId);
     let sessionCause = sessionId ? 'session-resumed' : '';
