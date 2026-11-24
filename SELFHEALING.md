@@ -39,8 +39,11 @@ Both are required:
    `/api/state` must answer for **two consecutive cycles**. Both passes set the
    state to `healed`; any failure sets `error` and stops. There is never an
    automatic second round.
-5. The preview is spun down after the round. The branch and worktree are kept for
-   review.
+5. The preview is spun down and the worktree removed, so the checkout is back to
+   its own branch with no extra directory. A Markdown report is written to
+   `.looparr/selfheal/<run-id>-analysis.md` with the outcome, error, healer exit
+   code, cycle count, branch diff stat, and review commands. Only the branch is
+   kept, for human review.
 6. The header pill shows `Debugging`, `Healing`, `Healed`, or `Error`. The
    git-branch button appears only in `healed`.
 
@@ -53,6 +56,8 @@ gradient with a green dot (`healed`).
 
 - One round per error, one healer process, a 20-minute wall-clock timeout, and a
   10-minute cooldown before another round can start.
+- Worktrees are deleted at the end of every round; the analysis file is written
+  with mode 0600 under `.looparr/selfheal/`, which is git-ignored.
 - A healer failure never starts another healer (`failedPhase === 'selfheal'` is
   refused).
 - `rt.healer` records `state`, `round`, `cycles`, branch, worktree, phase, and

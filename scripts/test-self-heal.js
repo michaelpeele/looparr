@@ -72,6 +72,11 @@ function testEngine() {
   assertIncludes(engine, 'snapshot.healer', 'healer persisted in resume snapshot');
   assertIncludes(engine, "'merge', '--no-ff'", 'merge runs locally');
   assertIncludes(engine, 'mergeHealerBranch', 'healer merge entry point');
+  assertIncludes(engine, 'function healerAnalysis(', 'end-of-round analysis writeup');
+  assertIncludes(engine, '-analysis.md', 'analysis filename');
+  assertIncludes(engine, 'function finishHealerRound(', 'end-of-round teardown');
+  assertIncludes(engine, 'healer.exitCode = code', 'healer exit code recorded');
+  assertIncludes(engine, 'finishHealerRound(project, healer, \'healed\'', 'analysis on healed rounds');
   assertAbsent(engine, "'push'", 'engine never publishes git');
   assertAbsent(engine, '"push"', 'engine never publishes git (double quotes)');
   assert.ok(!/'git',\s*'push'/.test(engine), 'engine has no git publish call');
@@ -98,6 +103,10 @@ function testUi() {
   assertIncludes(app, 'selfHealing: dom.selfHealing.checked', 'settings save body');
   assertIncludes(app, '/selfheal/merge', 'merge endpoint call');
   assertIncludes(css, '.self-heal-pill', 'pill css');
+  assertIncludes(html, 'class="self-heal-bug"', 'pixel bug sprite in the header');
+  assertIncludes(css, '.self-heal-bug * { fill: currentColor; }', 'bug sprite takes the state colour');
+  assertIncludes(css, 'color: #94a3b8', 'idle bug stays visible');
+  assertIncludes(css, 'color: #06222b', 'bug is dark on the lit cyan light');
   for (const state of ['debugging', 'healing', 'healed', 'error']) {
     assertIncludes(css, `[data-state="${state}"]`, `pill state ${state}`);
   }

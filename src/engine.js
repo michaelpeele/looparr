@@ -961,6 +961,83 @@ function removeHealWorktree(healer) {
   } catch { /* the branch is kept for review regardless */ }
 }
 
+// The live checkout never leaves its branch. At the end of a round the preview
+// is torn down, the worktree is removed, and this plain-Markdown report is left
+// behind so a human can review the branch without the round's disk footprint.
+function healerAnalysis(project, healer, outcome, cause) {
+  const runId = path.basename(healer.worktree);
+  const dir = path.join(healer.repoRoot, '.looparr', 'selfheal');
+  const file = path.join(dir, `${runId}-analysis.md`);
+  const stat = spawnSync('git', ['-C', healer.repoRoot, 'diff', '--stat', `HEAD..${healer.branch}`], {
+    encoding: 'utf8', timeout: 30_000
+  });
+  const head = spawnSync('git', ['-C', healer.repoRoot, 'log', '-1', '--format=%h %s', healer.branch], {
+    encoding: 'utf8', timeout: 30_000
+  });
+  const live = spawnSync('git', ['-C', healer.repoRoot, 'rev-parse', '--abbrev-ref', 'HEAD'], {
+    encoding: 'utf8', timeout: 30_000
+  });
+  const body = [
+    `# Self-heal analysis — ${project.name}`,
+    '',
+    `- Outcome: **${outcome}**${cause ? ` (${cause})` : ''}`,
+    `- Written: ${new Date().toISOString()}`,
+    `- Failing phase: ${healer.phase || 'unknown'}`,
+    `- Task: ${healer.task || '(none)'}`,
+    `- Branch: \`${healer.branch}\``,
+    `- Live checkout: still on \`${String(live.stdout || '').trim() || 'unknown'}\`; it was never switched.`,
+    `- Healer: ${healer.runner || 'unknown'} / ${healer.model || 'default'} (exit ${healer.exitCode == null ? 'n/a' : healer.exitCode}${healer.timedOut ? ', timed out' : ''})`,
+    `- Preview cycles: ${healer.cycles}/${HEALER_CYCLES_REQUIRED}`,
+    '',
+    '## Error',
+    '',
+    '```',
+    healer.error || '(none recorded)',
+    '```',
+    '',
+    '## Branch diff',
+    '',
+    '```',
+    String(stat.stdout || '(no diff)').trim().slice(0, 4000),
+    '```',
+    '',
+    String(head.stdout || '').trim() ? `Head commit: ${String(head.stdout).trim()}` : 'Head commit: (none)',
+    '',
+    '## Review',
+    '',
+    `1. \`git log --oneline HEAD..${healer.branch}\``,
+    `2. \`git diff HEAD..${healer.branch}\``,
+    `3. If it looks right, merge locally with the header button or \`git merge --no-ff ${healer.branch}\`. Nothing is pushed.`,
+    `4. If not, drop it: \`git branch -D ${healer.branch}\`.`,
+    '',
+    'The worktree was removed after this report was written; only the branch remains.'
+  ].join('\n');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, `${body}\n`, { mode: 0o600 });
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+// End-of-round teardown: stop the preview while the worktree still exists,
+// write the analysis, remove the worktree, and leave the branch for review.
+function finishHealerRound(project, healer, outcome, cause) {
+  if (!healer.previewDown) stopHealPreview(healer);
+  const file = healerAnalysis(project, healer, outcome, cause);
+  removeHealWorktree(healer);
+  if (file) {
+    healer.analysis = file;
+    appendLog(
+      project.id,
+      'system',
+      `✎ Self-heal analysis written to ${file}. Live checkout untouched; branch ${healer.branch} kept for review.`
+    );
+  }
+  emitState();
+}
+
 function healerAuditPhase(failedPhase) {
   return autoResume.PHASES.has(failedPhase) ? failedPhase : undefined;
 }
@@ -1016,6 +1093,8 @@ function maybeStartHealer(project, rt, failedPhase) {
     errorAt: new Date().toISOString(),
     startedAt: Date.now(),
     error: autoResume.redactText(rt.error || '', 500),
+    task,
+    exitCode: null,
     mergedAt: null
   };
   let built;
@@ -1086,7 +1165,7 @@ function maybeStartHealer(project, rt, failedPhase) {
         'system',
         `✖ Self-heal round stopped (${healer.timedOut ? 'timeout' : (cause || 'failed')}). Branch ${branch} kept for review; no second round.`
       );
-      emitState();
+      finishHealerRound(project, healer, 'failed', healer.timedOut ? 'timeout' : (cause || 'failed'));
       return;
     }
     healer.state = 'healing';
@@ -1095,7 +1174,10 @@ function maybeStartHealer(project, rt, failedPhase) {
     validateHealer(project, healer).catch(() => {});
   };
   child.on('error', () => finish(false, 'spawn-failed'));
-  child.on('close', (code) => finish(code === 0, code === 0 ? 'edits-complete' : `exit-${code}`));
+  child.on('close', (code) => {
+    healer.exitCode = code;
+    finish(code === 0, code === 0 ? 'edits-complete' : `exit-${code}`);
+  });
   return true;
 }
 
@@ -1108,6 +1190,7 @@ function stopHealPreview(healer) {
       ['compose', '-p', 'looparr-heal', '-f', composeFile, 'down', '-v', '--remove-orphans'],
       { cwd: healer.worktree, encoding: 'utf8', timeout: 120_000 }
     );
+    if (down.status === 0) healer.previewDown = true;
     return down.status === 0;
   } catch {
     return false;
@@ -1162,7 +1245,7 @@ async function validateHealer(project, healer) {
         'system',
         `✖ Self-heal live check failed (${result.cause}) on cycle ${cycle}. Branch ${healer.branch} kept for review; no second round.`
       );
-      emitState();
+      finishHealerRound(project, healer, 'failed', result.cause);
       return;
     }
     healer.cycles = cycle;
@@ -1175,9 +1258,9 @@ async function validateHealer(project, healer) {
     'system',
     `✓ Self-heal passed ${healer.cycles} live cycles on ${healer.branch}. Review the branch, then merge locally.`
   );
-  emitState();
   stopHealPreview(healer);
   autoResume.appendAudit(project, 'healer-spundown', { phase: auditPhase, task, cause: 'preview-down' });
+  finishHealerRound(project, healer, 'healed', `cycles-${healer.cycles}`);
 }
 
 // Human-gated merge for a healed branch. Git stays local: the branch is merged
