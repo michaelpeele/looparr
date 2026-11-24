@@ -713,6 +713,9 @@ input[type="number"] { max-width: 130px; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.task-link-doc-row { display: flex; align-items: center; gap: 6px; font-size: 13px; margin: 0 8px 0 0; flex: 0 0 auto; }
+.task-link-doc-row input { accent-color: var(--accent); flex: 0 0 auto; }
+#task-doc-file { flex: 0 1 160px; min-width: 0; }
 .plan-actions { display: flex; justify-content: flex-start; margin: 8px 0 10px; }
 .toggle-completed { flex: 0 0 auto; min-height: 34px; }
 .checklist { --task-controls-rail: 240px; display: grid; gap: 6px; margin-bottom: 12px; }
