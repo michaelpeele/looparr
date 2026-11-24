@@ -776,6 +776,13 @@ app.post('/api/projects/:id/plan-confirm', (req, res) => {
   return res.json({ ok: true });
 });
 
+app.post('/api/projects/:id/selfheal/merge', (req, res) => {
+  if (!findProject(req.params.id)) return fail(res, 404, 'Project not found');
+  const result = engine.mergeHealerBranch(req.params.id);
+  if (!result.ok) return fail(res, result.status || 409, result.error || 'Could not merge self-heal branch');
+  return res.json(result);
+});
+
 app.get('/api/projects/:id/icon', (req, res) => {
   const resolved = resolveProjectIcon(req.params.id);
   if (!resolved.ok) return fail(res, resolved.status, resolved.error);

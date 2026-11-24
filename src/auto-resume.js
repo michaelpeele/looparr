@@ -82,6 +82,8 @@ const SNAPSHOT_MAX_STEP_OUTPUT = 4000;
 const SNAPSHOT_MAX_ROTATION_ENTRIES = 50;
 const SNAPSHOT_MAX_PLAN_KEYS = 20;
 const SNAPSHOT_MAX_PLAN_STRING = 500;
+const SNAPSHOT_MAX_HEALER_STRING = 200;
+const SNAPSHOT_HEALER_KEYS = ['state', 'round', 'cycles', 'branch', 'worktree', 'phase', 'errorAt', 'mergedAt'];
 const SNAPSHOT_KEY_MAX = 64;
 
 function isPlainObject(value) {
@@ -125,6 +127,15 @@ function sanitizeSnapshot(input) {
   }
   const resumeSessionId = normalizeOpenCodeSessionId(input.resumeSessionId);
   if (resumeSessionId) out.resumeSessionId = resumeSessionId;
+  if (isPlainObject(input.healer)) {
+    const healer = {};
+    for (const key of SNAPSHOT_HEALER_KEYS) {
+      const value = input.healer[key];
+      if (typeof value === 'string') healer[key] = redactText(value, SNAPSHOT_MAX_HEALER_STRING);
+      else if (typeof value === 'number' && Number.isFinite(value)) healer[key] = value;
+    }
+    if (Object.keys(healer).length) out.healer = healer;
+  }
   if (isPlainObject(input.planPhaseSnapshot)) {
     const plan = {};
     let count = 0;

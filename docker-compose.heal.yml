@@ -1,0 +1,35 @@
+name: looparr-heal
+
+# Preview stack for one self-heal round. The engine runs
+#   docker compose -p looparr-heal -f docker-compose.heal.yml up -d --build
+# from the healer's throwaway worktree, polls /api/state twice, then brings it
+# down with `down -v`. Self-healing stays off inside the preview: NODE_ENV is
+# production and the dev signal is set to "0".
+services:
+  looparr-heal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: looparr:heal-preview
+    container_name: looparr-heal
+    ports:
+      - "${LOOPARR_HEAL_PORT:-4199}:3000"
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      CONFIG_PATH: /app/data/config.json
+      LOOPARR_SELFHEAL: "0"
+    volumes:
+      - ./data-heal:/app/data:rw
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/state').then(async r => { if (!r.ok) process.exit(1); await r.text(); process.exit(0); }).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    restart: "no"

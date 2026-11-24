@@ -661,6 +661,15 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(indexHtml, 'id="handoff-recovery-toggle"', 'handoff recovery settings checkbox');
   assertIncludes(appSource, "handoffRecovery: $('handoff-recovery-toggle')", 'handoff recovery DOM ref');
   assertIncludes(appSource, 'handoffRecovery: dom.handoffRecovery.checked', 'handoff recovery save body');
+  assertIncludes(indexHtml, 'id="self-heal-pill"', 'self-heal state pill');
+  assertIncludes(indexHtml, 'data-state="idle"', 'self-heal pill idle default');
+  assertIncludes(indexHtml, 'id="self-heal-branch"', 'self-heal branch button');
+  assertIncludes(indexHtml, 'id="self-healing-toggle"', 'self-heal settings toggle');
+  assertIncludes(appSource, 'function renderSelfHealing', 'self-heal render helper');
+  assertIncludes(appSource, 'selfHealingAvailable', 'self-heal availability gate');
+  assertIncludes(appSource, 'selfHealing: dom.selfHealing.checked', 'self-heal save body');
+  assertIncludes(cssSource, '.self-heal-pill', 'self-heal pill css');
+  assertIncludes(cssSource, '[data-state="healing"]', 'self-heal healing state css');
   assertIncludes(cssSource, '.task-add-row.is-sticky', 'sticky add task css class');
   assertIncludes(cssSource, 'position: sticky', 'sticky add task position');
   assertIncludes(cssSource, '-webkit-sticky', 'sticky add task webkit position');

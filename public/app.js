@@ -32,6 +32,10 @@
     promptCliToolsNote: $('prompt-cli-tools-note'),
     stickyAddTaskRow: $('sticky-add-task-row'),
     handoffRecovery: $('handoff-recovery-toggle'),
+    selfHealing: $('self-healing-toggle'),
+    selfHealPill: $('self-heal-pill'),
+    selfHealState: $('self-heal-state'),
+    selfHealBranch: $('self-heal-branch'),
     settingsStatus: $('settings-status'),
     envSettingsForm: $('env-settings-form'),
     envSettingsFields: $('env-settings-fields'),
@@ -727,6 +731,55 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     button.addEventListener('keydown', (event) => {
       event.stopPropagation();
     });
+  }
+
+  const SELF_HEAL_LABELS = {
+    idle: 'Idle',
+    debugging: 'Debugging',
+    healing: 'Healing',
+    healed: 'Healed',
+    error: 'Error'
+  };
+
+  function renderSelfHealing(state) {
+    if (!dom.selfHealPill) return;
+    const available = state.selfHealingAvailable === true;
+    dom.selfHealPill.hidden = !available;
+    if (!available) {
+      if (dom.selfHealBranch) dom.selfHealBranch.hidden = true;
+      return;
+    }
+    const engaged = (state.projects || [])
+      .map((project) => (project.selfHealer ? { ...project.selfHealer, projectId: project.id } : null))
+      .filter(Boolean)
+      .find((healer) => healer.state && healer.state !== 'idle') || null;
+    const healerState = engaged ? engaged.state : 'idle';
+    dom.selfHealPill.dataset.state = healerState;
+    if (dom.selfHealState) dom.selfHealState.textContent = SELF_HEAL_LABELS[healerState] || 'Idle';
+    if (dom.selfHealBranch) {
+      dom.selfHealBranch.hidden = healerState !== 'healed';
+      dom.selfHealBranch.dataset.projectId = engaged ? engaged.projectId : '';
+      dom.selfHealBranch.dataset.branch = engaged ? engaged.branch || '' : '';
+    }
+  }
+
+  function mergeSelfHealBranch() {
+    const button = dom.selfHealBranch;
+    if (!button || !button.dataset.projectId) return;
+    const branch = button.dataset.branch || 'the healed branch';
+    const confirmed = window.confirm(
+      `Test complete on ${branch}. Allow PR to Merge to main and rebuild?`
+    );
+    if (!confirmed) return;
+    api(`/api/projects/${encodeURIComponent(button.dataset.projectId)}/selfheal/merge`, { method: 'POST' })
+      .then((result) => {
+        dom.settingsStatus.textContent = result && result.branch
+          ? `merged ${result.branch} locally`
+          : 'merge started';
+      })
+      .catch((error) => {
+        dom.settingsStatus.textContent = error.message;
+      });
   }
 
   function esc(value) {
@@ -2616,6 +2669,10 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     if (dom.handoffRecovery && document.activeElement !== dom.handoffRecovery) {
       dom.handoffRecovery.checked = settings.handoffRecovery === true;
     }
+    if (dom.selfHealing && document.activeElement !== dom.selfHealing) {
+      dom.selfHealing.checked = settings.selfHealing === true;
+    }
+    renderSelfHealing(state);
     if (dom.taskAddRow && dom.stickyAddTaskRow) {
       dom.taskAddRow.classList.toggle('is-sticky', settings.stickyAddTaskRow === true);
     }
@@ -2679,7 +2736,8 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
           planWritePromptTemplate: dom.planWritePromptTemplate.value,
           promptCliToolsNote: dom.promptCliToolsNote.checked,
           stickyAddTaskRow: dom.stickyAddTaskRow.checked,
-          handoffRecovery: dom.handoffRecovery.checked
+          handoffRecovery: dom.handoffRecovery.checked,
+          selfHealing: dom.selfHealing.checked
         })
       });
       if (response?.settings) applyState({ ...(app.state || {}), settings: response.settings });
@@ -3112,6 +3170,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
   /* ---------- boot ---------- */
 
   dom.settingsForm.addEventListener('submit', saveSettings);
+  dom.selfHealBranch?.addEventListener('click', mergeSelfHealBranch);
   dom.envSettingsForm.addEventListener('submit', saveEnvSettings);
   dom.envSettingsFields.addEventListener('input', (event) => {
     const input = event.target.closest('.env-input');
