@@ -12,6 +12,7 @@ const logStore = require('./log-store');
 const bus = require('./events');
 const planLib = require('./plan');
 const iconLib = require('./icon');
+const selfhealStatus = require('./selfheal-status');
 const { getRunner, listRunners, resolveRunnerModels } = require('./runners');
 const { modelList, joinModelList } = require('./model-list');
 const { normalizeOpenCodeSessionId, createOpenCodeSessionCapture } = require('./runners/opencode-session');
@@ -41,6 +42,9 @@ let tickTimer = null;
 let roundRobinCursor = 0;
 let lastCheckpointAt = 0;
 let lastHandoffRecoveryAt = 0;
+let lastSelfhealHeartbeatAt = 0;
+// Heartbeat cadence so a healthy idle dev daemon keeps the status file fresh.
+const SELFHEAL_HEARTBEAT_MS = 60_000;
 
 function newId() {
   return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -230,9 +234,11 @@ function emitState() {
 }
 
 function getState() {
+  const devGate = selfHealingEnabled();
+  const prodViewer = !devGate;
   return {
     settings: { ...config.settings },
-    selfHealingAvailable: selfHealingEnabled(),
+    selfHealingAvailable: devGate || selfhealStatusAvailable(),
     runners: listRunners(),
     projects: config.projects.map((project) => {
       const rt = ensureRuntime(project);
@@ -334,7 +340,7 @@ function getState() {
               errorAt: rt.healer.errorAt || '',
               mergedAt: rt.healer.mergedAt || null
             }
-          : null,
+          : (prodViewer ? readHealerStatus(project.id) : null),
         error: rt.error || (plan.ok ? '' : `plan.md: ${plan.error}`),
         logs: rt.logs.slice(-200)
       };
@@ -926,6 +932,60 @@ function selfHealingEnabled() {
   }
 }
 
+// Repository root that owns .looparr. In dev this is the checkout; in prod the
+// container mounts the same .looparr volume, so both sides see the same files.
+function selfhealRepoRoot() {
+  return path.resolve(__dirname, '..');
+}
+
+// Best-effort write of a project's healer status. Only the dev engine ever
+// spawns a healer, so only the dev engine writes status; prod reads. Callers
+// treat this as fire-and-forget so a disk hiccup never breaks a round.
+function writeHealerStatus(project, healer) {
+  if (!selfhealStatus.isValidProjectId(project && project.id)) return false;
+  const record = {
+    version: selfhealStatus.VERSION,
+    projectId: project.id,
+    projectName: project.name || '',
+    state: (healer && healer.state) || 'idle',
+    round: healer ? healer.round || 0 : 0,
+    cycles: healer ? healer.cycles || 0 : 0,
+    branch: (healer && healer.branch) || '',
+    phase: (healer && healer.phase) || '',
+    errorAt: (healer && healer.errorAt) || '',
+    mergedAt: (healer && healer.mergedAt) || null,
+    analysisFile: (healer && healer.analysis) || '',
+    exitCode: healer && Number.isInteger(healer.exitCode) ? healer.exitCode : null,
+    hostname: process.env.HOSTNAME || ''
+  };
+  return selfhealStatus.writeStatus(selfhealRepoRoot(), record);
+}
+
+// Read the freshest fresh status for a project (prod viewer). Returns the
+// selfHealer shape or null when absent/stale/malformed.
+function readHealerStatus(id) {
+  return selfhealStatus.toSelfHealer(selfhealStatus.readStatus(selfhealRepoRoot(), id));
+}
+
+// True when any project has a fresh status file (drives the prod pill). Prod
+// never spawns; it only reflects what the dev engine writes.
+function selfhealStatusAvailable() {
+  return selfhealStatus.listStatus(selfhealRepoRoot()).length > 0;
+}
+
+// Keep the status fresh on the same tick cadence while a dev engine runs with
+// self-healing enabled. Idle (no active healer) is written too, so prod can show
+// a live idle pill instead of hiding it once a round finishes.
+function heartbeatHealerStatus(now) {
+  if (!selfHealingEnabled()) return;
+  if (now - lastSelfhealHeartbeatAt < SELFHEAL_HEARTBEAT_MS) return;
+  lastSelfhealHeartbeatAt = now;
+  for (const project of config.projects) {
+    const rt = ensureRuntime(project);
+    writeHealerStatus(project, rt.healer);
+  }
+}
+
 function healerPrompt(project, rt, healer) {
   const context = [
     `Error at: ${healer.errorAt}`,
@@ -1035,6 +1095,7 @@ function finishHealerRound(project, healer, outcome, cause) {
       `✎ Self-heal analysis written to ${file}. Live checkout untouched; branch ${healer.branch} kept for review.`
     );
   }
+  writeHealerStatus(project, healer);
   emitState();
 }
 
@@ -1132,6 +1193,7 @@ function maybeStartHealer(project, rt, failedPhase) {
   healer.pid = child.pid;
   healer.round = Math.min(healer.round, HEALER_MAX_ROUNDS);
   rt.healer = healer;
+  writeHealerStatus(project, healer);
   autoResume.appendAudit(project, 'healer-spawned', { phase: auditPhase, task, cause: branch });
   appendLog(project.id, 'system', `✚ Self-heal round started on ${branch} (${runner.label}).`);
   emitState();
@@ -1169,6 +1231,7 @@ function maybeStartHealer(project, rt, failedPhase) {
       return;
     }
     healer.state = 'healing';
+    writeHealerStatus(project, healer);
     appendLog(project.id, 'system', `⚙ Self-heal edits complete; validating ${branch}.`);
     emitState();
     validateHealer(project, healer).catch(() => {});
@@ -1249,9 +1312,11 @@ async function validateHealer(project, healer) {
       return;
     }
     healer.cycles = cycle;
+    writeHealerStatus(project, healer);
     emitState();
   }
   healer.state = 'healed';
+  writeHealerStatus(project, healer);
   autoResume.appendAudit(project, 'healer-healed', { phase: auditPhase, task, cause: `cycles-${healer.cycles}` });
   appendLog(
     project.id,
@@ -1288,6 +1353,7 @@ function mergeHealerBranch(id) {
     return { ok: false, status: 500, error: 'Merge failed; branch kept for review' };
   }
   healer.mergedAt = new Date().toISOString();
+  writeHealerStatus(project, healer);
   autoResume.appendAudit(project, 'healer-merged', { phase: auditPhase, task: project.name, cause: healer.branch });
   appendLog(
     project.id,
@@ -2112,6 +2178,7 @@ function tick() {
     lastCheckpointAt = now;
     for (const project of config.projects) writeCheckpointIntent(project, ensureRuntime(project));
   }
+  heartbeatHealerStatus(now);
   if (now - lastHandoffRecoveryAt >= HANDOFF_RECOVERY_INTERVAL_MS) {
     lastHandoffRecoveryAt = now;
     // Async: the active-session probe hits the host executor. Errors stay local
@@ -2510,6 +2577,12 @@ function init() {
     watchProject(project);
   }
   resumeOnStart();
+  if (selfHealingEnabled()) {
+    // Seed an idle status per project so a prod viewer sees a live idle pill
+    // from the moment the dev engine is up, before any round runs.
+    lastSelfhealHeartbeatAt = Date.now();
+    for (const project of config.projects) writeHealerStatus(project, ensureRuntime(project).healer);
+  }
   tickTimer = setInterval(tick, 1000);
   logStore.prune();
 }
@@ -2567,6 +2640,9 @@ module.exports = {
   selfHealingEnabled,
   maybeStartHealer,
   mergeHealerBranch,
+  selfhealStatusAvailable,
+  readHealerStatus,
+  selfhealRepoRoot,
   renderPrompt,
   iconVersionFor,
   refreshIcon

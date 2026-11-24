@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
-const { execFileSync, spawn } = require('child_process');
+const { execFileSync, spawn, spawnSync } = require('child_process');
 const { ensureKiloProvider } = require('../src/opencode-provider');
 const { buildKiloArgs } = require('../src/kilo-command');
 const { buildVibeArgs } = require('../src/vibe-command');
@@ -13,6 +13,7 @@ const {
   opencodeSessionExists,
   createOpenCodeSessionCapture
 } = require('../src/runners/opencode-session');
+const selfhealStatus = require('../src/selfheal-status');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DEFAULT_PROJECTS_ROOT = '/home/michaelpeele/ai-projects';
@@ -561,6 +562,89 @@ async function handleCancel(req, res) {
   return sendJson(res, 200, { ok: true, cancelled });
 }
 
+// Prod merge relay. Prod cannot run git or docker, so it asks the host executor
+// (which shares the repo checkout and the Docker CLI) to merge a healed branch
+// locally, then rebuild/recreate prod. The response is written before the
+// detached restart is scheduled so the browser sees the 200 first.
+async function handleSelfhealMerge(req, res) {
+  if (!authorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
+  let payload;
+  try {
+    payload = await readJson(req);
+  } catch (error) {
+    return sendJson(res, 400, { error: error.message });
+  }
+  if (!payload || typeof payload !== 'object') {
+    return sendJson(res, 400, { error: 'payload must be an object' });
+  }
+  const projectId = typeof payload.projectId === 'string' ? payload.projectId : '';
+  const branch = typeof payload.branch === 'string' ? payload.branch : '';
+  if (!selfhealStatus.isValidProjectId(projectId)) {
+    return sendJson(res, 400, { error: 'invalid projectId' });
+  }
+
+  // Operate only inside the fixed repo root; no caller-supplied paths.
+  const check = selfhealStatus.validateMergeRequest(REPO_ROOT, projectId, { branch });
+  if (!check.ok) return sendJson(res, check.status, { error: check.error });
+
+  const repoRoot = REPO_ROOT;
+  // Already-merged is idempotent-refused: nothing to do.
+  const ancestor = spawnSyncGit(['merge-base', '--is-ancestor', branch, 'HEAD'], repoRoot);
+  if (ancestor.status === 0) {
+    const record = check.record;
+    record.mergedAt = record.mergedAt || new Date().toISOString();
+    selfhealStatus.writeStatus(repoRoot, record);
+    return sendJson(res, 200, { ok: true, branch, mergeCommit: null, restart: 'already-merged' });
+  }
+
+  const merged = spawnSyncGit(
+    ['merge', '--no-ff', '-m', `selfheal: merge ${branch}`, branch],
+    repoRoot
+  );
+  if (merged.status !== 0) {
+    // Conflict (or any merge failure): keep the branch, report 409.
+    return sendJson(res, 409, { error: 'merge failed; branch kept for review', detail: String(merged.stderr || '').trim().slice(0, 300) });
+  }
+  const head = spawnSyncGit(['rev-parse', '--short', 'HEAD'], repoRoot);
+  const mergeCommit = head.status === 0 ? String(head.stdout || '').trim() : '';
+
+  // Mark the status file merged so prod hides the merge button after reconnect.
+  const record = check.record;
+  record.mergedAt = new Date().toISOString();
+  record.exitCode = record.exitCode == null ? null : record.exitCode;
+  selfhealStatus.writeStatus(repoRoot, record);
+
+  // Send the response first; schedule the rebuild/restart detached after a short
+  // delay so the prod container is not recreated mid-response.
+  sendJson(res, 200, { ok: true, branch, mergeCommit, restart: 'scheduled' });
+
+  scheduleRestart(repoRoot);
+  process.stdout.write(`[host-executor] self-heal merge complete for ${projectId} on ${branch}; restart scheduled\n`);
+}
+
+function spawnSyncGit(args, cwd) {
+  // Local helper to keep the merge logic readable; git only ever runs against
+  // the fixed repo root.
+  return spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 60_000 });
+}
+
+function scheduleRestart(repoRoot) {
+  // The rebuild recreates the prod container, so wait long enough for the 200 to
+  // reach prod and the browser before tearing anything down.
+  setTimeout(() => {
+    try {
+      const child = spawn(process.execPath, [path.join(repoRoot, 'scripts', 'restart-looparr.js')], {
+        cwd: repoRoot,
+        detached: true,
+        stdio: 'ignore'
+      });
+      child.unref();
+    } catch (error) {
+      process.stderr.write(`[host-executor] failed to schedule restart: ${error.message}\n`);
+    }
+  }, 5000).unref?.();
+}
+
 const server = http.createServer((req, res) => {
   if (req.url === '/health' && req.method === 'GET') {
     return sendJson(res, 200, {
@@ -589,6 +673,9 @@ const server = http.createServer((req, res) => {
   }
   if (req.url === '/cancel' && req.method === 'POST') {
     return handleCancel(req, res);
+  }
+  if (req.url === '/selfheal/merge' && req.method === 'POST') {
+    return handleSelfhealMerge(req, res);
   }
   return sendJson(res, 404, { error: 'not found' });
 });

@@ -99,7 +99,8 @@ function testUi() {
   assertIncludes(app, 'selfHealingAvailable', 'availability gate');
   assertIncludes(app, "dom.selfHealBranch.hidden = healerState !== 'healed'", 'merge button only when healed');
   assertIncludes(app, 'Test complete on', 'merge confirmation');
-  assertIncludes(app, 'Allow PR to Merge to main and rebuild?', 'human-gated merge copy');
+  assertIncludes(app, 'Merge to main and rebuild/restart?', 'human-gated merge copy');
+  assertIncludes(app, 'Nothing is published', 'merge never publishes');
   assertIncludes(app, 'selfHealing: dom.selfHealing.checked', 'settings save body');
   assertIncludes(app, '/selfheal/merge', 'merge endpoint call');
   assertIncludes(css, '.self-heal-pill', 'pill css');

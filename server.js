@@ -604,6 +604,12 @@ app.patch('/api/settings', (req, res) => {
     }
     patch.handoffRecovery = body.handoffRecovery;
   }
+  if (body.selfHealing !== undefined) {
+    if (typeof body.selfHealing !== 'boolean') {
+      return fail(res, 400, 'selfHealing must be a boolean');
+    }
+    patch.selfHealing = body.selfHealing;
+  }
   for (const { field, label, placeholders } of PROMPT_TEMPLATE_FIELDS) {
     if (body[field] === undefined) continue;
     if (typeof body[field] !== 'string') return fail(res, 400, `${label} must be a string`);
@@ -776,11 +782,45 @@ app.post('/api/projects/:id/plan-confirm', (req, res) => {
   return res.json({ ok: true });
 });
 
-app.post('/api/projects/:id/selfheal/merge', (req, res) => {
+app.post('/api/projects/:id/selfheal/merge', async (req, res) => {
   if (!findProject(req.params.id)) return fail(res, 404, 'Project not found');
-  const result = engine.mergeHealerBranch(req.params.id);
-  if (!result.ok) return fail(res, result.status || 409, result.error || 'Could not merge self-heal branch');
-  return res.json(result);
+  // Dev checkout: the local engine owns the checkout and merges in-process.
+  if (engine.selfHealingEnabled()) {
+    const result = engine.mergeHealerBranch(req.params.id);
+    if (!result.ok) return fail(res, result.status || 409, result.error || 'Could not merge self-heal branch');
+    return res.json(result);
+  }
+  // Prod/viewer: no git or docker here. Validate the status file locally, then
+  // relay the merge to the authenticated host executor. Prod cannot spawn a
+  // healer; it only reflects the dev engine's status file.
+  const selfhealStatus = require('./src/selfheal-status');
+  const branch = req.body && typeof req.body.branch === 'string' ? req.body.branch : '';
+  const check = selfhealStatus.validateMergeRequest(engine.selfhealRepoRoot(), req.params.id, { branch });
+  if (!check.ok) return fail(res, check.status, check.error);
+  const executorUrl = process.env.LOOPARR_EXECUTOR_URL || 'http://172.17.0.1:4187';
+  const token = process.env.LOOPARR_EXECUTOR_TOKEN || '';
+  if (!token) {
+    return fail(res, 503, 'Host executor is not configured (LOOPARR_EXECUTOR_TOKEN missing)');
+  }
+  let relay;
+  try {
+    const upstream = await fetch(`${executorUrl.replace(/\/$/, '')}/selfheal/merge`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ projectId: req.params.id, branch }),
+      signal: AbortSignal.timeout(120_000)
+    });
+    relay = { status: upstream.status, body: await upstream.json().catch(() => null) };
+  } catch (error) {
+    return fail(res, 502, `Host executor unreachable: ${error.message}`);
+  }
+  if (!relay.body || relay.body.ok !== true) {
+    return fail(res, relay.status || 502, (relay.body && relay.body.error) || 'Host executor rejected the merge');
+  }
+  return res.status(relay.status || 200).json(relay.body);
 });
 
 app.get('/api/projects/:id/icon', (req, res) => {

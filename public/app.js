@@ -757,7 +757,10 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     dom.selfHealPill.dataset.state = healerState;
     if (dom.selfHealState) dom.selfHealState.textContent = SELF_HEAL_LABELS[healerState] || 'Idle';
     if (dom.selfHealBranch) {
-      dom.selfHealBranch.hidden = healerState !== 'healed';
+      // Show the merge button only while healed and not yet merged; once
+      // mergedAt is set the round is done and the button must not reappear.
+      const merged = engaged ? Boolean(engaged.mergedAt) : false;
+      dom.selfHealBranch.hidden = healerState !== 'healed' || merged;
       dom.selfHealBranch.dataset.projectId = engaged ? engaged.projectId : '';
       dom.selfHealBranch.dataset.branch = engaged ? engaged.branch || '' : '';
     }
@@ -768,17 +771,36 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     if (!button || !button.dataset.projectId) return;
     const branch = button.dataset.branch || 'the healed branch';
     const confirmed = window.confirm(
-      `Test complete on ${branch}. Allow PR to Merge to main and rebuild?`
+      `Test complete on ${branch}. Merge to main and rebuild/restart? Nothing is published.`
     );
     if (!confirmed) return;
-    api(`/api/projects/${encodeURIComponent(button.dataset.projectId)}/selfheal/merge`, { method: 'POST' })
-      .then((result) => {
-        dom.settingsStatus.textContent = result && result.branch
-          ? `merged ${result.branch} locally`
-          : 'merge started';
+    // The rebuild recreates the server, so the POST may drop mid-request. Treat a
+    // dropped connection as "restarting" and confirm the merge on reconnect.
+    dom.settingsStatus.textContent = `merging ${branch}…`;
+    button.disabled = true;
+    fetch(`/api/projects/${encodeURIComponent(button.dataset.projectId)}/selfheal/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ branch })
+    })
+      .then(async (res) => {
+        let body = null;
+        try { body = await res.json(); } catch { /* no json */ }
+        if (!res.ok) {
+          dom.settingsStatus.textContent = (body && body.error) || `merge failed (${res.status})`;
+          return;
+        }
+        dom.settingsStatus.textContent = body && body.mergeCommit
+          ? `merged ${branch} (${body.mergeCommit}); restarting…`
+          : `merged ${branch}; restarting…`;
       })
-      .catch((error) => {
-        dom.settingsStatus.textContent = error.message;
+      .catch(() => {
+        // Likely a dropped request during the rebuild/restart. Confirm via the
+        // reconnected state rather than reporting a false failure.
+        dom.settingsStatus.textContent = `merge submitted for ${branch}; waiting for restart…`;
+      })
+      .finally(() => {
+        button.disabled = false;
       });
   }
 
