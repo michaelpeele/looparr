@@ -948,6 +948,255 @@ async function testAddChecklistTaskStubFailureAborts() {
   assertEqual(calls.savePlanContent, 0, 'stub failure writes no plan');
 }
 
+function loadAddChecklistTaskRunner(options = {}) {
+  const source = fs.readFileSync(path.join(REPO_ROOT, 'public/app.js'), 'utf8');
+  const addSource = extractFunction(source, 'async function addChecklistTask()');
+  const formatSource = extractFunction(source, 'function formatLinkedTask(title, file)');
+  const calls = { ensurePlanContent: 0, appendTask: 0, markPlanDirty: 0, savePlanContent: 0, planFileExists: 0 };
+  const apiCalls = [];
+  const appended = [];
+  const composed = [];
+  const dom = {
+    taskInput: { value: options.title || 'Task link checkbox' },
+    taskStatus: { textContent: '' },
+    taskLinkDoc: { checked: Boolean(options.checked) },
+    taskDocFile: { value: options.docFile || '' },
+    planEditor: { value: options.planContent || '# Build plan' }
+  };
+  const app = { drawerId: 'demo', savingPlan: false };
+  const factory = new Function(
+    'app',
+    'dom',
+    'cleanTaskText',
+    'resolveLinkedDocName',
+    'planFileExists',
+    'api',
+    'formatLinkedTask',
+    'ensurePlanContent',
+    'appendTask',
+    'markPlanDirty',
+    'savePlanContent',
+    `${addSource}\nreturn addChecklistTask;`
+  );
+  const addChecklistTask = factory(
+    app,
+    dom,
+    (t) => String(t || '').trim(),
+    async () => 'PLAN-task-link-checkbox.md',
+    async () => {
+      calls.planFileExists += 1;
+      return Boolean(options.exists);
+    },
+    async (url, requestOptions) => {
+      apiCalls.push({ url, method: requestOptions?.method || 'GET', body: requestOptions?.body });
+      return { ok: true };
+    },
+    new Function(`${formatSource}\nreturn formatLinkedTask;`)(),
+    async () => {
+      calls.ensurePlanContent += 1;
+      return '# Build plan';
+    },
+    (content, text) => {
+      calls.appendTask += 1;
+      appended.push(text);
+      const next = `${content}\n- [ ] ${text}`;
+      composed.push(next);
+      return next;
+    },
+    () => { calls.markPlanDirty += 1; },
+    async () => {
+      calls.savePlanContent += 1;
+      return true;
+    }
+  );
+  return { addChecklistTask, calls, apiCalls, appended, composed, dom };
+}
+
+async function testAddChecklistTaskLinkDocSuccess() {
+  const runner = loadAddChecklistTaskRunner({ checked: true, docFile: '', title: 'Task link checkbox' });
+  await runner.addChecklistTask();
+  const expected = '(plan) Task link checkbox \u2014 see [PLAN-task-link-checkbox.md](.project_documents/PLAN-task-link-checkbox.md)';
+  assertEqual(runner.appended.length, 1, 'success appends one task');
+  assertEqual(runner.appended[0], expected, 'success task text built by formatLinkedTask');
+  assertEqual(
+    runner.composed[0],
+    `# Build plan\n- [ ] ${expected}`,
+    'success plan line is the linked task'
+  );
+  assertEqual(runner.calls.planFileExists, 1, 'success checks doc existence once');
+  assertEqual(runner.calls.savePlanContent, 1, 'success saves plan exactly once');
+  assertEqual(runner.calls.markPlanDirty, 1, 'success marks plan dirty once');
+
+  const put = runner.apiCalls.find((call) => call.method === 'PUT');
+  assert.ok(put, 'success issues PUT /plan-file');
+  assertEqual(put.url, '/api/projects/demo/plan-file', 'success PUT targets plan-file endpoint');
+  assert.deepEqual(
+    JSON.parse(put.body),
+    { path: '.project_documents/PLAN-task-link-checkbox.md', content: '# Task link checkbox' },
+    'success stub body is exact'
+  );
+  assertEqual(runner.dom.taskStatus.textContent, '', 'success clears status');
+  assertEqual(runner.dom.taskInput.value, '', 'success clears task input');
+}
+
+async function testAddChecklistTaskUnchecked() {
+  const runner = loadAddChecklistTaskRunner({ checked: false, docFile: '', title: 'Task link checkbox' });
+  await runner.addChecklistTask();
+  assertEqual(runner.apiCalls.length, 0, 'unchecked makes no api calls');
+  assertEqual(runner.calls.planFileExists, 0, 'unchecked skips existence check');
+  assertEqual(runner.appended.length, 1, 'unchecked appends one task');
+  assertEqual(runner.appended[0], 'Task link checkbox', 'unchecked task text is plain');
+  assertEqual(
+    runner.composed[0],
+    '# Build plan\n- [ ] Task link checkbox',
+    'unchecked plan line is byte-identical to legacy behavior'
+  );
+  assertEqual(runner.calls.savePlanContent, 1, 'unchecked saves plan exactly once');
+  assertEqual(runner.calls.markPlanDirty, 1, 'unchecked marks plan dirty once');
+}
+
+function makeLinkifyDocument() {
+  function createTextNode(value) {
+    return { nodeType: 3, nodeValue: String(value), parentNode: null, childNodes: [] };
+  }
+  function createElement(tag) {
+    return {
+      nodeType: 1,
+      tagName: tag,
+      className: '',
+      dataset: {},
+      title: '',
+      textContent: '',
+      parentNode: null,
+      childNodes: [],
+      setAttribute(name, value) { this[name] = value; },
+      appendChild(node) {
+        node.parentNode = this;
+        this.childNodes.push(node);
+        return node;
+      },
+      replaceChild(newNode, oldNode) {
+        const index = this.childNodes.indexOf(oldNode);
+        if (index >= 0) this.childNodes.splice(index, 1, ...newNode.childNodes);
+        newNode.childNodes.forEach((node) => { node.parentNode = this; });
+        oldNode.parentNode = null;
+        return oldNode;
+      }
+    };
+  }
+  function createDocumentFragment() {
+    const node = createElement('#fragment');
+    node.nodeType = 11;
+    return node;
+  }
+  function createTreeWalker(root) {
+    const nodes = [];
+    (function collect(node) {
+      if (node.nodeType === 3) nodes.push(node);
+      (node.childNodes || []).forEach(collect);
+    })(root);
+    let index = -1;
+    return {
+      get currentNode() { return nodes[index]; },
+      nextNode() {
+        index += 1;
+        return index < nodes.length ? nodes[index] : null;
+      }
+    };
+  }
+  return { createTextNode, createElement, createDocumentFragment, createTreeWalker };
+}
+
+function loadLinkPlanReferences() {
+  const source = fs.readFileSync(path.join(REPO_ROOT, 'public/app.js'), 'utf8');
+  const prefixes = source.match(/^\s*const PLAN_FILE_PREFIXES = '([^']+)';$/m);
+  assert.ok(prefixes, 'Missing PLAN_FILE_PREFIXES');
+  const normalize = extractFunction(source, 'function normalizePlanFilePath(target)');
+  const baseName = extractFunction(source, 'function planFileBaseName(relativePath)');
+  const button = extractFunction(source, 'function createPlanFileButton(label, projectId, relativePath)');
+  const linkify = extractFunction(source, 'function linkPlanReferences(element, projectId)');
+  const NodeFilter = { SHOW_TEXT: 4, FILTER_ACCEPT: 1, FILTER_REJECT: 2 };
+  const document = makeLinkifyDocument();
+  const factory = new Function('document', 'NodeFilter', [
+    prefixes[0],
+    normalize,
+    baseName,
+    button,
+    linkify,
+    'return { linkPlanReferences };'
+  ].join('\n'));
+  return { linkPlanReferences: factory(document, NodeFilter).linkPlanReferences, document };
+}
+
+function testLinkPlanReferences() {
+  const { linkPlanReferences, document } = loadLinkPlanReferences();
+
+  const root = document.createElement('div');
+  root.appendChild(document.createTextNode('See HANDOFF-review.md for details'));
+  linkPlanReferences(root, 'demo');
+  const buttons = root.childNodes.filter((node) => node.nodeType === 1);
+  assertEqual(buttons.length, 1, 'linkify creates one button for widened prefix');
+  assert.ok(buttons[0].className.includes('plan-file-ref'), 'linkify button uses plan-file-ref class');
+  assertEqual(buttons[0].dataset.planFile, 'HANDOFF-review.md', 'linkify button targets widened prefix file');
+  assertEqual(buttons[0].textContent, 'HANDOFF-review.md', 'linkify button label is the file name');
+  assert.ok(
+    root.childNodes.some((node) => node.nodeType === 3 && node.nodeValue.includes('See ')),
+    'linkify keeps leading text'
+  );
+  assert.ok(
+    root.childNodes.some((node) => node.nodeType === 3 && node.nodeValue.includes(' for details')),
+    'linkify keeps trailing text'
+  );
+
+  const markdownRoot = document.createElement('div');
+  markdownRoot.appendChild(document.createTextNode('Read [PROGRESS-notes.md](.project_documents/PROGRESS-notes.md) now'));
+  linkPlanReferences(markdownRoot, 'demo');
+  const markdownButtons = markdownRoot.childNodes.filter((node) => node.nodeType === 1);
+  assertEqual(markdownButtons.length, 1, 'linkify handles markdown link form');
+  assertEqual(markdownButtons[0].dataset.planFile, '.project_documents/PROGRESS-notes.md', 'markdown link keeps relative path');
+
+  const plainRoot = document.createElement('div');
+  plainRoot.appendChild(document.createTextNode('Plain task with no references'));
+  linkPlanReferences(plainRoot, 'demo');
+  assertEqual(plainRoot.childNodes.length, 1, 'linkless row keeps single text node');
+  assertEqual(plainRoot.childNodes[0].nodeType, 3, 'linkless row stays plain text');
+}
+
+async function testPlanFileApiGate(projectId) {
+  const docsDir = path.join(DEMO_DIR, '.project_documents');
+  fs.mkdirSync(docsDir, { recursive: true });
+  const progressPath = '.project_documents/PROGRESS-edge-cases.md';
+  const putOk = await api(
+    'PUT',
+    `/api/projects/${encodeURIComponent(projectId)}/plan-file?path=${encodeURIComponent(progressPath)}`,
+    { content: '# Edge cases' }
+  );
+  assertEqual(putOk.status, 200, 'PROGRESS plan-file PUT accepted');
+
+  const getOk = await api(
+    'GET',
+    `/api/projects/${encodeURIComponent(projectId)}/plan-file?path=${encodeURIComponent(progressPath)}`
+  );
+  assertEqual(getOk.status, 200, 'PROGRESS plan-file GET status');
+  assertEqual(getOk.body.content, '# Edge cases', 'PROGRESS plan-file GET returns written content');
+  assert.ok(
+    fs.existsSync(path.join(docsDir, 'PROGRESS-edge-cases.md')),
+    'PROGRESS plan-file exists on disk'
+  );
+
+  const notePath = '.project_documents/NOTE-edge-cases.md';
+  const putBad = await api(
+    'PUT',
+    `/api/projects/${encodeURIComponent(projectId)}/plan-file?path=${encodeURIComponent(notePath)}`,
+    { content: '# Nope' }
+  );
+  assertEqual(putBad.status, 400, 'non-plan prefix rejected with 400');
+  assert.ok(
+    !fs.existsSync(path.join(docsDir, 'NOTE-edge-cases.md')),
+    'rejected plan-file writes nothing'
+  );
+}
+
 function testTaskLinkDocStateFunctions() {
   const helpers = loadTaskLinkDocStateFunctions();
   assertEqual(helpers.loadTaskLinkDocState(), false, 'task link doc defaults unchecked with empty storage');
@@ -1105,6 +1354,9 @@ async function main() {
     await testShowCompletedPureFunctions();
     await testUiStatePureFunctions();
     await testAddChecklistTaskStubFailureAborts();
+    await testAddChecklistTaskLinkDocSuccess();
+    await testAddChecklistTaskUnchecked();
+    testLinkPlanReferences();
     testTaskLinkDocStateFunctions();
 
     const created = await api('POST', '/api/projects', {
@@ -1114,6 +1366,8 @@ async function main() {
     });
     assertEqual(created.status, 201, 'project create status');
     const projectId = created.body.project.id;
+
+    await testPlanFileApiGate(projectId);
 
     const route = `/api/projects/${encodeURIComponent(projectId)}/plan`;
     const initial = await api('GET', route);
@@ -1233,6 +1487,7 @@ function removePlanTaskContentForTest(content, taskIndex) {
 
 function finish(code) {
   if (server && !server.killed) server.kill('SIGTERM');
+  fs.rmSync(path.join(DEMO_DIR, '.project_documents'), { recursive: true, force: true });
   fs.rmSync(TEMP_DIR, { recursive: true, force: true });
   process.exit(code);
 }
