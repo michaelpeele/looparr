@@ -782,6 +782,15 @@ Live Vibe task through production:
 - `src/runners/opencode.js` keeps `isRateLimit` unchanged. `tryNextCandidate` advances one candidate through failure classification. No cooling recorded for this signature.
 - Moved `omniroute/coding-safe` after concrete `opencode/*` models in `src/runners/opencode.js` and in the `public/app.js` first-paint mirror. OmniRoute combo doc comment kept intact.
 - Tests: `scripts/test-failure-classification.js` gained the exact pre-dispatch advance case, a terminal billing stop case, and a success-output stop case. `scripts/test-model-rotation.js` gained a fake-executor case asserting `[PRE_MODEL, PRE_OK]` one-step advance, the `Model failure on` log, no cooling log, and no `cooldowns[PRE_MODEL]`. Full `npm test` passes; `node --check` on all touched JS and `git diff --check` pass. No `plan.md` marker changed.
+
+## Production deploy: OmniRoute pre-dispatch fallback (2026-11-23)
+
+- `bash scripts/promote.sh full` rebuilt `looparr:latest` (manifest `sha256:6160ff7aa55864c7b6891286e5eca298e6b3183fe6a7aa9aedd9fc61d9cd00f5`), passed sandbox smoke on port 4199, then restarted production via `npm run restart:looparr`. `logs/promotions.log` ends with `OK (full)`.
+- Friendly names intact: service/container `looparr` (ID `826b158843b2f4a08bafa90270c45b2602dd1df4a25354dd430747d280045c1d`) running healthy on `looparr:latest`; sidecar `ts-looparr` up with `4188->3000`. `npm run watchdog:check` reports steady.
+- Verification: `GET http://127.0.0.1:4188/api/state` returns projects/runners/settings. Served hashes match local: `index.html` `6b0840afd3e01dd477be28dc7c7771ba2a06587c60a32d256135a410064b9874`, `app.js` `c6c403b475f9305b5954fdf65648867a4e41d123890702bccf3e199abaf86f75`, `styles.css` `fb9ec0536057b348710366f0769a16ed122bd2f30e27ecdf5065ca5cd88c8964`. Served `app.js` shows `omniroute/coding-safe` after concrete `opencode/*` entries.
+- Container file hashes match local for `src/failure.js`, `src/runners/opencode.js`, `public/app.js`, `scripts/test-failure-classification.js`, and `scripts/test-model-rotation.js`; container `src/failure.js` contains both narrow phrases.
+- Tailscale Serve exposes `https://looparr.tail0307d.ts.net` (tailnet only), no Funnel; `http://looparr` and `http://looparr.tail0307d.ts.net` are configured. Host cannot resolve tailnet DNS, so external curl returned `000`; sidecar proxy to `127.0.0.1:3000` returned state JSON. Unrelated tracked/untracked work left untouched; no `plan.md` marker changed.
+
 ## Plan prompt-type flow (2026-11-23)
 
 - `(plan)` tasks now branch to fresh `planQuestions` and `planWrite` sessions before analysis. Question handoff uses the existing GET/PUT answer UI; planWrite writes the PLAN doc, generated checkbox tasks, and a concise analysis handoff. `plan-confirm` gates the resume into analyze.
