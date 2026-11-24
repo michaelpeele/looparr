@@ -55,6 +55,8 @@ function testModelCatalogues() {
   }
   assert.equal(runnerSupportsModel(getRunner('vibe'), 'zai-glm-5-3-flash-vibe-free'), true, 'vibe accepts its free id');
   assert.equal(runnerSupportsModel(getRunner('vibe'), 'zai-glm-5-3-flash'), true, 'vibe accepts its free alias');
+  assert.equal(runnerSupportsModel(getRunner('opencode'), 'opencode/big-pickle'), true, 'opencode accepts its default draft model');
+  assert.equal(runnerSupportsModel(getRunner('vibe'), 'opencode/big-pickle'), false, 'vibe rejects an unlisted opencode-namespaced id');
   assert.equal(runnerSupportsModel(getRunner('opencode'), 'zai-glm-5-3-flash'), false, 'opencode rejects vibe aliases');
   assert.equal(runnerSupportsModel(getRunner('opencode'), 'custom/provider-model'), true, 'unclaimed custom ids stay allowed');
   assert.equal(runnerSupportsModel(getRunner('vibe'), 'custom/provider-model'), true, 'custom ids stay allowed on vibe');
@@ -70,6 +72,26 @@ function testModelCatalogues() {
   assert.deepEqual(resolvedKilo.models, ['kilo/baidu/ernie-5.5-flash-preview:free'], 'Kilo falls back to its first free model');
   assert.equal(fallback, 'kilo/baidu/ernie-5.5-flash-preview:free', 'Kilo fallback callback receives the free model');
   assert.equal(resolvedKilo.usedFallback, true, 'Kilo fallback is reported');
+}
+
+function testVibeModelResolution() {
+  const skipped = [];
+  let fallback = '';
+  let usedFallback = null;
+  const configured = 'opencode/big-pickle,kilo/baidu/ernie-5.5-flash-preview:free,zai-glm-5-3-flash-vibe-free';
+  const resolved = resolveRunnerModels(getRunner('vibe'), configured, {
+    onSkip: (dropped) => { skipped.push(...dropped); },
+    onFallback: (id) => { fallback = id; }
+  });
+  usedFallback = resolved.usedFallback;
+  assert.deepEqual(
+    skipped,
+    ['opencode/big-pickle', 'kilo/baidu/ernie-5.5-flash-preview:free'],
+    'vibe drops foreign-namespaced ids instead of dispatching them'
+  );
+  assert.deepEqual(resolved.models, ['zai-glm-5-3-flash-vibe-free'], 'a free vibe id survives resolution');
+  assert.equal(fallback, '', 'no fallback fires while a compatible id remains');
+  assert.equal(usedFallback, false, 'fallback is not reported');
 }
 
 function testKiloArgs() {
@@ -252,6 +274,7 @@ function testRunnersReachExecutor() {
 
 testRegistry();
 testModelCatalogues();
+testVibeModelResolution();
 testKiloArgs();
 testVibeArgs();
 testKiloBridgePayload();

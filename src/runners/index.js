@@ -24,13 +24,21 @@ function listRunners() {
 
 // A model id may only reach a runner that can resolve it. Paid, router, and
 // observed-failing ids are refused. Kilo is catalogue-only. Other runners still
-// allow unclaimed custom/BYOK ids.
+// allow unclaimed custom/BYOK ids — but an id namespaced with a registered
+// runner id (`opencode/…`, `kilo/…`, `vibe/…`) belongs to that runner alone,
+// even when no catalogue lists it, so a stale or inherited id can never reach
+// a foreign CLI.
 function runnerSupportsModel(runner, modelId) {
   if (!runner || !modelId) return false;
   if (isUnsupportedModel(modelId)) return false;
   const models = Array.isArray(runner.models) ? runner.models : [];
   if (models.includes(modelId)) return true;
   if (runner.id === 'kilo') return false;
+  const slash = modelId.indexOf('/');
+  if (slash > 0) {
+    const prefix = modelId.slice(0, slash);
+    if (registry.has(prefix) && prefix !== runner.id) return false;
+  }
   for (const other of registry.values()) {
     if (other.id === runner.id) continue;
     const otherModels = Array.isArray(other.models) ? other.models : [];

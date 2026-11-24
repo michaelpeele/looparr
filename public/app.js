@@ -175,6 +175,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
   // ids at all (Vibe offers its account's free-lane aliases).
   const MODEL_OPTIONS_BY_RUNNER = {
     opencode: [
+      'opencode/big-pickle',
       'opencode/tidepool-alpha-free',
       'opencode/hy4-flash-free',
       'opencode/iceman-free',

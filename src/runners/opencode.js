@@ -19,6 +19,9 @@ const BRIDGE_CLIENT = path.join(__dirname, '..', '..', 'scripts', 'bridge-client
 // Ids OpenCode can resolve. Keep in step with the equivalent default settings
 // and `public/app.js`; the Kilo Gateway ids belong to the Kilo CLI runner.
 const MODELS = [
+  // The account's free draft model despite the missing `-free` suffix; the
+  // settings default and `src/config.js` both rely on it resolving here.
+  'opencode/big-pickle',
   'opencode/tidepool-alpha-free',
   'opencode/hy4-flash-free',
   'opencode/iceman-free',
