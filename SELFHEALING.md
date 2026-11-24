@@ -6,20 +6,22 @@ different runner/model with a prompt to investigate, fix, and validate the failu
 inside a throwaway `git worktree`. It never edits the live checkout and never
 publishes git history.
 
-It is not a production feature. Production (`NODE_ENV=production`, which Docker
-Compose sets) always disables it even when the source tree is identical.
+It is not a production feature. The containerized viewer (`NODE_ENV=production`,
+which Docker Compose sets, no `git`, no `docker`) never spawns a healer; it can
+only display what the dev engine wrote. An explicit `LOOPARR_SELFHEAL=1`
+overrides `NODE_ENV=production`, which is how a host-primary engine that runs
+with production env opts in — the container never carries that variable, so the
+compose stack stays view-only.
 
 ## Enable
 
-Both are required:
+Precedence, top to bottom:
 
-1. Turn on **Self-healing debugging mode** in Settings (`selfHealing: true` in
-   `config.json`).
-2. Provide an explicit dev signal in the process environment:
-   - `LOOPARR_SELFHEAL=1`, or
-   - a `SELFHEAL_ENABLED` file at the repository root.
-
-`LOOPARR_SELFHEAL=0` forces it off. `NODE_ENV=production` always wins.
+1. `selfHealing: true` in `config.json` (Settings).
+2. `LOOPARR_SELFHEAL=0` forces it off, overriding everything below.
+3. `LOOPARR_SELFHEAL=1` turns it on, overriding `NODE_ENV=production`.
+4. Without an env signal: `NODE_ENV=production` disables it; otherwise a
+   `SELFHEAL_ENABLED` file at the repository root turns it on.
 
 ## Flow
 
@@ -48,8 +50,9 @@ Both are required:
    git-branch button appears only in `healed`.
 
 The header pill only appears when the mode is actually available (setting on,
-dev signal present, not production). Idle is a dim pixel; engaged states light
-the pixel cyan (`debugging`), amber (`healing`), red (`error`), or the Looparr
+explicit signal, or dev with the marker file). Idle is a dim pixel; engaged
+states light the pixel cyan (`debugging`), amber (`healing`), red (`error`), or
+the Looparr
 gradient with a green dot (`healed`).
 
 ## Host healer, prod viewer
@@ -126,7 +129,9 @@ Rollback is "drop the branch and restore the snapshot": delete the
   labels that context as data; the healer still runs with the agent's normal
   permissions, so review the diff before merging.
 - **Prod detection cannot be source-based** because prod runs the same tree:
-  hence the explicit dev signal and `NODE_ENV=production` hard stop.
+  hence the explicit signal with the documented precedence above. The compose
+  prod stack never sets `LOOPARR_SELFHEAL=1`; do not add it there — that side
+  has no `git`, and merging must stay on the host checkout.
 - **Cost**: one process, one model, timeout and cooldown; no recursion.
 - **Preview build** uses the project's Dockerfile and its own compose project, so
   it never replaces the live container.

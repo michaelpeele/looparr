@@ -926,19 +926,38 @@ async function runHandoffRecoverySweep(options = {}) {
   return recovered;
 }
 
-// Prod runs this same source tree, so a source file is never the gate. The
-// setting must be on AND an explicit dev signal present, and production always
-// wins.
+// The setting must be on, and an explicit signal decides the rest. An explicit
+// `LOOPARR_SELFHEAL=1` wins over everything: a host-primary engine may run with
+// `NODE_ENV=production` and still own the checkout, so the signal — not the
+// NODE_ENV value — is what turns spawning on. `LOOPARR_SELFHEAL=0` still forces
+// off. Without a signal, production containers (which Docker Compose sets, and
+// which have no git/docker) stay view-only and plain dev falls back to the
+// marker file.
 function selfHealingEnabled() {
   if (config.settings.selfHealing !== true) return false;
-  if (process.env.NODE_ENV === 'production') return false;
   if (process.env.LOOPARR_SELFHEAL === '0') return false;
   if (process.env.LOOPARR_SELFHEAL === '1') return true;
+  if (process.env.NODE_ENV === 'production') return false;
   try {
     return fs.existsSync(path.join(path.resolve(__dirname, '..'), SELFHEAL_MARKER));
   } catch {
     return false;
   }
+}
+
+// Why the gate refused a round while the setting is on; '' when enabled or when
+// the setting itself is off. Surfaces the refusal in the project log instead of
+// failing silently.
+function selfHealDisabledReason() {
+  if (process.env.LOOPARR_SELFHEAL === '0') return 'LOOPARR_SELFHEAL=0';
+  if (process.env.LOOPARR_SELFHEAL === '1') return '';
+  if (process.env.NODE_ENV === 'production') {
+    return 'NODE_ENV=production without LOOPARR_SELFHEAL=1';
+  }
+  try {
+    if (fs.existsSync(path.join(path.resolve(__dirname, '..'), SELFHEAL_MARKER))) return '';
+  } catch { /* treated as no signal */ }
+  return `no dev signal (LOOPARR_SELFHEAL=1 or a ${SELFHEAL_MARKER} file)`;
 }
 
 // Repository root that owns .looparr. In dev this is the checkout; in prod the
@@ -1114,7 +1133,17 @@ function healerAuditPhase(failedPhase) {
 
 // Triggered only from an error transition. Returns true when one round started.
 function maybeStartHealer(project, rt, failedPhase) {
-  if (!selfHealingEnabled()) return false;
+  if (!selfHealingEnabled()) {
+    const reason = selfHealDisabledReason();
+    if (config.settings.selfHealing === true && reason) {
+      appendLog(
+        project.id,
+        'system',
+        `… Self-heal is enabled but unavailable in this process (${reason}); no round started.`
+      );
+    }
+    return false;
+  }
   if (!rt || rt.status !== 'error' || rt.healer) return false;
   if (failedPhase === HEALER_PHASE) return false; // never recurse on a healer error
   if (rt.healerLastExitAt && Date.now() - rt.healerLastExitAt < HEALER_COOLDOWN_MS) return false;

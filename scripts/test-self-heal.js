@@ -58,8 +58,23 @@ function testEngine() {
   const engine = read('src/engine.js');
   assertIncludes(engine, 'function selfHealingEnabled()', 'engine dev gate helper');
   assertIncludes(engine, "process.env.NODE_ENV === 'production'", 'prod hard stop');
-  assertIncludes(engine, "process.env.LOOPARR_SELFHEAL === '1'", 'explicit dev signal');
-  assertIncludes(engine, "'SELFHEAL_ENABLED'", 'dev marker file');
+  const killSwitchAt = engine.indexOf("process.env.LOOPARR_SELFHEAL === '0'");
+  const overrideAt = engine.indexOf("process.env.LOOPARR_SELFHEAL === '1'");
+  const prodStopAt = engine.indexOf("process.env.NODE_ENV === 'production'");
+  assert.ok(killSwitchAt !== -1, 'explicit LOOPARR_SELFHEAL=0 kill switch present');
+  assert.ok(overrideAt !== -1, 'explicit LOOPARR_SELFHEAL=1 signal present');
+  assert.ok(killSwitchAt < overrideAt && overrideAt < prodStopAt,
+    'gate precedence: kill switch, then override, then the production block');
+  assertIncludes(engine, "SELFHEAL_MARKER = 'SELFHEAL_ENABLED'", 'dev marker file constant');
+  assertIncludes(engine, "'NODE_ENV=production without LOOPARR_SELFHEAL=1'",
+    'disabled reason names the production stop');
+  assertIncludes(engine, "no dev signal (LOOPARR_SELFHEAL=1 or a ${SELFHEAL_MARKER} file)",
+    'disabled reason names the missing dev signal');
+  assertIncludes(engine, 'function selfHealDisabledReason', 'disabled-reason helper');
+  assertIncludes(engine, 'Self-heal is enabled but unavailable in this process',
+    'guard logs why no round started');
+  assertIncludes(engine, "config.settings.selfHealing === true && reason",
+    'guard log only fires while the setting is on');
   assertIncludes(engine, 'HEALER_MAX_ROUNDS = 1', 'one-round cap constant');
   assertIncludes(engine, "failedPhase === HEALER_PHASE", 'healer never recurses');
   assertIncludes(engine, 'rt.healerLastExitAt && Date.now() - rt.healerLastExitAt < HEALER_COOLDOWN_MS', 'cooldown gate');

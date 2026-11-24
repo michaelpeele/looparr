@@ -13,6 +13,7 @@ const CONFIG_PATH = path.join(TEMP_DIR, 'config.json');
 const PROD_CONFIG_PATH = path.join(TEMP_DIR, 'prod-config.json');
 const BASE_URL = 'http://127.0.0.1:4203';
 const PROD_URL = 'http://127.0.0.1:4204';
+const PROD_OVERRIDE_URL = 'http://127.0.0.1:4205';
 
 process.env.CONFIG_PATH = CONFIG_PATH;
 process.env.LOOPARR_PROJECTS_ROOT = PROJECTS_ROOT;
@@ -86,7 +87,10 @@ async function main() {
   fs.writeFileSync(PROD_CONFIG_PATH, JSON.stringify({ settings: { selfHealing: true }, projects: [] }, null, 2));
 
   const dev = startServer(4203, CONFIG_PATH, { NODE_ENV: 'development', LOOPARR_SELFHEAL: '1' });
-  const prod = startServer(4204, PROD_CONFIG_PATH, { NODE_ENV: 'production', LOOPARR_SELFHEAL: '1' });
+  // Compose prod: production env with no signal — view-only.
+  const prod = startServer(4204, PROD_CONFIG_PATH, { NODE_ENV: 'production' });
+  // Host primary: production env with the explicit override — spawns healers.
+  const prodOverride = startServer(4205, PROD_CONFIG_PATH, { NODE_ENV: 'production', LOOPARR_SELFHEAL: '1' });
 
   try {
     await waitForServer(BASE_URL);
@@ -129,11 +133,20 @@ async function main() {
       'prod fixture has no projects, so no per-project selfHealer is synthesized'
     );
 
+    await waitForServer(PROD_OVERRIDE_URL);
+    const prodOverrideState = await getState(PROD_OVERRIDE_URL);
+    assertEqual(prodOverrideState.settings.selfHealing, true, 'override server keeps the setting');
+    assertEqual(
+      prodOverrideState.selfHealingAvailable,
+      true,
+      'LOOPARR_SELFHEAL=1 overrides NODE_ENV=production'
+    );
+
     console.log('selfheal toggle smoke tests passed');
   } catch (error) {
-    throw new Error(`${error.message}\nDev server output:\n${dev.output()}\nProd server output:\n${prod.output()}`);
+    throw new Error(`${error.message}\nDev server output:\n${dev.output()}\nProd server output:\n${prod.output()}\nProd-override server output:\n${prodOverride.output()}`);
   } finally {
-    await Promise.all([stopServer(dev), stopServer(prod)]);
+    await Promise.all([stopServer(dev), stopServer(prod), stopServer(prodOverride)]);
     fs.rmSync(TEMP_DIR, { recursive: true, force: true });
   }
 }
