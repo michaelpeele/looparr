@@ -159,6 +159,8 @@ The archive is manual. Looparr does not create or rotate these files automatical
 - **Rotation skips**: when runner or model rotation skips a candidate that is still cooling down, the project log names it and the remaining wait, for example `Skipping Kilo CLI: models cooling (kilo/kilo-auto/free) for another 271s.` and `Skipping OpenCode model omniroute/coding-safe: cooling for another 120s.` The runner picker uses the same cooldowns, so a cooling runner is passed over in favour of the next ready runner.
 - **Cooloff**: `0` seconds by default (no pause). Global setting; per-project override, blank/null inherits the global. Applies between tasks — after an implement completes, before the next task seeds. Explicit Start skips the wait. Range 0..3600 seconds.
 - **Sticky add task row**: off by default. When enabled, the Add task input and button stay visible while scrolling the plan checklist in a project drawer.
+- **Handoff recovery**: off by default. When enabled, a project stopped by an error re-checks every 15 seconds for a valid `.looparr/next_prompt.txt` and resumes its `analyze` or `implement` phase automatically once the handoff exists and matches the errored task. See [Handoff recovery sweep](#handoff-recovery-sweep).
+- **Self-healing debugging mode**: off by default and development-only. With `LOOPARR_SELFHEAL=1` (or a `SELFHEAL_ENABLED` marker) in a dev checkout, one worktree-isolated healer round investigates an error, validates the branched preview through two live cycles, and stops. The header pill shows `Debugging` → `Healing` → `Healed`/`Error`; the git-branch merge button appears only when healed and merges locally without publishing. See [SELFHEALING.md](SELFHEALING.md).
 - **Prompt templates**: edit the Seed, Analyze, and Implement prompts. `{{task}}` is required; `{{handoff}}` is also required for Analyze and Implement. The Implement default includes the git commit directive and replaces the saved previous default once on load.
 - **Block threshold**: `2` by default. Allowed range is `1` to `20`. It records how many repeated constraint blocks happen before asking the user.
 - **Temporary lift scope**: blank by default. Enter comma- or newline-separated file or path fragments temporarily lifted for the current session.
@@ -189,6 +191,16 @@ Auto-resume restores an active project after the Looparr container restarts. In-
 - On startup, Looparr consumes the intent once, restores the saved phase and session ID when valid, reads the first unchecked task from `plan.md`, and writes a visible `↻ Auto-resume after restart (phase ...).` line to the project log. Analyze and Implement fall back to Seed when `.looparr/next_prompt.txt` is missing or empty. A completed plan, stale intent older than 24 hours, invalid schema, opt-out, or **Stop** prevents resume.
 - Pending intents are written only when `HOSTNAME=looparr` or when tests set `LOOPARR_ALLOW_RESUME_INTENT=1`. Local `npm start` and `npm run dev` sessions do not stage intents. Docker Compose sets `HOSTNAME=looparr` for the `looparr` service.
 - The audit log is append-only JSON lines, capped at 64 KiB with one `.log.1` rotation. It contains only timestamps, event names, project identity, safe phase/task snapshots, reason, PID, and hostname. No endpoint exposes the audit log.
+
+### Handoff recovery sweep
+
+`handoffRecovery` is a global setting, off by default, shown in Settings as **Resume errored projects when a valid handoff appears**.
+
+- A project in `error` re-checks every 15 seconds instead of waiting indefinitely for a manual Start.
+- Recovery requires phase `analyze` or `implement`, a non-empty handoff that is not a meta-instruction prompt, and a `.looparr/handoff_task.txt` provenance stamp equal to the errored task (or the plan's next task when no task is recorded). A handoff stamped for a different task is cleared so it can never run.
+- On success the project is flipped back to active with its phase preserved; the normal tick still enforces **Max Concurrent Workers**. The project log shows `↻ Handoff present; resuming <phase>` and the audit log gains `handoff-recovered`.
+- If an OpenCode run for that project is already active (the session was resumed by hand), the sweep writes `handoff-recovery-session-active` and leaves the project alone. Projects that left `error`, have a live child, or wait for a plan answer/confirmation are never touched.
+- While waiting, at most one `handoff-recovery-waiting` audit entry is written per project per interval. Recovery never calls Start, so manual reseed behavior is unchanged.
 
 ## Add another runner
 
