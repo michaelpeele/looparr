@@ -175,6 +175,12 @@ Stale production assets have shipped three times. For every batch that changes s
 - [ ] Investigate desktop layout, div not going wide on project card, awkward placement of sidebar and detail just goes to the right side instead of overlay like mobile.
 - [ ] Add Triangle to main screen project card. Look at legibility for up next in div, vertical on home page but correct on detail page.
 
+## Durable resume and self-healing batch
+
+- [ ] (plan) Durable resume snapshot — see [PLAN-durable-resume-snapshot.md](.project_documents/PLAN-durable-resume-snapshot.md). Current task: persist a serializable runtime snapshot (phase, status, task, step bookkeeping, rotation cursor, session ids) so a crash or purposeful restart resumes the same resumable state instead of dropping to seed; capture error/idle states; restore with the existing provenance/TTL gates.
+- [ ] (plan) Handoff recovery sweep — see [PLAN-handoff-recovery-sweep.md](.project_documents/PLAN-handoff-recovery-sweep.md). Next task: periodic recheck that un-sticks an errored project to analyze/implement once a valid, provenance-matched handoff appears; opt-in `handoffRecovery` setting, throttled audit, never overrides waiting plan states.
+- [ ] (plan) Self-healing debugging mode — see [PLAN-self-healing.md](.project_documents/PLAN-self-healing.md). Dev-only, opt-in, one-round worktree-isolated healer with a Debugging/Healing/Error/Healed header pill and a human-gated GitHub button; git stays local (no push to origin) and the PR is human-driven for now.
+
 ## Desktop layout and drawer batch
 
 - [ ] (plan) Promotion concurrency lock — see [PLAN-promotion-lock.md](.project_documents/PLAN-promotion-lock.md)
