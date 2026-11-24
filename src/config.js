@@ -329,6 +329,7 @@ const DEFAULT_SETTINGS = {
   permanentLift: '',
   promptCliToolsNote: false,
   stickyAddTaskRow: false,
+  handoffRecovery: false,
   seedPromptTemplate: DEFAULT_SEED_PROMPT_TEMPLATE,
   analyzePromptTemplate: DEFAULT_ANALYZE_PROMPT_TEMPLATE,
   implementPromptTemplate: DEFAULT_IMPLEMENT_PROMPT_TEMPLATE,
@@ -447,6 +448,7 @@ function normalizeSettings(settings) {
   }
   normalized.promptCliToolsNote = normalized.promptCliToolsNote === true;
   normalized.stickyAddTaskRow = normalized.stickyAddTaskRow === true;
+  normalized.handoffRecovery = normalized.handoffRecovery === true;
   normalized.runnerRotation = normalized.runnerRotation === true;
   normalized.globalRunner = normalizedRunner(normalized.globalRunner, DEFAULT_SETTINGS.globalRunner);
   for (const field of MODEL_ROTATION_FIELDS) {

@@ -21,6 +21,8 @@ const runtime = new Map();
 const watchers = new Map();
 const LOG_LIMIT = 400;
 const CHECKPOINT_INTERVAL_MS = 30_000;
+// Opt-in sweep that re-checks errored projects for a late handoff.
+const HANDOFF_RECOVERY_INTERVAL_MS = 15_000;
 // Plan prompt-type waiting states: the loop is parked until a human acts
 // (answer PUT advances planQuestions→planWrite; plan-confirm advances to analyze).
 const WAITING_STATUSES = new Set(['waitingAnswer', 'waitingConfirm']);
@@ -30,6 +32,7 @@ let logSeq = 0;
 let tickTimer = null;
 let roundRobinCursor = 0;
 let lastCheckpointAt = 0;
+let lastHandoffRecoveryAt = 0;
 
 function newId() {
   return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -771,6 +774,107 @@ function shouldReseedOnStart(rt, hasHandoffFile) {
     (rt.nextPhase === 'analyze' || rt.nextPhase === 'implement') &&
     !hasHandoffFile
   );
+}
+
+function readHandoffText(project) {
+  try {
+    return fs.readFileSync(answerPath(project), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+// Sweep predicate: only an errored, idle project in a resumable phase may be
+// un-stuck, and only by a non-meta handoff stamped for the task it errored on.
+// Presence alone is not enough: a handoff written for another task must never
+// advance this one.
+function handoffReadyForResume(project, rt) {
+  if (!rt || rt.status !== 'error') return false;
+  if (rt.active || rt.child || rt.starting) return false;
+  if (rt.nextPhase !== 'analyze' && rt.nextPhase !== 'implement') return false;
+  const handoff = readHandoffText(project);
+  if (!handoff) return false;
+  if (isMetaPromptHandoff(handoff).poisoned) return false;
+  const plan = planLib.readPlan(project.path);
+  const task = rt.currentTask || (plan.ok && plan.next ? plan.next.text : '');
+  if (!task) return false;
+  return readHandoffTask(project) === task;
+}
+
+// Flip an errored project back into the loop without calling start(), so the
+// normal tick still enforces maxWorkers. Returns true when it acted.
+function applyHandoffRecovery(project, rt) {
+  if (!handoffReadyForResume(project, rt)) {
+    // A handoff stamped for a different task can never be used by this project;
+    // clear it so the errored state does not keep a wrong-task prompt around.
+    const stamped = readHandoffTask(project);
+    if (
+      rt
+      && rt.status === 'error'
+      && (rt.nextPhase === 'analyze' || rt.nextPhase === 'implement')
+      && rt.currentTask
+      && stamped
+      && stamped !== rt.currentTask
+    ) {
+      clearHandoff(project);
+    }
+    return false;
+  }
+  const phase = rt.nextPhase;
+  const task = rt.currentTask || readHandoffTask(project);
+  rt.error = '';
+  rt.status = 'idle';
+  rt.active = true;
+  autoResume.appendAudit(project, 'handoff-recovered', { phase, task });
+  appendLog(project.id, 'system', `↻ Handoff present; resuming ${phase}`);
+  emitState();
+  scheduleTick();
+  return true;
+}
+
+// A run already active for this project means the user resumed the session
+// outside Looparr; the sweep must never fight a continuing session.
+function activeOpenCodeRunsFor(project) {
+  const runner = getRunner('opencode');
+  if (!runner || typeof runner.listActiveRuns !== 'function') return Promise.resolve([]);
+  try {
+    return Promise.resolve(runner.listActiveRuns({ projectId: project.id, cwd: project.path }))
+      .then((runs) => (Array.isArray(runs) ? runs : []))
+      .catch(() => []);
+  } catch {
+    return Promise.resolve([]);
+  }
+}
+
+async function runHandoffRecoverySweep(options = {}) {
+  if (options.force !== true && config.settings.handoffRecovery !== true) return [];
+  const projects = Array.isArray(options.projects) ? options.projects : config.projects;
+  const runtimeFor = typeof options.runtimeFor === 'function' ? options.runtimeFor : ensureRuntime;
+  const listRuns = typeof options.listActiveRuns === 'function' ? options.listActiveRuns : activeOpenCodeRunsFor;
+  const recovered = [];
+  for (const project of projects) {
+    const rt = runtimeFor(project);
+    if (!rt || rt.status !== 'error') continue;
+    if (rt.active || rt.child || rt.starting) continue;
+    if (rt.nextPhase !== 'analyze' && rt.nextPhase !== 'implement') continue;
+    // One throttled audit per project per interval keeps the wait observable
+    // without log spam.
+    const auditOnce = (event) => {
+      const at = Date.now();
+      if (rt.lastRecoveryAuditAt && at - rt.lastRecoveryAuditAt < HANDOFF_RECOVERY_INTERVAL_MS) return;
+      rt.lastRecoveryAuditAt = at;
+      autoResume.appendAudit(project, event, { phase: rt.nextPhase, task: rt.currentTask || '' });
+    };
+    let runs = [];
+    try { runs = await listRuns(project); } catch { runs = []; }
+    if (Array.isArray(runs) && runs.length) {
+      auditOnce('handoff-recovery-session-active');
+      continue;
+    }
+    if (applyHandoffRecovery(project, rt)) recovered.push(project.id);
+    else auditOnce('handoff-recovery-waiting');
+  }
+  return recovered;
 }
 
 function getAnswer(id) {
@@ -1575,6 +1679,12 @@ function tick() {
     lastCheckpointAt = now;
     for (const project of config.projects) writeCheckpointIntent(project, ensureRuntime(project));
   }
+  if (now - lastHandoffRecoveryAt >= HANDOFF_RECOVERY_INTERVAL_MS) {
+    lastHandoffRecoveryAt = now;
+    // Async: the active-session probe hits the host executor. Errors stay local
+    // to this sweep and never break the tick.
+    runHandoffRecoverySweep().catch(() => {});
+  }
   if (running >= limit) return;
   const eligible = eligibleProjects();
   if (!eligible.length) return;
@@ -2001,6 +2111,10 @@ module.exports = {
   WAITING_STATUSES,
   hasHandoff,
   shouldReseedOnStart,
+  handoffReadyForResume,
+  applyHandoffRecovery,
+  runHandoffRecoverySweep,
+  HANDOFF_RECOVERY_INTERVAL_MS,
   start,
   pause,
   stop,

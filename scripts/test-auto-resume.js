@@ -513,6 +513,164 @@ function testSnapshotFields(engine) {
   }
 }
 
+async function testHandoffRecovery(engine) {
+  const root = path.join(TEMP_DIR, 'handoff-recovery');
+  const makeRecoveryProject = (id, task) => {
+    const projectPath = path.join(root, id);
+    fs.mkdirSync(path.join(projectPath, '.looparr'), { recursive: true });
+    planLib.writePlan(projectPath, `# Plan\n\n- [ ] ${task}\n`);
+    return { id, name: id, path: projectPath };
+  };
+  const handoffPath = (project) => path.join(project.path, '.looparr', 'next_prompt.txt');
+  const provenancePath = (project) => path.join(project.path, '.looparr', 'handoff_task.txt');
+  const writeHandoff = (project, text, stampedTask) => {
+    fs.writeFileSync(handoffPath(project), text, 'utf8');
+    if (stampedTask === null) {
+      try { fs.unlinkSync(provenancePath(project)); } catch { /* absent */ }
+    } else {
+      fs.writeFileSync(provenancePath(project), `${stampedTask}\n2026-11-24\n`, 'utf8');
+    }
+  };
+  const baseRt = (overrides = {}) => ({
+    status: 'error',
+    active: false,
+    paused: false,
+    child: null,
+    starting: false,
+    nextPhase: 'implement',
+    currentTask: 'Task alpha',
+    error: 'implement step exited with code 1',
+    ...overrides
+  });
+  const auditEvents = (project) => {
+    const file = autoResume.logPath(project);
+    if (!fs.existsSync(file)) return [];
+    return fs.readFileSync(file, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line).event);
+  };
+
+  // error + valid, provenance-matched handoff -> recovers without start().
+  const recoverProject = makeRecoveryProject('recover', 'Task alpha');
+  writeHandoff(recoverProject, 'Implement task alpha now.', 'Task alpha');
+  const recoverRt = baseRt();
+  assertEqual(engine.handoffReadyForResume(recoverProject, recoverRt), true, 'valid handoff is ready');
+  const recovered = await engine.runHandoffRecoverySweep({
+    force: true,
+    projects: [recoverProject],
+    runtimeFor: () => recoverRt,
+    listActiveRuns: async () => []
+  });
+  assert.deepEqual(recovered, ['recover'], 'sweep reports the recovered project');
+  assertEqual(recoverRt.status, 'idle', 'recovered status idle');
+  assertEqual(recoverRt.active, true, 'recovered project active');
+  assertEqual(recoverRt.error, '', 'recovered error cleared');
+  assertEqual(recoverRt.nextPhase, 'implement', 'recovered phase preserved');
+  assert.equal(fs.existsSync(handoffPath(recoverProject)), true, 'recovered handoff kept');
+  assert.ok(auditEvents(recoverProject).includes('handoff-recovered'), 'handoff-recovered audit');
+
+  // Meta-prompt handoff -> stays error, handoff untouched.
+  const metaProject = makeRecoveryProject('meta', 'Task beta');
+  writeHandoff(metaProject, 'Do not implement code yet; write only prompt.', 'Task beta');
+  const metaRt = baseRt({ currentTask: 'Task beta' });
+  assertEqual(engine.handoffReadyForResume(metaProject, metaRt), false, 'meta handoff not ready');
+  assertEqual(engine.applyHandoffRecovery(metaProject, metaRt), false, 'meta handoff does not recover');
+  assertEqual(metaRt.status, 'error', 'meta handoff stays error');
+  assert.equal(fs.existsSync(handoffPath(metaProject)), true, 'meta handoff kept');
+  assert.ok(!auditEvents(metaProject).includes('handoff-recovered'), 'meta handoff recovers nothing');
+
+  // Provenance mismatch -> stays error and the wrong-task handoff is cleared.
+  const mismatchProject = makeRecoveryProject('mismatch', 'Task gamma');
+  writeHandoff(mismatchProject, 'Implement the old task instead.', 'Old task');
+  const mismatchRt = baseRt({ currentTask: 'Task gamma' });
+  assertEqual(engine.handoffReadyForResume(mismatchProject, mismatchRt), false, 'mismatch not ready');
+  assertEqual(engine.applyHandoffRecovery(mismatchProject, mismatchRt), false, 'mismatch does not recover');
+  assertEqual(mismatchRt.status, 'error', 'mismatch stays error');
+  assert.equal(fs.existsSync(handoffPath(mismatchProject)), false, 'mismatched handoff cleared');
+  assert.equal(fs.existsSync(provenancePath(mismatchProject)), false, 'mismatched provenance cleared');
+
+  // No provenance stamp (human-written handoff) is a wait, not a delete.
+  const unstampedProject = makeRecoveryProject('unstamped', 'Task delta');
+  writeHandoff(unstampedProject, 'Implement task delta now.', null);
+  const unstampedRt = baseRt({ currentTask: 'Task delta' });
+  assertEqual(engine.handoffReadyForResume(unstampedProject, unstampedRt), false, 'unstamped handoff not ready');
+  assertEqual(engine.applyHandoffRecovery(unstampedProject, unstampedRt), false, 'unstamped does not recover');
+  assert.equal(fs.existsSync(handoffPath(unstampedProject)), true, 'human handoff is not deleted');
+
+  // A live project is never double-started and waiting states are untouched.
+  const busyProject = makeRecoveryProject('busy', 'Task epsilon');
+  writeHandoff(busyProject, 'Implement task epsilon now.', 'Task epsilon');
+  const busyRt = baseRt({ currentTask: 'Task epsilon', active: true });
+  assertEqual(engine.handoffReadyForResume(busyProject, busyRt), false, 'active project not ready');
+  assertEqual(engine.applyHandoffRecovery(busyProject, busyRt), false, 'active project not recovered');
+  assertEqual(busyRt.active, true, 'active project stays active');
+  const waitingRt = baseRt({ currentTask: 'Task epsilon', status: 'waitingConfirm', nextPhase: 'analyze' });
+  assertEqual(engine.handoffReadyForResume(busyProject, waitingRt), false, 'waiting state not ready');
+  assertEqual(engine.applyHandoffRecovery(busyProject, waitingRt), false, 'waiting state not recovered');
+  assertEqual(waitingRt.status, 'waitingConfirm', 'waiting status untouched');
+
+  // Status not error -> no action, even with a ready handoff.
+  const idleRt = baseRt({ currentTask: 'Task epsilon', status: 'idle' });
+  assertEqual(engine.handoffReadyForResume(busyProject, idleRt), false, 'non-error project not ready');
+  const beforeIdle = auditEvents(busyProject).length;
+  await engine.runHandoffRecoverySweep({
+    force: true,
+    projects: [busyProject],
+    runtimeFor: () => idleRt,
+    listActiveRuns: async () => []
+  });
+  assertEqual(idleRt.status, 'idle', 'non-error status unchanged');
+  assertEqual(auditEvents(busyProject).length, beforeIdle, 'non-error project writes no audit');
+
+  // An OpenCode run already active for the project means a resumed session:
+  // skip with handoff-recovery-session-active and no state change.
+  const sessionProject = makeRecoveryProject('session-active', 'Task zeta');
+  writeHandoff(sessionProject, 'Implement task zeta now.', 'Task zeta');
+  const sessionRt = baseRt({ currentTask: 'Task zeta' });
+  const sessionSkipped = await engine.runHandoffRecoverySweep({
+    force: true,
+    projects: [sessionProject],
+    runtimeFor: () => sessionRt,
+    listActiveRuns: async () => [{ runKey: 'active-run' }]
+  });
+  assert.deepEqual(sessionSkipped, [], 'active session recovers nothing');
+  assertEqual(sessionRt.status, 'error', 'active session keeps error status');
+  assertEqual(sessionRt.active, false, 'active session does not flip active');
+  assert.ok(auditEvents(sessionProject).includes('handoff-recovery-session-active'), 'session-active audit');
+  assert.ok(!auditEvents(sessionProject).includes('handoff-recovered'), 'no recovery audit for active session');
+
+  // Waiting audit is throttled to one per interval per project.
+  const waitProject = makeRecoveryProject('waiting-audit', 'Task eta');
+  const waitRt = baseRt({ currentTask: 'Task eta' });
+  for (let i = 0; i < 3; i += 1) {
+    await engine.runHandoffRecoverySweep({
+      force: true,
+      projects: [waitProject],
+      runtimeFor: () => waitRt,
+      listActiveRuns: async () => []
+    });
+  }
+  assertEqual(
+    auditEvents(waitProject).filter((event) => event === 'handoff-recovery-waiting').length,
+    1,
+    'waiting audit throttled to one per interval'
+  );
+  assertEqual(waitRt.status, 'error', 'waiting project stays error');
+
+  // Global gate: off by default, so the sweep is inert without force.
+  const gatedProject = makeRecoveryProject('gated', 'Task theta');
+  writeHandoff(gatedProject, 'Implement task theta now.', 'Task theta');
+  const gatedRt = baseRt({ currentTask: 'Task theta' });
+  const gated = await engine.runHandoffRecoverySweep({
+    projects: [gatedProject],
+    runtimeFor: () => gatedRt,
+    listActiveRuns: async () => []
+  });
+  assert.deepEqual(gated, [], 'sweep inert while handoffRecovery is off');
+  assertEqual(gatedRt.status, 'error', 'gated project stays error');
+}
+
 async function main() {
   testIntentSessionFields();
   fs.rmSync(TEMP_DIR, { recursive: true, force: true });
@@ -525,6 +683,7 @@ async function main() {
 
   const engine = require(path.join(REPO_ROOT, 'src/engine.js'));
   testSnapshotFields(engine);
+  await testHandoffRecovery(engine);
   const keyProject = { id: 'run-key-project', path: path.join(PROJECTS_ROOT, 'run-key-project') };
   const keyTask = 'Task with spaces';
   const expectedRunKey = crypto.createHash('sha256')
@@ -541,6 +700,9 @@ async function main() {
   assert.notEqual(engine.runKeyFor({ ...keyProject, id: 'other-id' }, 'seed', keyTask), runKey, 'run key id changes');
 
   // 1. Config normalization.
+  assertEqual(configStore.normalizeSettings({}).handoffRecovery, false, 'handoffRecovery defaults false');
+  assertEqual(configStore.normalizeSettings({ handoffRecovery: true }).handoffRecovery, true, 'handoffRecovery true stays true');
+  assertEqual(configStore.normalizeSettings({ handoffRecovery: 'true' }).handoffRecovery, false, 'non-boolean handoffRecovery normalizes false');
   assertEqual(configStore.normalizeProject({ id: 'missing' }).autoResumeOnStart, false, 'missing flag normalizes false');
   assertEqual(configStore.normalizeProject({ id: 'yes', autoResumeOnStart: true }).autoResumeOnStart, true, 'true stays true');
   assertEqual(configStore.normalizeProject({ id: 'no', autoResumeOnStart: false }).autoResumeOnStart, false, 'false stays false');
@@ -575,6 +737,17 @@ async function main() {
   assertEqual(findProject(state, flagProject.id).autoResumeOnStart, false, 'state flag false');
   const truePatch = await api('PATCH', `/api/projects/${flagProject.id}`, { autoResumeOnStart: true });
   assertEqual(truePatch.status, 200, 'true patch accepted');
+
+  // 2b. Handoff recovery setting: strict boolean, persisted, exposed in state.
+  const recoveryEnabled = await api('PATCH', '/api/settings', { handoffRecovery: true });
+  assertEqual(recoveryEnabled.status, 200, 'handoffRecovery enable accepted');
+  assertEqual(recoveryEnabled.body.settings.handoffRecovery, true, 'handoffRecovery enabled');
+  assertEqual((await getState()).settings.handoffRecovery, true, 'state exposes handoffRecovery true');
+  const recoveryInvalid = await api('PATCH', '/api/settings', { handoffRecovery: 'yes' });
+  assertEqual(recoveryInvalid.status, 400, 'non-boolean handoffRecovery rejected');
+  const recoveryDisabled = await api('PATCH', '/api/settings', { handoffRecovery: false });
+  assertEqual(recoveryDisabled.status, 200, 'handoffRecovery disable accepted');
+  assertEqual((await getState()).settings.handoffRecovery, false, 'state exposes handoffRecovery false');
 
   // 3. Served UI smoke check.
   const html = await api('GET', '/');

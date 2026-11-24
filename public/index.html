@@ -190,6 +190,11 @@
               <span>Keep add task row visible while scrolling</span>
             </label>
             <small class="field-hint">When enabled, the Add task input and button stay visible while scrolling the plan checklist.</small>
+            <label class="auto-resume-row">
+              <input type="checkbox" id="handoff-recovery-toggle" />
+              <span>Resume errored projects when a valid handoff appears</span>
+            </label>
+            <small class="field-hint">When enabled, a project stopped by an error re-checks every 15 seconds and resumes analyze or implement once a valid, provenance-matched .looparr/next_prompt.txt exists. Off by default; waiting plan states and live sessions are never touched.</small>
             <details class="prompt-templates" id="prompt-templates-section" data-settings-section="promptTemplates">
               <summary>Prompt templates <small>{{task}}, {{handoff}}, and {{planPath}} placeholders</small></summary>
               <div class="prompt-template-fields">

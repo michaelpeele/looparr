@@ -598,6 +598,12 @@ app.patch('/api/settings', (req, res) => {
     }
     patch.stickyAddTaskRow = body.stickyAddTaskRow;
   }
+  if (body.handoffRecovery !== undefined) {
+    if (typeof body.handoffRecovery !== 'boolean') {
+      return fail(res, 400, 'handoffRecovery must be a boolean');
+    }
+    patch.handoffRecovery = body.handoffRecovery;
+  }
   for (const { field, label, placeholders } of PROMPT_TEMPLATE_FIELDS) {
     if (body[field] === undefined) continue;
     if (typeof body[field] !== 'string') return fail(res, 400, `${label} must be a string`);

@@ -658,6 +658,9 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(indexHtml, 'id="sticky-add-task-row"', 'sticky add task settings checkbox');
   assertIncludes(appSource, "stickyAddTaskRow: $('sticky-add-task-row')", 'sticky add task DOM ref');
   assertIncludes(appSource, 'stickyAddTaskRow: dom.stickyAddTaskRow.checked', 'sticky add task save body');
+  assertIncludes(indexHtml, 'id="handoff-recovery-toggle"', 'handoff recovery settings checkbox');
+  assertIncludes(appSource, "handoffRecovery: $('handoff-recovery-toggle')", 'handoff recovery DOM ref');
+  assertIncludes(appSource, 'handoffRecovery: dom.handoffRecovery.checked', 'handoff recovery save body');
   assertIncludes(cssSource, '.task-add-row.is-sticky', 'sticky add task css class');
   assertIncludes(cssSource, 'position: sticky', 'sticky add task position');
   assertIncludes(cssSource, '-webkit-sticky', 'sticky add task webkit position');

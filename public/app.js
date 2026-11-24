@@ -31,6 +31,7 @@
     planWritePromptTemplate: $('plan-write-prompt-template'),
     promptCliToolsNote: $('prompt-cli-tools-note'),
     stickyAddTaskRow: $('sticky-add-task-row'),
+    handoffRecovery: $('handoff-recovery-toggle'),
     settingsStatus: $('settings-status'),
     envSettingsForm: $('env-settings-form'),
     envSettingsFields: $('env-settings-fields'),
@@ -2612,6 +2613,9 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     if (dom.stickyAddTaskRow && document.activeElement !== dom.stickyAddTaskRow) {
       dom.stickyAddTaskRow.checked = settings.stickyAddTaskRow === true;
     }
+    if (dom.handoffRecovery && document.activeElement !== dom.handoffRecovery) {
+      dom.handoffRecovery.checked = settings.handoffRecovery === true;
+    }
     if (dom.taskAddRow && dom.stickyAddTaskRow) {
       dom.taskAddRow.classList.toggle('is-sticky', settings.stickyAddTaskRow === true);
     }
@@ -2674,7 +2678,8 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
           planQuestionsPromptTemplate: dom.planQuestionsPromptTemplate.value,
           planWritePromptTemplate: dom.planWritePromptTemplate.value,
           promptCliToolsNote: dom.promptCliToolsNote.checked,
-          stickyAddTaskRow: dom.stickyAddTaskRow.checked
+          stickyAddTaskRow: dom.stickyAddTaskRow.checked,
+          handoffRecovery: dom.handoffRecovery.checked
         })
       });
       if (response?.settings) applyState({ ...(app.state || {}), settings: response.settings });
