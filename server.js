@@ -20,8 +20,9 @@ const HOST = process.env.HOST || '127.0.0.1';
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 const PROJECTS_ROOT = path.resolve(process.env.LOOPARR_PROJECTS_ROOT || '/home/michaelpeele/ai-projects');
+const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|research|INVESTIGATION|investigation|HANDOFF|handoff|PROGRESS|progress';
 const PLAN_FILE_MAX_BYTES = 200000;
-const PLAN_FILE_BASENAME = /^(PLAN|plan)-[^/\\]+\.md$/;
+const PLAN_FILE_BASENAME = new RegExp(`^(?:${PLAN_FILE_PREFIXES})-[^/\\\\]+\\.md$`);
 const PLAN_FILE_DIR_PREFIX = '.project_documents/';
 
 function isInside(root, target) {

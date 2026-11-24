@@ -111,6 +111,8 @@
     planConfirmStatus: $('plan-confirm-status'),
     taskInput: $('task-input'),
     addTask: $('add-task'),
+    taskLinkDoc: $('task-link-doc'),
+    taskDocFile: $('task-doc-file'),
     taskStatus: $('task-status'),
     taskAddRow: document.querySelector('.task-add-row'),
     toggleCompletedTasks: $('toggle-completed-tasks'),
@@ -157,9 +159,10 @@
     setup: ['Setup Needed', 'setup']
   };
 
-  const STARTER_PLAN = '# Build plan\n\n- [ ] First task\n- [ ] Second task\n';
-  const TASK_LINE_RE = /^\s*[-*+]\s+\[[ xX]\]\s*/;
-  const TASK_EDIT_RE = /^(\s*[-*+]\s+\[)([ xX])(\]\s*)(.*)$/;
+const STARTER_PLAN = '# Build plan\n\n- [ ] First task\n- [ ] Second task\n';
+const TASK_LINE_RE = /^\s*[-*+]\s+\[[ xX]\]\s*/;
+const TASK_EDIT_RE = /^(\s*[-*+]\s+\[)([ xX])(\]\s*)(.*)$/;
+const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|research|INVESTIGATION|investigation|HANDOFF|handoff|PROGRESS|progress';
   // Model ids are scoped per runner: an OpenCode id must never reach the Kilo
   // CLI and a `kilo/*` id must never reach OpenCode. `/api/state` carries each
   // runner's catalogue from `src/runners/*.js`; these copies only cover the
@@ -167,9 +170,6 @@
   // ids at all (Vibe offers its account's free-lane aliases).
   const MODEL_OPTIONS_BY_RUNNER = {
     opencode: [
-      'omniroute/auto',
-      'omniroute/auto/coding',
-      'opencode/big-pickle',
       'opencode/tidepool-alpha-free',
       'opencode/hy4-flash-free',
       'opencode/iceman-free',
@@ -180,30 +180,23 @@
       'opencode/beam-free',
       'opencode/mimo-v2.6-flash-free',
       'opencode/nemotron-3.5-lightning-free',
-      'omniroute/coding-safe',
-      'kilo/kilo-auto/free',
-      'kilo/openrouter/free',
+      'kilo/baidu/ernie-5.5-flash-preview:free',
       'kilo/reflection/beam-free',
       'kilo/recursive/flint-v1.0:free',
-      'kilo/nvidia/nemotron-3.5-super-vl:free',
       'kilo/nvidia/nemotron-3-ultra-550b-a55b:free',
       'kilo/nvidia/nemotron-3.5-lightning:free',
       'kilo/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
-      'kilo/baidu/ernie-5.5-flash-preview:free',
       'kilo/inclusionai/ling-3.2-flash:free',
       'kilo/particle-ai/particle-1:free',
       'kilo/liquid/lfm-3-1.7b:free'
     ],
     kilo: [
-      'kilo/kilo-auto/free',
-      'kilo/openrouter/free',
+      'kilo/baidu/ernie-5.5-flash-preview:free',
       'kilo/reflection/beam-free',
       'kilo/recursive/flint-v1.0:free',
-      'kilo/nvidia/nemotron-3.5-super-vl:free',
       'kilo/nvidia/nemotron-3-ultra-550b-a55b:free',
       'kilo/nvidia/nemotron-3.5-lightning:free',
       'kilo/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
-      'kilo/baidu/ernie-5.5-flash-preview:free',
       'kilo/inclusionai/ling-3.2-flash:free',
       'kilo/particle-ai/particle-1:free',
       'kilo/liquid/lfm-3-1.7b:free'
@@ -407,6 +400,34 @@
   function restoreShowCompletedForProject(id) {
     app.showCompleted = isShowCompleted(id);
     updateToggleCompletedButton();
+  }
+
+  const TASK_LINK_DOC_KEY = 'looparr.taskLinkDoc';
+  let taskLinkDocMemory = null;
+  let taskLinkDocStorageAvailable = true;
+
+  function loadTaskLinkDocState() {
+    if (taskLinkDocMemory !== null) return taskLinkDocMemory;
+    if (!taskLinkDocStorageAvailable) return false;
+    try {
+      const raw = localStorage.getItem(TASK_LINK_DOC_KEY);
+      taskLinkDocMemory = raw === 'true';
+      return taskLinkDocMemory;
+    } catch {
+      taskLinkDocStorageAvailable = false;
+      return false;
+    }
+  }
+
+  function saveTaskLinkDocState(value) {
+    const next = value === true;
+    taskLinkDocMemory = next;
+    if (!taskLinkDocStorageAvailable) return;
+    try {
+      localStorage.setItem(TASK_LINK_DOC_KEY, String(next));
+    } catch {
+      taskLinkDocStorageAvailable = false;
+    }
   }
 
   const UI_STATE_KEY = 'looparr.uiState.v1';
@@ -737,7 +758,7 @@
     const prefix = '.project_documents/';
     const hasPrefix = relative.startsWith(prefix);
     const basename = hasPrefix ? relative.slice(prefix.length) : relative;
-    if (!/^(PLAN|plan)-[^/\\]+\.md$/.test(basename)) return null;
+    if (!new RegExp(`^(?:${PLAN_FILE_PREFIXES})-[^/\\\\]+\\.md$`).test(basename)) return null;
     return hasPrefix ? `${prefix}${basename}` : basename;
   }
 
@@ -764,7 +785,7 @@
     });
     const textNodes = [];
     while (walker.nextNode()) textNodes.push(walker.currentNode);
-    const pattern = /\[([^\]]+)\]\(([^)]+)\)|((?:\.\/|\.project_documents\/)?(?:PLAN|plan)-[^/\s\\]+\.md)/g;
+    const pattern = new RegExp(`\\[([^\\]]+)\\]\\(([^)]+)\\)|((?:\\.\\/|\\.project_documents\\/)?(?:${PLAN_FILE_PREFIXES})-[^/\\\\s\\\\]+\\.md)`, 'g');
     textNodes.forEach((node) => {
       const text = String(node.nodeValue ?? '');
       pattern.lastIndex = 0;
@@ -1698,7 +1719,10 @@
       seedRotation: rotationFlags.seed,
       analyzeRotation: rotationFlags.analyze,
       implementRotation: rotationFlags.implement,
-      planRotation: rotationFlags.plan
+      planRotation: rotationFlags.plan,
+      runnerRotation: typeof project.runnerRotation === 'boolean'
+        ? project.runnerRotation
+        : settings.runnerRotation === true
     });
     dom.projectModelStatus.textContent = '';
   }
@@ -2145,6 +2169,48 @@
     return planSaveChain;
   }
 
+  function buildTaskSlug(title) {
+    const stripped = String(title || '').replace(/^\s*\(plan\)\s*/i, '');
+    const normalized = stripped.normalize('NFKD').toLowerCase();
+    const runs = normalized.match(/[a-z0-9]+/g);
+    let slug = runs ? runs.join('-') : '';
+    slug = slug.replace(/^-+|-+$/g, '');
+    if (!slug) slug = 'task';
+    return slug.slice(0, 60).replace(/-+$/, '');
+  }
+
+  function formatLinkedTask(title, file) {
+    return `(plan) ${title} \u2014 see [${file}](.project_documents/${file})`;
+  }
+
+  async function planFileExists(projectId, basename) {
+    try {
+      await api(planFileUrl(projectId, `.project_documents/${basename}`));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function resolveLinkedDocName(title, override, fileExists) {
+    const prefixRe = new RegExp(`^(?:${PLAN_FILE_PREFIXES})$`);
+    if (override) {
+      const name = String(override).trim();
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.md$/.test(name)) throw new Error('Invalid doc filename.');
+      const prefix = name.split('-', 1)[0];
+      if (!prefixRe.test(prefix)) throw new Error('Invalid doc prefix.');
+      return name;
+    }
+    const slug = buildTaskSlug(title);
+    let candidate = `PLAN-${slug}.md`;
+    let counter = 2;
+    while (await fileExists(candidate)) {
+      candidate = `PLAN-${slug}-${counter}.md`;
+      counter += 1;
+    }
+    return candidate;
+  }
+
   async function addChecklistTask() {
     const id = app.drawerId;
     if (!id || app.savingPlan) return;
@@ -2155,18 +2221,42 @@
     }
     dom.taskStatus.textContent = 'adding…';
     try {
+      let taskText = text;
+      let stubWarning = '';
+      if (dom.taskLinkDoc && dom.taskLinkDoc.checked) {
+        const title = String(text).replace(/^\s*\(plan\)\s*/i, '');
+        const override = dom.taskDocFile && dom.taskDocFile.value ? String(dom.taskDocFile.value).trim() : '';
+        let file;
+        try {
+          file = await resolveLinkedDocName(title, override, (name) => planFileExists(id, name));
+        } catch (error) {
+          dom.taskStatus.textContent = error.message || 'Invalid doc filename.';
+          return;
+        }
+        const exists = await planFileExists(id, file);
+        if (!exists) {
+          try {
+            await api(`/api/projects/${encodeURIComponent(id)}/plan-file`, {
+              method: 'PUT',
+              body: JSON.stringify({ path: `.project_documents/${file}`, content: `# ${title}` })
+            });
+          } catch (error) {
+            stubWarning = `Doc stub could not be created: ${error.message}`;
+          }
+        }
+        taskText = formatLinkedTask(title, file);
+      }
       const content = await ensurePlanContent();
-      const next = appendTask(content, text);
+      const next = appendTask(content, taskText);
       if (!next) {
         dom.taskStatus.textContent = 'Could not add task.';
         return;
       }
       dom.planEditor.value = next;
       markPlanDirty();
-      dom.taskStatus.textContent = 'adding…';
       const saved = await savePlanContent(next, 'task added');
       if (app.drawerId !== id) return;
-      dom.taskStatus.textContent = saved ? '' : 'Could not add task.';
+      dom.taskStatus.textContent = stubWarning || (saved ? '' : 'Could not add task.');
       if (saved) dom.taskInput.value = '';
     } catch (error) {
       if (app.drawerId === id) dom.taskStatus.textContent = error.message;
@@ -3210,6 +3300,15 @@
     const input = event.target instanceof Element ? event.target.closest('.task-edit-input') : null;
     if (input) updatePlanControls();
   });
+
+  if (dom.taskLinkDoc && dom.taskDocFile) {
+    dom.taskLinkDoc.checked = loadTaskLinkDocState();
+    dom.taskDocFile.hidden = !dom.taskLinkDoc.checked;
+    dom.taskLinkDoc.addEventListener('change', () => {
+      saveTaskLinkDocState(dom.taskLinkDoc.checked);
+      dom.taskDocFile.hidden = !dom.taskLinkDoc.checked;
+    });
+  }
 
   dom.addTask.addEventListener('click', addChecklistTask);
   dom.taskInput.addEventListener('keydown', (event) => {

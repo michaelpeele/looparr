@@ -631,6 +631,25 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(appSource, 'Depends on:', 'dependency display retained');
   assertIncludes(appSource, 'dependencyStatus', 'dependency state display retained');
   assertIncludes(cssSource, '.task-deps.warn', 'dependency warning style retained');
+
+  assertIncludes(indexHtml, 'id="task-link-doc"', 'index task-link-doc checkbox');
+  assertIncludes(indexHtml, 'id="task-doc-file"', 'index task-doc-file input');
+  assertIncludes(appSource, "const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|research|INVESTIGATION|investigation|HANDOFF|handoff|PROGRESS|progress';", 'app shared prefix constant');
+  assertIncludes(appSource, 'function buildTaskSlug(title)', 'app buildTaskSlug helper');
+  assertIncludes(appSource, 'function formatLinkedTask(title, file)', 'app formatLinkedTask helper');
+  assertIncludes(appSource, 'async function resolveLinkedDocName(title, override, fileExists)', 'app resolveLinkedDocName helper');
+  assertIncludes(appSource, 'PROGRESS|progress', 'app widened prefix list');
+  assertIncludes(cssSource, '.task-link-doc-row', 'css task link doc row');
+
+  const serverSource = fs.readFileSync(path.join(REPO_ROOT, 'server.js'), 'utf8');
+  assertIncludes(serverSource, "const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|research|INVESTIGATION|investigation|HANDOFF|handoff|PROGRESS|progress';", 'server shared prefix constant');
+  assertIncludes(serverSource, 'PROGRESS|progress', 'server widened prefix list');
+  assertEqual(
+    (appSource.match(/const PLAN_FILE_PREFIXES = '([^']+)';/) || [null, null])[1],
+    (serverSource.match(/const PLAN_FILE_PREFIXES = '([^']+)';/) || [null, null])[1],
+    'server and app prefix lists match textually'
+  );
+
   assertIncludes(indexHtml, '(depends: 1, 2)', 'dependency syntax guide retained');
 
   assertIncludes(appSource, "const UI_STATE_KEY = 'looparr.uiState.v1';", 'ui state key');

@@ -16,6 +16,23 @@ function assertIncludes(text, fragment, label) {
   assert.ok(text.includes(fragment), `${label}: missing ${JSON.stringify(fragment)}`);
 }
 
+function extractFunction(source, signature) {
+  const start = source.indexOf(signature);
+  assert.ok(start >= 0, `Missing function: ${signature}`);
+  const braceStart = source.indexOf('{', start);
+  assert.ok(braceStart >= 0, `Missing function body: ${signature}`);
+  let depth = 0;
+  for (let index = braceStart; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === '{') depth += 1;
+    else if (character === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, index + 1);
+    }
+  }
+  throw new Error(`Unbalanced function body: ${signature}`);
+}
+
 function tasksFrom(markdown) {
   return planLib.parseTasks(markdown);
 }
@@ -76,9 +93,63 @@ function testTaskEdits() {
   assertEqual(planLib.removeTask(duplicate, 1).content, '- [ ] same\n- [ ] other\n', 'remove only target duplicate');
 }
 
+function loadLinkDocHelpers() {
+  const source = fs.readFileSync(path.join(REPO_ROOT, 'public/app.js'), 'utf8');
+  const prefixMatch = source.match(/^\s*const PLAN_FILE_PREFIXES = '([^']+)';$/m);
+  assert.ok(prefixMatch, 'Missing PLAN_FILE_PREFIXES');
+  const prefixes = prefixMatch[1];
+  const slug = extractFunction(source, 'function buildTaskSlug(title)');
+  const format = extractFunction(source, 'function formatLinkedTask(title, file)');
+  const resolve = extractFunction(source, 'async function resolveLinkedDocName(title, override, fileExists)');
+  const factory = new Function([`const PLAN_FILE_PREFIXES = '${prefixes}';`, slug, format, resolve, 'return { buildTaskSlug, formatLinkedTask, resolveLinkedDocName };'].join('\n'));
+  return { ...factory(), PREFIXES: prefixes };
+}
+
+async function testLinkDocHelpers() {
+  const { buildTaskSlug, formatLinkedTask, resolveLinkedDocName, PREFIXES } = loadLinkDocHelpers();
+  assertEqual(PREFIXES, 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|research|INVESTIGATION|investigation|HANDOFF|handoff|PROGRESS|progress', 'shared prefix list');
+
+  assertEqual(buildTaskSlug('Task link checkbox'), 'task-link-checkbox', 'slug basic');
+  assertEqual(buildTaskSlug('(plan) Task link checkbox'), 'task-link-checkbox', 'slug strips leading (plan)');
+  assertEqual(buildTaskSlug('Hello, World!'), 'hello-world', 'slug punctuation');
+  assertEqual(buildTaskSlug('!!!'), 'task', 'slug fallback');
+  assertEqual(buildTaskSlug('a b c'), 'a-b-c', 'slug spaces');
+  const long = 'a'.repeat(100);
+  assertEqual(buildTaskSlug(long).length, 60, 'slug capped at 60');
+  assert.ok(!buildTaskSlug(long).endsWith('-'), 'slug not trailing dash');
+
+  const expectedLink = '(plan) Task link checkbox \u2014 see [PLAN-task-link-checkbox.md](.project_documents/PLAN-task-link-checkbox.md)';
+  assertEqual(formatLinkedTask('Task link checkbox', 'PLAN-task-link-checkbox.md'), expectedLink, 'format linked task');
+
+  const neverExists = async () => false;
+  assertEqual(await resolveLinkedDocName('Task link checkbox', undefined, neverExists), 'PLAN-task-link-checkbox.md', 'auto-derived missing doc');
+
+  const collisions = {};
+  const existing = async (name) => Boolean(collisions[name]);
+  collisions['PLAN-task-link-checkbox.md'] = true;
+  assertEqual(await resolveLinkedDocName('Task link checkbox', undefined, existing), 'PLAN-task-link-checkbox-2.md', 'auto collision uses -2');
+  collisions['PLAN-task-link-checkbox-2.md'] = true;
+  assertEqual(await resolveLinkedDocName('Task link checkbox', undefined, existing), 'PLAN-task-link-checkbox-3.md', 'auto collision uses -3');
+  assertEqual(collisions['PLAN-task-link-checkbox.md'], true, 'original file untouched by collision');
+
+  assertEqual(await resolveLinkedDocName('anything', 'PROGRESS-foo.md', neverExists), 'PROGRESS-foo.md', 'user-typed valid used verbatim');
+  assertEqual(await resolveLinkedDocName('anything', 'PLAN-existing.md', () => true), 'PLAN-existing.md', 'user-typed existing reused unchanged');
+
+  for (const bad of ['../x.md', 'foo.txt', 'my file.md', 'FOO-bar.md', '.hidden.md', '-dash.md']) {
+    let threw = false;
+    try { await resolveLinkedDocName('anything', bad, neverExists); } catch { threw = true; }
+    assertEqual(threw, true, `invalid filename rejected: ${bad}`);
+  }
+
+  for (const good of ['PLAN-a.md', 'plan-b.md', 'PROMPT-c.md', 'ANALYSIS-d.md', 'RESEARCH-e.md', 'INVESTIGATION-f.md', 'HANDOFF-g.md', 'PROGRESS-h.md']) {
+    assertEqual(await resolveLinkedDocName('anything', good, neverExists), good, `valid prefix accepted: ${good}`);
+  }
+}
+
 async function main() {
   assertIncludes(Object.keys(planLib).join(','), 'nextUncheckedAfter', 'plan exports');
   testTaskEdits();
+  await testLinkDocHelpers();
 
   const run = tasksFrom([
     '- [x] zero',
