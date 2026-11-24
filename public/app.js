@@ -2222,7 +2222,6 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     dom.taskStatus.textContent = 'adding…';
     try {
       let taskText = text;
-      let stubWarning = '';
       if (dom.taskLinkDoc && dom.taskLinkDoc.checked) {
         const title = String(text).replace(/^\s*\(plan\)\s*/i, '');
         const override = dom.taskDocFile && dom.taskDocFile.value ? String(dom.taskDocFile.value).trim() : '';
@@ -2241,7 +2240,8 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
               body: JSON.stringify({ path: `.project_documents/${file}`, content: `# ${title}` })
             });
           } catch (error) {
-            stubWarning = `Doc stub could not be created: ${error.message}`;
+            dom.taskStatus.textContent = `Doc stub could not be created: ${error.message || 'request failed'}`;
+            return;
           }
         }
         taskText = formatLinkedTask(title, file);
@@ -2256,7 +2256,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       markPlanDirty();
       const saved = await savePlanContent(next, 'task added');
       if (app.drawerId !== id) return;
-      dom.taskStatus.textContent = stubWarning || (saved ? '' : 'Could not add task.');
+      dom.taskStatus.textContent = saved ? '' : 'Could not add task.';
       if (saved) dom.taskInput.value = '';
     } catch (error) {
       if (app.drawerId === id) dom.taskStatus.textContent = error.message;

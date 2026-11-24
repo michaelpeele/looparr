@@ -186,6 +186,40 @@ function loadShowCompletedFunctions(options = {}) {
   return helpers;
 }
 
+function loadTaskLinkDocStateFunctions(options = {}) {
+  const source = fs.readFileSync(path.join(REPO_ROOT, 'public/app.js'), 'utf8');
+  const key = source.match(/^\s*const TASK_LINK_DOC_KEY = .*;$/m);
+  assert.ok(key, 'Missing TASK_LINK_DOC_KEY');
+  const keyNameMatch = key[0].match(/'([^']+)'/);
+  assert.ok(keyNameMatch, 'Missing TASK_LINK_DOC_KEY value');
+  const keyName = keyNameMatch[1];
+  const load = extractFunction(source, 'function loadTaskLinkDocState()');
+  const save = extractFunction(source, 'function saveTaskLinkDocState(value)');
+  const entries = options.initial || {};
+  const storageMap = new Map(Object.keys(entries).map((name) => [name, entries[name]]));
+  const storage = {
+    getItem(name) {
+      if (options.failReads) throw new Error('storage read failed');
+      return storageMap.has(name) ? storageMap.get(name) : null;
+    },
+    setItem(name, value) {
+      if (options.failWrites) throw new Error('storage write failed');
+      storageMap.set(name, value);
+    }
+  };
+  const factory = new Function('localStorage', [
+    key[0],
+    'let taskLinkDocMemory = null;',
+    'let taskLinkDocStorageAvailable = true;',
+    load,
+    save,
+    'return { loadTaskLinkDocState, saveTaskLinkDocState };'
+  ].join('\n'));
+  const helpers = factory(storage);
+  helpers.getStored = () => storageMap.get(keyName);
+  return helpers;
+}
+
 function loadChecklistRenderer(appSource, editingTaskIndex = -1) {
   const renderSource = extractFunction(appSource, 'function renderChecklist(plan)');
   const dom = {
@@ -843,6 +877,80 @@ async function testShowCompletedPureFunctions() {
   assertEqual(offline.getStored(), undefined, 'storage failure writes nothing');
 }
 
+async function testAddChecklistTaskStubFailureAborts() {
+  const source = fs.readFileSync(path.join(REPO_ROOT, 'public/app.js'), 'utf8');
+  const addSource = extractFunction(source, 'async function addChecklistTask()');
+  const formatSource = extractFunction(source, 'function formatLinkedTask(title, file)');
+  const calls = { ensurePlanContent: 0, appendTask: 0, markPlanDirty: 0, savePlanContent: 0 };
+  const dom = {
+    taskInput: { value: 'Task link checkbox' },
+    taskStatus: { textContent: '' },
+    taskLinkDoc: { checked: true },
+    taskDocFile: { value: '' }
+  };
+  const app = { drawerId: 'demo', savingPlan: false };
+  const factory = new Function(
+    'app',
+    'dom',
+    'cleanTaskText',
+    'resolveLinkedDocName',
+    'planFileExists',
+    'api',
+    'formatLinkedTask',
+    'ensurePlanContent',
+    'appendTask',
+    'markPlanDirty',
+    'savePlanContent',
+    `${addSource}\nreturn addChecklistTask;`
+  );
+  const addChecklistTask = factory(
+    app,
+    dom,
+    (t) => String(t || '').trim(),
+    async () => 'PLAN-task-link-checkbox.md',
+    async () => false,
+    async () => { throw new Error('boom'); },
+    new Function(`${formatSource}\nreturn formatLinkedTask;`)(),
+    async () => {
+      calls.ensurePlanContent += 1;
+      return '# Build plan';
+    },
+    () => {
+      calls.appendTask += 1;
+      return '# Build plan\n- [ ] [Task link checkbox](.project_documents/PLAN-task-link-checkbox.md)';
+    },
+    () => { calls.markPlanDirty += 1; },
+    async () => {
+      calls.savePlanContent += 1;
+      return true;
+    }
+  );
+  await addChecklistTask();
+  assert.ok(
+    dom.taskStatus.textContent.includes('could not be created'),
+    `stub failure sets status message, got ${JSON.stringify(dom.taskStatus.textContent)}`
+  );
+  assertEqual(calls.ensurePlanContent, 0, 'stub failure aborts before ensurePlanContent');
+  assertEqual(calls.appendTask, 0, 'stub failure aborts before appendTask');
+  assertEqual(calls.markPlanDirty, 0, 'stub failure aborts before markPlanDirty');
+  assertEqual(calls.savePlanContent, 0, 'stub failure writes no plan');
+}
+
+function testTaskLinkDocStateFunctions() {
+  const helpers = loadTaskLinkDocStateFunctions();
+  assertEqual(helpers.loadTaskLinkDocState(), false, 'task link doc defaults unchecked with empty storage');
+  helpers.saveTaskLinkDocState(true);
+  assertEqual(helpers.loadTaskLinkDocState(), true, 'task link doc true round-trips');
+  assertEqual(helpers.getStored(), 'true', 'task link doc stored as string');
+  helpers.saveTaskLinkDocState(false);
+  assertEqual(helpers.loadTaskLinkDocState(), false, 'task link doc false round-trips');
+
+  const saved = loadTaskLinkDocStateFunctions({ initial: { 'looparr.taskLinkDoc': 'true' } });
+  assertEqual(saved.loadTaskLinkDocState(), true, 'stored true restores checked');
+  const unchecked = loadTaskLinkDocStateFunctions({ initial: { 'looparr.taskLinkDoc': 'false' } });
+  assertEqual(unchecked.loadTaskLinkDocState(), false, 'stored false restores unchecked');
+}
+
 async function testUiStatePureFunctions() {
   const helpers = loadUiStateFunctions();
   assert.deepEqual(helpers.normalizeUiState(null), {}, 'ui state default');
@@ -984,6 +1092,8 @@ async function main() {
     await testExpansionPureFunctions();
     await testShowCompletedPureFunctions();
     await testUiStatePureFunctions();
+    await testAddChecklistTaskStubFailureAborts();
+    testTaskLinkDocStateFunctions();
 
     const created = await api('POST', '/api/projects', {
       name: 'demo',
