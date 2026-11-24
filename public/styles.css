@@ -100,30 +100,45 @@ a { color: var(--accent); }
 }
 .self-heal-pill[hidden] { display: none; }
 .self-heal-pixel {
-  width: 11px;
-  height: 11px;
+  width: 16px;
+  height: 16px;
+  display: inline-grid;
+  place-items: center;
   border-radius: 3px;
   background: #0d1421;
   border: 1px solid #64748b;
+  color: #94a3b8;
+  flex: none;
 }
+.self-heal-bug {
+  width: 12px;
+  height: 12px;
+  display: block;
+  shape-rendering: crispEdges;
+}
+.self-heal-bug * { fill: currentColor; }
 .self-heal-pill[data-state="debugging"] .self-heal-pixel {
   background: var(--accent);
   border-color: var(--accent);
+  color: #06222b;
   box-shadow: 0 0 8px var(--accent);
 }
 .self-heal-pill[data-state="healing"] .self-heal-pixel {
   background: var(--amber);
   border-color: var(--amber);
+  color: #2b1d02;
   box-shadow: 0 0 8px var(--amber);
 }
 .self-heal-pill[data-state="error"] .self-heal-pixel {
   background: var(--red);
   border-color: var(--red);
+  color: #2b0b0b;
   box-shadow: 0 0 8px var(--red);
 }
 .self-heal-pill[data-state="healed"] .self-heal-pixel {
   background: linear-gradient(90deg, var(--accent), var(--accent-2), var(--green));
   border-color: var(--green);
+  color: #08130f;
   box-shadow: 0 0 8px var(--green);
 }
 .self-heal-pill[data-state="debugging"],
