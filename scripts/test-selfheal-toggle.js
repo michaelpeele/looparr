@@ -122,7 +122,12 @@ async function main() {
     await waitForServer(PROD_URL);
     const prodState = await getState(PROD_URL);
     assertEqual(prodState.settings.selfHealing, true, 'prod config keeps the setting');
-    assertEqual(prodState.selfHealingAvailable, false, 'production hides the pill even with the setting on');
+    assertEqual(prodState.selfHealingAvailable, true, 'production shows an idle pill with the setting on');
+    assertEqual(
+      prodState.projects.length,
+      0,
+      'prod fixture has no projects, so no per-project selfHealer is synthesized'
+    );
 
     console.log('selfheal toggle smoke tests passed');
   } catch (error) {

@@ -64,12 +64,18 @@ dev checkout — never in the prod container (the prod image has no `git`, no
   transition, and on round finish, plus a heartbeat every 60 s so a healthy idle
   daemon keeps the file fresh. A status is fresh for
   `SELFHEAL_STATUS_TTL_MS = 30 * 60_000`; stale or malformed files are ignored.
+  A dev engine is only needed to *run* a round; the idle pill does not need one.
 - **Prod reads, never spawns.** Prod maps the freshest status file to the same
   per-project `selfHealer` shape, so the header pill shows the live round
   (`idle` / `debugging` / `healing` / `healed` / `error`) and the merge button
   appears only when `healed` and not yet merged. Prod never runs `git`, `docker`,
-  or worktree commands. The prod `selfHealing` setting does **not** gate viewing
-  or merging; only a fresh status file and the executor token/URL do.
+  or worktree commands.
+- **Setting ON lights an idle pill.** Whenever the `selfHealing` setting is on,
+  the pill is available and each project falls back to `idle` when no fresh live
+  status exists (no dev engine running, or all rounds finished). When a dev engine
+  is actively healing, its fresh status file overrides the idle fallback and the
+  pill progresses through the colors; once the file goes stale (TTL) prod falls
+  back to idle. The setting alone never lets prod spawn a healer or run git.
 - **Merge on prod is a relay.** `POST /api/projects/:id/selfheal/merge` on prod
   validates the status file locally, then forwards an authenticated
   `POST /selfheal/merge` to the host executor (`scripts/host-executor.js`), which

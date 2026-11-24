@@ -236,9 +236,16 @@ function emitState() {
 function getState() {
   const devGate = selfHealingEnabled();
   const prodViewer = !devGate;
+  // The pill is available whenever the self-healing setting is on. In dev the
+  // gate also requires a dev signal to actually spawn; in prod (which never
+  // spawns) the setting alone lights an idle pill so the round is visible.
+  const available = devGate || config.settings.selfHealing === true;
+  const idleHealer = {
+    state: 'idle', round: 0, cycles: 0, branch: '', phase: '', errorAt: '', mergedAt: null
+  };
   return {
     settings: { ...config.settings },
-    selfHealingAvailable: devGate || selfhealStatusAvailable(),
+    selfHealingAvailable: available,
     runners: listRunners(),
     projects: config.projects.map((project) => {
       const rt = ensureRuntime(project);
@@ -340,7 +347,9 @@ function getState() {
               errorAt: rt.healer.errorAt || '',
               mergedAt: rt.healer.mergedAt || null
             }
-          : (prodViewer ? readHealerStatus(project.id) : null),
+          : (prodViewer
+            ? (readHealerStatus(project.id) || (available ? idleHealer : null))
+            : (available ? idleHealer : null)),
         error: rt.error || (plan.ok ? '' : `plan.md: ${plan.error}`),
         logs: rt.logs.slice(-200)
       };

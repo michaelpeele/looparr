@@ -54,7 +54,9 @@ function normalizeRecord(raw, now = Date.now()) {
   if (raw.version !== VERSION) return null;
   if (typeof raw.projectId !== 'string' || !isValidProjectId(raw.projectId)) return null;
   if (!VALID_STATES.has(raw.state)) return null;
-  if (typeof raw.branch !== 'string' || raw.branch === '') return null;
+  // Idle has no branch; engaged states carry one. Only require a string here;
+  // the branch pattern is enforced at merge time (validateMergeRequest).
+  if (typeof raw.branch !== 'string') return null;
   if (!isFresh(raw, now)) return null;
   return {
     version: VERSION,

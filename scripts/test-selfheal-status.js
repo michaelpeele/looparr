@@ -73,6 +73,48 @@ function testRoundTripAndTtl() {
   }
 }
 
+function testIdleStatus() {
+  const repo = makeTempRepo();
+  try {
+    const now = Date.now();
+    // Idle has no branch; it must round-trip so prod can show a live idle pill.
+    const wrote = selfhealStatus.writeStatus(repo, {
+      version: selfhealStatus.VERSION,
+      projectId: 'project-1',
+      projectName: 'Demo',
+      state: 'idle',
+      round: 0,
+      cycles: 0,
+      branch: '',
+      phase: '',
+      errorAt: '',
+      mergedAt: null,
+      analysisFile: '',
+      exitCode: null,
+      hostname: 'dev'
+    }, now);
+    assertEqual(wrote, true, 'idle status writes');
+
+    const read = selfhealStatus.readStatus(repo, 'project-1', now);
+    assertOk(read, 'idle status reads back');
+    assertEqual(read.state, 'idle', 'idle state round-trips');
+    assertEqual(read.branch, '', 'idle has an empty branch');
+
+    const healer = selfhealStatus.toSelfHealer(read);
+    assertEqual(healer.state, 'idle', 'prod maps idle selfHealer');
+    assertEqual(healer.mergedAt, null, 'idle selfHealer has no mergedAt');
+
+    // Idle cannot be merged (not healed).
+    const res = selfhealStatus.validateMergeRequest(repo, 'project-1', { branch: '' }, now);
+    assertEqual(res.ok, false, 'idle cannot be merged');
+    assertEqual(res.status, 409, 'idle merge is 409');
+
+    console.log('selfheal idle status ok');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+}
+
 function testPathContainment() {
   // Valid id yields an inside path; hostile ids are rejected.
   assertEqual(selfhealStatus.isValidProjectId('project-1'), true, 'simple id accepted');
@@ -266,6 +308,7 @@ async function testExecutorRelay() {
 }
 
 testRoundTripAndTtl();
+testIdleStatus();
 testPathContainment();
 testMalformedIgnored();
 testProdMapping();
