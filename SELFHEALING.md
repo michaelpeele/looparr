@@ -155,7 +155,7 @@ What the script composes (each value is overridable, see the header of
 | `LOOPARR_SELFHEAL_STANDBY` | `1` | the engine refuses every primary intent, so it never adopts tasks |
 | `HOSTNAME` | `looparr-heal-host` | must differ from prod's `looparr`; that is how checkpoints and status are recognised as foreign. `start` refuses `looparr` |
 | `HOST` / `PORT` | `127.0.0.1` / `4400` | separate listener, not the prod port |
-| `CONFIG_PATH` | `data/selfheal/config.json` | copy of the arming config; its directory is also the standby log dir, so it never writes prod's config |
+| `CONFIG_PATH` | `data/selfheal/config.json` | copy of the arming config; logs go to `logs/selfheal-daemon.log`, so the standby never writes prod's config |
 | PID / log | `.looparr/selfheal-daemon.pid` / `logs/selfheal-daemon.log` | one managed process, one dedicated log |
 | entry | `server.js` | the same engine, sharing `.looparr` with prod |
 
@@ -174,8 +174,12 @@ locally and restarts. Nothing is pushed.
 `npm run selfheal:install` writes
 `~/.config/systemd/user/looparr-selfheal.service` (`forking` with the PID file)
 and prints `systemctl --user enable --now looparr-selfheal`; add
-`loginctl enable-linger $USER` so it survives logout. Without systemd, run
-`npm run selfheal:start` from a startup hook or a terminal.
+`loginctl enable-linger $USER` so it survives logout. The unit sets `PATH` to
+include the host's `opencode`, `kilo`, and `vibe` directories; without those
+entries the help probe fails and the old `--attach` flag is used again. A user
+unit cannot order itself after `docker.service`; if the standby must validate
+Docker availability, use `ExecStartPre=/usr/bin/docker info` instead. Without
+systemd, run `npm run selfheal:start` from a startup hook or a terminal.
 
 Do not drive project tasks from the standby's browser UI: it is a healer
 standby, not a second primary.
@@ -188,6 +192,15 @@ standby, not a second primary.
   with mode 0600 under `.looparr/selfheal/`, which is git-ignored.
 - A healer failure never starts another healer (`failedPhase === 'selfheal'` is
   refused).
+- The cooldown and the digest of already-healed errors live in memory. A daemon
+  restart clears them; a fresh errored checkpoint after a restart can start a new
+  round immediately. Do not treat a restart as a permanent dedupe boundary.
+- This host runs the standby in direct mode. No host executor is installed, so
+  `LOOPARR_EXECUTOR_URL` is unset and prod cannot relay merges through a bridge.
+  The healer runs `opencode` directly in its worktree; the prod pill reads the
+  status file and merge stays local to the host. If a host executor is added
+  later, set `LOOPARR_EXECUTOR_URL` in the standby unit and verify the bridge
+  before enabling prod-triggered rounds.
 - `rt.healer` records `state`, `round`, `cycles`, branch, worktree, phase, and
   timestamps. It is included in the durable resume snapshot, and an interrupted
   `debugging`/`healing` round is restored as `error` so it can never look live.

@@ -44,9 +44,32 @@ let roundRobinCursor = 0;
 let lastCheckpointAt = 0;
 let lastHandoffRecoveryAt = 0;
 let lastSelfhealHeartbeatAt = 0;
-// One healer round per unique error: project id -> runKey + error digest of
-// the foreign checkpoint already acted on. A changed digest re-arms.
-const foreignHealedErrors = new Map();
+// One healer round per unique error, persisted across restarts so a standby
+// restart cannot replay the same foreign checkpoint. The cooldown is persisted
+// with it so a restart cannot start a second round immediately.
+const SELFHEAL_ROUND_STATE_FILE = path.join(__dirname, '..', '.looparr', 'selfheal', 'round-state.json');
+function loadSelfhealRoundState() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(SELFHEAL_ROUND_STATE_FILE, 'utf8'));
+    const lastExitAt = parsed && parsed.lastExitAt && typeof parsed.lastExitAt === 'object' ? parsed.lastExitAt : {};
+    const digests = parsed && parsed.digests && typeof parsed.digests === 'object' ? parsed.digests : {};
+    return { lastExitAt, digests };
+  } catch {
+    return { lastExitAt: {}, digests: {} };
+  }
+}
+const selfhealRoundState = loadSelfhealRoundState();
+function saveSelfhealRoundState() {
+  try {
+    fs.mkdirSync(path.dirname(SELFHEAL_ROUND_STATE_FILE), { recursive: true });
+    fs.writeFileSync(SELFHEAL_ROUND_STATE_FILE, JSON.stringify(selfhealRoundState), { mode: 0o600 });
+  } catch { /* best effort; the in-memory gate still holds */ }
+}
+function recordHealerExit(project, rt) {
+  rt.healerLastExitAt = Date.now();
+  selfhealRoundState.lastExitAt[project.id] = rt.healerLastExitAt;
+  saveSelfhealRoundState();
+}
 // Heartbeat cadence so a healthy idle dev daemon keeps the status file fresh.
 const SELFHEAL_HEARTBEAT_MS = 60_000;
 
@@ -107,7 +130,7 @@ function ensureRuntime(project) {
       opencodeSessionId: '',
       resumeSessionId: '',
       healer: null,
-      healerLastExitAt: 0,
+      healerLastExitAt: Number(selfhealRoundState.lastExitAt[project.id]) || 0,
       // Sprint implement children (R1). seed/analyze stay on rt.child; a task
       // only becomes implement-ready after its own seed+analyze completed.
       sprintRuns: [],
@@ -1252,7 +1275,7 @@ function maybeStartHealer(project, rt, failedPhase, opts = {}) {
     timeout: 60_000
   });
   if (added.status !== 0) {
-    rt.healerLastExitAt = Date.now();
+    recordHealerExit(project, rt);
     autoResume.appendAudit(project, 'healer-failed', { phase: auditPhase, task, cause: 'worktree-failed' });
     appendLog(project.id, 'system', `✖ Self-heal worktree failed: ${String(added.stderr || '').trim().slice(0, 300)}`);
     emitState();
@@ -1261,7 +1284,7 @@ function maybeStartHealer(project, rt, failedPhase, opts = {}) {
   const candidates = effectiveRunnerList(project).filter((id) => id !== rt.activeRunner);
   const runner = getRunner(candidates[0] || effectiveRunnerList(project)[0] || '');
   if (!runner) {
-    rt.healerLastExitAt = Date.now();
+    recordHealerExit(project, rt);
     autoResume.appendAudit(project, 'healer-failed', { phase: auditPhase, task, cause: 'no-runner' });
     appendLog(project.id, 'system', '✖ Self-heal skipped: no runner available for this project.');
     emitState();
@@ -1300,7 +1323,7 @@ function maybeStartHealer(project, rt, failedPhase, opts = {}) {
       sessionId: ''
     });
   } catch (error) {
-    rt.healerLastExitAt = Date.now();
+    recordHealerExit(project, rt);
     removeHealWorktree(healer);
     autoResume.appendAudit(project, 'healer-failed', { phase: auditPhase, task, cause: 'spawn-failed' });
     appendLog(project.id, 'system', `✖ Self-heal could not build a command: ${error.message}`);
@@ -1311,7 +1334,7 @@ function maybeStartHealer(project, rt, failedPhase, opts = {}) {
   try {
     child = spawn(built.command, built.args, built.options);
   } catch (error) {
-    rt.healerLastExitAt = Date.now();
+    recordHealerExit(project, rt);
     removeHealWorktree(healer);
     autoResume.appendAudit(project, 'healer-failed', { phase: auditPhase, task, cause: 'spawn-failed' });
     appendLog(project.id, 'system', `✖ Self-heal could not start: ${error.message}`);
@@ -1326,17 +1349,23 @@ function maybeStartHealer(project, rt, failedPhase, opts = {}) {
   appendLog(project.id, 'system', `✚ Self-heal round started on ${branch} (${runner.label}).`);
   emitState();
 
+  let killTimer = null;
   const timer = setTimeout(() => {
     if (rt.healer !== healer) return;
     healer.timedOut = true;
     try { child.kill('SIGTERM'); } catch { /* already gone */ }
+    killTimer = setTimeout(() => {
+      if (finished || rt.healer !== healer) return;
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    }, 10_000);
   }, HEALER_TIMEOUT_MS);
   let finished = false;
   const finish = (ok, cause) => {
     if (finished || rt.healer !== healer) return;
     finished = true;
     clearTimeout(timer);
-    rt.healerLastExitAt = Date.now();
+    if (killTimer) clearTimeout(killTimer);
+    recordHealerExit(project, rt);
     healer.exitedAt = Date.now();
     autoResume.appendAudit(project, 'healer-exit', {
       phase: auditPhase,
@@ -1391,8 +1420,9 @@ function maybeHealForeignPrimary(project, rt) {
   if (!decision.ok) return;
   const intent = decision.intent;
   const digest = `${intent.runKey || ''}|${String(intent.error || '').slice(0, 300)}`;
-  if (foreignHealedErrors.get(project.id) === digest) return;
-  foreignHealedErrors.set(project.id, digest);
+  if (selfhealRoundState.digests[project.id] === digest) return;
+  selfhealRoundState.digests[project.id] = digest;
+  saveSelfhealRoundState();
   autoResume.appendAudit(project, 'healer-triggered-by-primary', {
     phase: healerAuditPhase(intent.nextPhase),
     task: intent.currentTask || '',
