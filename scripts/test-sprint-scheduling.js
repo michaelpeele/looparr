@@ -150,6 +150,16 @@ function testSprintsParallelAndOffModes() {
   assert.deepEqual(due, [], 'no validation round in off mode');
 }
 
+function testSprintsParallelFalseKeepsOneSprint() {
+  const plan = makePlan(
+    '- [ ] B1 [sprint:backend] (depends: 99)\n- [ ] F1 [sprint:frontend]'
+  );
+  const single = makeProject({ sprintMode: 'parallel', sprintsParallel: false });
+  assertEqual(engine.chooseSprintCandidate(plan, single, makeRt()), null, 'a blocked first sprint does not leak into the next sprint');
+  const both = makeProject({ sprintMode: 'parallel', sprintsParallel: true });
+  assertEqual(engine.chooseSprintCandidate(plan, both, makeRt()).text, 'F1', 'sprintsParallel lets the next sprint advance');
+}
+
 function testDependencyBlockedSkipped() {
   const project = makeProject({ sprintMode: 'parallel' });
   const rt = makeRt();
@@ -196,16 +206,33 @@ function testStartedFromDiskAfterRestart() {
     // Fresh project id bypasses the 5s git-state cache, the way a new process would.
     const restartProject = makeProject({ id: `proj-disk-${Date.now()}-r2`, path: repo, sprintMode: 'parallel' });
     const runId = sprintLib.runIdFor(restartProject.id, 'frontend');
-    fs.mkdirSync(path.join(repo, '.looparr', 'sruns', runId, 'sprint'), { recursive: true });
+    fs.mkdirSync(path.join(repo, '.looparr', 'sprints', runId, 'sprint'), { recursive: true });
     started = engine.startedTaskIndexes(restartProject, plan, makeRt());
     started = engine.startedTaskIndexes(restartProject, plan, makeRt());
-    assertOk(started.has(1), 'matching .looparr/sruns run dir marks the task started');
+    assertOk(started.has(1), 'matching .looparr/sprints run dir marks the task started');
     // Active runtime state also marks tasks started.
     const rt = makeRt({ sprintRuns: [{ taskIndex: 1, child: null, status: 'running' }] });
     fs.rmSync(path.join(repo, '.looparr'), { recursive: true, force: true });
     git(repo, ['branch', '-D', 'looparr/task/backend/add-api']);
     started = engine.startedTaskIndexes(project, plan, rt);
     assertOk(started.has(1), 'sprint run with no child still counts as started');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+function testMergeBranchesIncludesCheckedTasks() {
+  const repo = makeTempRepo();
+  try {
+    git(repo, ['branch', 'looparr/task/backend/one']);
+    git(repo, ['branch', 'looparr/task/backend/two']);
+    const plan = makePlan('- [x] one [sprint:backend]\n- [x] two [sprint:backend]');
+    const result = engine.sprintTaskBranchesInOrder(repo, plan, 'backend');
+    assertOk(result.ok, `checked sprint tasks still contribute branches: ${result.error}`);
+    assert.deepEqual(result.branches, [
+      'looparr/task/backend/one',
+      'looparr/task/backend/two'
+    ], 'task branches merge in task-index order, including checked tasks');
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
   }
@@ -237,6 +264,9 @@ function testEngineWiringAssertions() {
   const startStep = src.indexOf('function startStep(');
   const step = src.slice(startStep, src.indexOf('\nfunction ', startStep + 1));
   assertOk(step.includes('sprintPending'), 'startStep routes sprint implement tasks through sprintPending');
+  assertOk(step.includes('sprintValidation'), 'startStep does not mix normal steps with a validation round');
+  assertOk(src.includes('sprintValidation.child.kill'), 'stop() kills the validation child');
+  assertOk(src.includes('sprintTaskBranchesInOrder'), 'end-of-sprint merge helper exists');
   assertOk(step.includes('nextPhase = \'seed\''), 'sprint interception reseeds the phase machine');
   assertOk(src.includes('sprintPromptBlock'), 'sprint prompt block exists for prompt injection');
   assertOk(src.includes('sprintTestCommand') || src.includes('testCommand'), 'validation uses the configured sprint test command');
@@ -256,8 +286,10 @@ run('parallel mode: all ready tasks', testParallelModeOffersAllReadyTasks);
 run('busy/failed/pending runs skipped', testBusyAndFailedRunsSkipped);
 run('validation deferred then due', testValidationTaskDeferredAndDue);
 run('sprintsParallel vs off modes', testSprintsParallelAndOffModes);
+run('sprintsParallel false keeps one sprint', testSprintsParallelFalseKeepsOneSprint);
 run('dependency blocked skipped', testDependencyBlockedSkipped);
 run('started from disk after restart', testStartedFromDiskAfterRestart);
+run('merge branches includes checked tasks', testMergeBranchesIncludesCheckedTasks);
 run('engine wiring assertions', testEngineWiringAssertions);
 
 console.log(`test-sprint-scheduling: ${pass} groups passed`);

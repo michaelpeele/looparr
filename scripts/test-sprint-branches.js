@@ -68,6 +68,8 @@ function testBranchForTaskCollision() {
     git(repo, ['branch', 'looparr/task/backend/add-api-2']);
     git(repo, ['branch', 'looparr/task/backend/add-api-3']);
     assertEqual(sprint.branchForTask(repo, 'backend', 'add api'), 'looparr/task/backend/add-api-4', 'collision counter walks forward');
+    git(repo, ['branch', 'looparr/task/backend/walk-suffix-6']);
+    assertEqual(sprint.existingTaskBranch(repo, 'backend', 'walk suffix'), 'looparr/task/backend/walk-suffix-6', 'existingTaskBranch finds unbounded collision suffixes');
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
   }
@@ -77,6 +79,7 @@ function testWorktreeAddAndRemove() {
   const repo = makeTempRepo();
   try {
     const worktree = sprint.taskWorktreePath(repo, sprint.runIdFor('proj1', 'backend'), 0);
+    assertOk(worktree.includes(`${path.sep}.looparr${path.sep}sprints${path.sep}`), 'worktrees live under .looparr/sprints');
     const added = sprint.addTaskWorktree(repo, worktree, 'looparr/task/backend/add-api', 'main');
     assertOk(added.ok, `worktree add succeeds: ${added.stderr}`);
     assertOk(fs.existsSync(worktree), 'worktree directory exists');
@@ -125,6 +128,11 @@ function testMergeTaskBranchesInOrder() {
     for (const path_ of [sprintWorktree, ...branches.map((b) => b.worktree)]) {
       sprint.removeWorktree(repo, path_);
     }
+    // Re-creating the sprint worktree must reuse the existing branch, not try
+    // to cut it again with -b (manual merge retry / validation restart path).
+    const reused = sprint.ensureSprintWorktree(repo, sprintWorktree, 'looparr/sprint/backend', 'main');
+    assertOk(reused.ok, 'sprint worktree reuses an existing branch');
+    sprint.removeWorktree(repo, sprintWorktree);
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
   }

@@ -202,3 +202,22 @@ dropdown; `public/app.js` renders the two task-card toggles with `disabled` when
 `scripts/test-plan-prompt-flow.js` all pass. Remaining work is the implement-phase audit of
 R1-R10 against the code, gap fixes if any, full verification, production promotion check, and
 the plan.md checkbox.
+
+## Implement-phase audit (2026-11-25)
+
+The audit found and fixed five gaps without changing the R1-R10 semantics:
+
+1. Worktrees were under `.looparr/sruns`; they now use the specified `.looparr/sprints`.
+2. `sprintTaskBranchesInOrder` skipped checked tasks, so the end-of-sprint merge merged nothing;
+   it now includes every non-validation task in checklist order.
+3. Sprint worktree creation used `worktree add -b` even when the sprint branch already existed;
+   validation and the manual merge route now use `ensureSprintWorktree`, making retries idempotent.
+4. `sprintsParallel: false` did not constrain scheduling; `chooseSprintCandidate` now keeps one
+   sprint active unless parallel sprints are enabled.
+5. `editTask` could not remove the last task flag from the UI; a bare-text toggle now drops flags
+   while preserving sprint membership and dependency suffixes.
+
+Also tightened R1/R6: `startStep` will not run a normal step while sprint children or validation
+are active, and Stop/shutdown now kill the validation child. `existingTaskBranch` scans collision
+suffixes without a fixed `-2..-5` limit. The focused suites and full `npm test` pass after these
+fixes.

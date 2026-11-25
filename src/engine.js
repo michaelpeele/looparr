@@ -373,6 +373,7 @@ function getState() {
             }
           : null,
         lastSprintValidation: rt.lastSprintValidation || null,
+        started: taskStartedFlags(project, plan, rt),
         startedTasks: taskStartedFlags(project, plan, rt),
         status,
         nextPhase: rt.nextPhase || 'seed',
@@ -1722,6 +1723,10 @@ function stop(id) {
       run.child = null;
     }
   }
+  if (rt.sprintValidation?.child) {
+    try { rt.sprintValidation.child.kill('SIGTERM'); } catch { /* already gone */ }
+    rt.sprintValidation.child = null;
+  }
   rt.sprintRuns = [];
   rt.sprintPending = [];
   rt.sprintValidation = null;
@@ -2154,11 +2159,7 @@ function sprintRunKey(project, sprint, taskText) {
 
 // Expected (possibly collision-suffixed) branch of an earlier sprint task.
 function existingTaskBranch(repo, sprint, taskText) {
-  const base = `looparr/task/${sprintLib.slug(sprint, 40)}/${sprintLib.slug(taskText, 40)}`;
-  for (const name of [base, `${base}-2`, `${base}-3`, `${base}-4`, `${base}-5`]) {
-    if (sprintLib.branchExists(repo, name)) return name;
-  }
-  return '';
+  return sprintLib.existingTaskBranch(repo, sprint, taskText);
 }
 
 // Pure scheduling helper (also under test): which unchecked task may advance.
@@ -2182,6 +2183,11 @@ function chooseSprintCandidate(plan, project, rt) {
     if (!flags.sprint) continue;
     if (!firstUncheckedBySprint.has(flags.sprint)) firstUncheckedBySprint.set(flags.sprint, task.index);
   }
+  const activeSprint = rt.sprintValidation?.sprint
+    || rt.sprintRuns.find((run) => run.child || run.status === 'running')?.sprint
+    || rt.sprintPending[0]?.sprint
+    || firstUncheckedBySprint.keys().next().value
+    || '';
   for (const task of plan.tasks) {
     if (task.checked) continue;
     const flags = planLib.taskFlags(task);
@@ -2191,6 +2197,7 @@ function chooseSprintCandidate(plan, project, rt) {
     }
     if (flags.validationType) continue; // deferred: expectSprintValidation handles it
     if (busy.has(task.index)) continue;
+    if (!settings.sprintsParallel && flags.sprint !== activeSprint) continue;
     if (settings.mode === 'serial' && firstUncheckedBySprint.get(flags.sprint) !== task.index) continue;
     if (dependencyViews[task.index]?.blocked) continue;
     return task;
@@ -2237,7 +2244,6 @@ function expectSprintValidation(plan, project, rt) {
 function sprintTaskBranchesInOrder(repo, plan, sprint) {
   const branches = [];
   for (const task of plan.tasks) {
-    if (task.checked) continue;
     const flags = planLib.taskFlags(task);
     if (flags.sprint !== sprint || flags.validationType) continue;
     const branch = existingTaskBranch(repo, sprint, task.text);
@@ -2258,8 +2264,8 @@ function projectGitState(project) {
   const state = {
     at: Date.now(),
     branches: sprintLib.listBranches(project.path, 'looparr/*'),
-    sruns: (() => {
-      try { return fs.readdirSync(path.join(project.path, '.looparr', 'sruns')); } catch { return []; }
+    sprints: (() => {
+      try { return fs.readdirSync(path.join(project.path, '.looparr', 'sprints')); } catch { return []; }
     })()
   };
   gitStateCache.set(project.id, state);
@@ -2275,7 +2281,7 @@ function startedTaskIndexes(project, plan, rt) {
   for (const run of rt.sprintRuns) started.add(run.taskIndex);
   for (const pending of rt.sprintPending) started.add(pending.taskIndex);
   const state = projectGitState(project);
-  for (const runId of state.sruns) {
+  for (const runId of state.sprints) {
     const match = plan.tasks.find((task) => !task.checked
       && sprintLib.runIdFor(project.id, planLib.sprintOfTask(task) || '') === runId);
     if (match) started.add(match.index);
@@ -2481,13 +2487,14 @@ function startSprintRun(project, rt, entry, options = {}) {
   return true;
 }
 
-function runSprintValidationAsync(worktree, command) {
+function runSprintValidationAsync(worktree, command, onChild) {
   return new Promise((resolve) => {
     const cmd = String(command || '').trim() || 'npm test';
     const childData = spawn('sh', ['-c', cmd], {
       cwd: worktree,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0', CI: '1' }
     });
+    if (typeof onChild === 'function') onChild(childData);
     let output = '';
     let timedOut = false;
     const timer = setTimeout(() => {
@@ -2516,7 +2523,7 @@ function startSprintValidation(project, rt, due, options = {}) {
   const sprintBranch = sprintLib.sprintBranchFor(due.sprint);
   const sprintBranchExists = sprintLib.branchExists(repo, sprintBranch);
   const worktree = sprintLib.sprintWorktreePath(repo, runId);
-  rt.sprintValidation = {
+  const validation = {
     sprint: due.sprint,
     taskIndex: due.taskIndex,
     taskText: due.taskText,
@@ -2525,11 +2532,12 @@ function startSprintValidation(project, rt, due, options = {}) {
     status: 'merging',
     startedAt: Date.now()
   };
+  rt.sprintValidation = validation;
   emitState();
   (async () => {
     try {
       if (!fs.existsSync(worktree)) {
-        const ensured = sprintLib.addTaskWorktree(repo, worktree, sprintBranch, sprintBranchExists ? sprintBranch : '');
+        const ensured = sprintLib.ensureSprintWorktree(repo, worktree, sprintBranch, sprintBranchExists ? sprintBranch : '');
         if (!ensured.ok) throw new Error(`Sprint worktree failed: ${String(ensured.stderr || ensured.stdout).trim().slice(0, 300)}`);
         appendLog(project.id, 'system', `✚ Sprint branch ${sprintBranch} cut for validation.`);
       }
@@ -2541,14 +2549,17 @@ function startSprintValidation(project, rt, due, options = {}) {
       if (branches.branches.length) {
         const mergeResult = sprintLib.mergeTaskBranches(worktree, branches.branches, 'looparr/sprint');
         if (!mergeResult.ok) {
-          throw new Error(`Sprint merge failed at ${mergeResult.error}`);
+          throw Object.assign(new Error(`Sprint merge failed at ${mergeResult.error}`), { tail: mergeResult.output });
         }
       }
       rt.sprintValidation.status = 'testing';
       emitState();
       appendLog(project.id, 'system', `… Running sprint test round: ${settings.testCommand}`);
       const testResult = options.testResult
-        || await runSprintValidationAsync(worktree, settings.testCommand);
+        || await runSprintValidationAsync(worktree, settings.testCommand, (child) => {
+          if (rt.sprintValidation === validation) validation.child = child;
+        });
+      if (rt.sprintValidation !== validation || !rt.active || rt.status === 'idle') return;
       if (!testResult.ok) {
         const tail = redactedOutputTail(testResult.output);
         rt.lastSprintValidation = {
@@ -2557,7 +2568,6 @@ function startSprintValidation(project, rt, due, options = {}) {
           at: new Date().toISOString(),
           error: `Sprint validation failed (${due.sprint}); exit ${testResult.exitCode}`
         };
-        rt.sprintValidation = null;
         throw Object.assign(new Error(`Sprint validation failed (${due.sprint}); test command ${testResult.command} exited ${testResult.exitCode}${testResult.timedOut ? ' (timeout)' : ''}`), { tail });
       }
       const planAfter = planLib.readPlan(repo);
@@ -2586,6 +2596,7 @@ function startSprintValidation(project, rt, due, options = {}) {
       emitState();
       scheduleTick();
     } catch (error) {
+      if (rt.sprintValidation !== validation) return;
       rt.lastSprintValidation = {
         sprint: due.sprint,
         status: error && rt.lastSprintValidation?.status === 'failed' ? 'failed' : 'error',
@@ -2644,7 +2655,12 @@ function mergeSprintBranches(id, sprintName) {
     let ensured;
     if (fs.existsSync(worktree)) ensured = { ok: true };
     else {
-      ensured = sprintLib.addTaskWorktree(project.path, worktree, branch, sprintLib.branchExists(project.path, branch) ? branch : '');
+      ensured = sprintLib.ensureSprintWorktree(
+        project.path,
+        worktree,
+        branch,
+        sprintLib.branchExists(project.path, branch) ? branch : ''
+      );
     }
     if (!ensured.ok) {
       return { ok: false, status: 500, error: `Sprint worktree failed for ${sprint}`, output: `${ensured.stderr || ''}${ensured.stdout || ''}` };
@@ -2669,6 +2685,9 @@ function mergeSprintBranches(id, sprintName) {
 async function startStep(project) {
   const rt = ensureRuntime(project);
   if (rt.child || rt.starting || !rt.active || rt.paused) return;
+  // A project runs either its normal single-step pipeline or sprint children,
+  // never both at once (R1). Pending implement entries are pumped by tick().
+  if (rt.sprintValidation || rt.sprintRuns.some((run) => run.child)) return;
   // A waiting plan project must never spawn from the loop: only an answer PUT
   // or plan-confirm advance it.
   if (WAITING_STATUSES.has(rt.status)) return;
@@ -3490,6 +3509,9 @@ function shutdown() {
         try { run.child.kill('SIGTERM'); } catch { /* ignore */ }
       }
     }
+    if (rt?.sprintValidation?.child) {
+      try { rt.sprintValidation.child.kill('SIGTERM'); } catch { /* ignore */ }
+    }
   }
   for (const watcher of watchers.values()) watcher.close();
   watchers.clear();
@@ -3545,6 +3567,7 @@ module.exports = {
   chooseSprintCandidate,
   expectSprintValidation,
   sprintSettingsFor,
+  sprintTaskBranchesInOrder,
   startedTaskIndexes,
   mergeSprintBranches
 };

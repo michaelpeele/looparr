@@ -8,7 +8,7 @@ Looparr is a local, self-hosted dashboard that drives a three-step Markdown chec
 
 Looparr keeps every prompt one-shot and scoped to a single task. That drives a cache-to-context ratio between 88% and 99.2% cache, which keeps token cost low enough to run almost 24/7 on one free provider. Multiple free providers are configured, and the next step is parallel processing across them.
 
-Two additions are queued in `plan.md`. A Plan prompt type lets questions come back and maps out a complete `plan.md` before Analyze and Implement run on the new list. Sprint support splits a project into phases such as backend and frontend, with options for parallel sprints and parallel tasks, each task in its own Git branch, a merge at the end of the sprint, and an automated testing round. Both go through question and design before implementation.
+Two additions are implemented. A Plan prompt type lets questions come back and maps out a complete `plan.md` before Analyze and Implement run on the new list. Sprint support splits a project into phases such as backend and frontend, with options for parallel sprints and parallel tasks, each task in its own Git branch, a merge at the end of the sprint, and an automated testing round.
 
 ## Requirements
 
@@ -101,6 +101,14 @@ For every unchecked task, Looparr runs isolated, fresh-session steps via the sel
 Each step runs in the project directory. Seed passes the plan path in the prompt text instead of `--file` attachments; Analyze and Implement pass the handoff text inline in the prompt. Logs stream live to the project card drawer.
 
 After a Seed or Analyze step, open the project drawer and use **Question handoff** to refresh, edit, and save the current `.looparr/next_prompt.txt`. Press **Start** again after saving the answer.
+
+### Sprints and phases
+
+Open a project drawer and expand **Sprints and phases**. Add named sprints, choose `off`, `serial`, or `parallel` for tasks inside a sprint, and optionally enable **Run several sprints in parallel**. Set the sprint test command (default `npm test`) and whether a passing sprint merges its integration branch into the local main branch.
+
+Assign tasks to a sprint from the add-task row, or append `[sprint:<name>]` to a task line. Task cards expose **Merge previous** and **Deploy main** toggles; both are disabled once the task has started. A validation task is created from the add-task row's validation-type menu (Sprint, Backend, Frontend, Docs) and is stored as `(validation: <Type>) [Type] Validation [sprint:<name>]`. It runs only after every non-validation task in that sprint is checked.
+
+Each sprint task runs in its own `looparr/task/<sprint>/<slug>` branch and worktree under `.looparr/sprints/`. At sprint end Looparr merges the task branches in checklist order into `looparr/sprint/<name>` and runs the test command there. A failed test leaves the branches and worktree for review and does not merge to main. All merges are local; Looparr never pushes or switches the live checkout. **Merge sprint branches** retries the local end-of-sprint merge without running the test round.
 
 ### Headless prompt files and archive flow
 

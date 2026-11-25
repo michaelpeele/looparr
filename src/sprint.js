@@ -26,7 +26,7 @@ function slug(text, maxLength = 40) {
   return slugified || 'task';
 }
 
-// Stable per-project/per-sprint id for the .looparr/sruns/<runId> directory.
+// Stable per-project/per-sprint id for the .looparr/sprints/<runId> directory.
 function runIdFor(projectId, sprint) {
   return slug(`${projectId || 'project'}-${sprint || 'sprint'}`, 80);
 }
@@ -102,6 +102,20 @@ function branchForTask(repo, sprint, taskText) {
   return candidate;
 }
 
+// Find the branch already cut for a task, including any collision suffix. The
+// suffix is unbounded, so merge-previous and end-of-sprint merges must scan
+// rather than checking a fixed -2..-5 list.
+function existingTaskBranch(repo, sprint, taskText) {
+  const base = `looparr/task/${slug(sprint, 40)}/${slug(taskText, 40)}`;
+  if (branchExists(repo, base)) return base;
+  const existing = new Set(listBranches(repo, `${base}-*`));
+  for (let counter = 2; counter <= 100; counter += 1) {
+    const candidate = `${base}-${counter}`;
+    if (existing.has(candidate)) return candidate;
+  }
+  return '';
+}
+
 function sprintBranchFor(sprint) {
   return assertLooparrBranch(`looparr/sprint/${slug(sprint, 40)}`);
 }
@@ -112,17 +126,17 @@ function taskBranchForSprintOf(branch) {
   return match ? match[1] : '';
 }
 
-// Worktrees live under the project: .looparr/sruns/<runId>/task-<taskIndex>.
+// Worktrees live under the project: .looparr/sprints/<runId>/task-<taskIndex>.
 function taskWorktreePath(projectPath, runId, taskIndex) {
-  return path.join(projectPath, '.looparr', 'sruns', runId, `task-${taskIndex}`);
+  return path.join(projectPath, '.looparr', 'sprints', runId, `task-${taskIndex}`);
 }
 
 function sprintWorktreePath(projectPath, runId) {
-  return path.join(projectPath, '.looparr', 'sruns', runId, 'sprint');
+  return path.join(projectPath, '.looparr', 'sprints', runId, 'sprint');
 }
 
 function mainWorktreePath(projectPath, runId) {
-  return path.join(projectPath, '.looparr', 'sruns', runId, 'main');
+  return path.join(projectPath, '.looparr', 'sprints', runId, 'main');
 }
 
 // Worktrees other than the repo root itself, for reuse checks.
@@ -301,6 +315,7 @@ module.exports = {
   currentBranch,
   mainBranchFor,
   branchForTask,
+  existingTaskBranch,
   sprintBranchFor,
   taskBranchForSprintOf,
   taskWorktreePath,

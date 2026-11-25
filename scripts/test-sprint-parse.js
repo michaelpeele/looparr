@@ -92,6 +92,13 @@ function testJoinTokensAndEditRoundTrip() {
   assertEqual(afterFlip[0].mergePrevious, true, 'merge-previous kept');
   assertEqual(afterFlip[0].deployMain, true, 'deploy-main added');
   assertEqual(afterFlip[0].sprint, 'backend', 'sprint kept');
+  // Toggling the last flag off sends the bare task text; flags drop while the
+  // sprint membership and dependency suffix survive.
+  const toggledOff = plan.editTask(flipped.content, 0, 'Renamed task');
+  const afterToggleOff = plan.parseTasks(toggledOff.content);
+  assertEqual(afterToggleOff[0].mergePrevious, false, 'merge-previous removed by bare-text toggle');
+  assertEqual(afterToggleOff[0].deployMain, false, 'deploy-main removed by bare-text toggle');
+  assertEqual(afterToggleOff[0].sprint, 'backend', 'sprint survives flag removal');
   // Checklist index untouched: two-task plan, edit only item 2.
   const two = '- [ ] First task\n- [ ] Second task [sprint:ui]';
   const edit2nd = plan.editTask(two, 1, 'Second renamed');

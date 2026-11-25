@@ -74,6 +74,14 @@ order; each step ends with its focused tests.
   `/api/state` returns projects and settings including the new sprint fields.
 - `node scripts/validate-handoff.js .looparr/next_prompt.txt` clean before handoff.
 
+## Implement-phase audit (2026-11-25)
+
+The R1-R10 audit fixed the `.looparr/sruns` -> `.looparr/sprints` path typo, included checked
+tasks in the end-of-sprint merge, reused existing sprint worktrees on retry, enforced
+`sprintsParallel: false`, allowed the last task flag to be toggled off, prevented normal steps
+from mixing with sprint children, and made Stop/shutdown kill the validation child. No build
+order or public flow changed.
+
 ## Commit scope
 Stage only: `src/config.js`, `src/plan.js`, `src/engine.js`, `src/sprint.js`, `server.js`,
 `public/index.html`, `public/app.js`, `public/styles.css`, the new

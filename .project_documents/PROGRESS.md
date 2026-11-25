@@ -797,3 +797,25 @@ Live Vibe task through production:
 - Handoff provenance now carries the task text plus local `YYYY-MM-DD`. `readHandoffTask()` consumes only the task line, so older plain sidecars and restart provenance checks stay valid.
 - Added global/per-project `planModel`/`planRotation`, concrete default `opencode/big-pickle`, both plan prompt templates, picker groups, and UI controls. Waiting states preserve through restart, block spawn, and disable Start/Pause while Stop stays available.
 - Tests: `scripts/test-plan-prompt-flow.js` (new) covers the 11 required plan-flow scenarios — non-plan flow unchanged, `planQuestions` parks in `waitingAnswer` with no auto-spawn, answer PUT advances to `planWrite` with a single spawn, planWrite guard failures (empty/meta/missing doc/tasks), `waitingConfirm` without auto-spawn, `plan-confirm` resume + 409 on wrong state, the original `(plan)` line no longer `plan.next` after confirm, `eligibleProjects()` waiting-state exclusions, restart resume/degrade rules, settings/template validation, and untouched cooling/rate-limit paths. Appended to the `package.json` test chain. `node --check` on touched JS, `git diff --check`, and full `npm test` pass. No deploy; the `plan.md` marker for this task is flipped.
+
+## Sprints/phases implement-phase audit (2026-11-25)
+
+- R1: `rt.sprintRuns`/`sprintPending`/`sprintValidation` are initialized and counted by `tick()`/`maxWorkers()`; `startStep()` now refuses to mix normal steps with active sprint children, and Stop/shutdown kill sprint and validation children.
+- R2: Branch/worktree helpers use `looparr/task/<sprint>/<slug>` and `looparr/sprint/<sprint>` under `.looparr/sprints/<runId>`; the prior `.looparr/sruns` typo was corrected and `existingTaskBranch` now scans unbounded collision suffixes.
+- R3: Validation tasks defer until non-validation sprint tasks are checked; end-of-sprint merge now includes checked tasks in task-index order, reuses an existing sprint branch/worktree, and runs `sprintTestCommand` in that worktree.
+- R4: `/api/projects/:id/plan` exposes per-task `started`, `/api/state` exposes both `started` and `startedTasks`, and disk branches/worktrees survive restart; UI toggles are disabled when started.
+- R5: `[merge-previous]` merges earlier checked task branches before the task branch is used; task `[deploy-main]` and sprint `sprintDeployMain` merge locally after their respective completion gates, with conflicts aborted and retained.
+- R6: Success removes the task worktree; failures/conflicts/validation failures keep branches/worktrees, redact git/test output, wrap echoed output in UNTRUSTED markers, and never force-remove or push.
+- R7: `normalizeProject` normalizes `sprintMode`, `sprintsParallel`, `sprints`, `sprintTestCommand`, and `sprintDeployMain` per project; server create/patch routes validate the same fields.
+- R8: Sprint implement prompts receive the sprint block with branch, worktree, merge flags, worktree-only commit rule, plan.md prohibition, local-only rule, and untrusted-output note.
+- R9: `POST /api/projects/:id/sprint/merge` is the only new route; it merges existing task branches in order, reuses the sprint worktree, and is idempotent for retry.
+- R10: Old plans parse unchanged, tokens are stripped from display text, `editTask` preserves tokens on text edits, and a bare-text toggle now removes the last flag while preserving sprint/dependency metadata.
+- Focused suites and full `npm test` pass after the audit fixes; `node --check` and `git diff --check` are clean.
+
+## Sprints/phases implementation promotion (2026-11-25)
+
+- Verification: `node scripts/test-sprint-parse.js && node scripts/test-sprint-scheduling.js && node scripts/test-sprint-branches.js` passed (8/12/8 assertion groups); full `npm test` passed; `node --check` passed on all touched JS; `git diff --check` clean.
+- Production: `docker compose build looparr && docker compose up -d looparr` rebuilt `looparr:latest`, image `sha256:d2da7c55ea93cecda28ebd8ea1b6d01906d3c34f5c190d793d1f5c623c1a654e`; container healthy on that image.
+- Served `/`, `/styles.css`, `/app.js` hashes match local `public/index.html`, `public/styles.css`, `public/app.js`; container/local source hashes match for 11 runtime files.
+- `GET /api/state` reports `sprintMode: "off"`, `sprintsParallel: false`, `sprints: []`, `sprintTestCommand: "npm test"`, `sprintDeployMain: false`, plus `sprintRuns`, `sprintPending`, `sprintValidation`, `lastSprintValidation`, `started`, and `startedTasks` per project. No sprint fields or behavior changed for `sprintMode: off`.
+- No residual gap found; no push, no remote operation, and no live checkout switch.

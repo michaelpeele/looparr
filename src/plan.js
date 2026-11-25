@@ -282,7 +282,8 @@ function editTask(content, index, newText) {
   // a plain text edit can never drop sprint membership or merge flags (R10).
   // Tokens the caller explicitly sent on the new line win over the old ones so
   // an API edit can add or drop a flag.
-  const explicit = Boolean(incoming.dependencySuffix || incoming.sprint || incoming.mergePrevious || incoming.deployMain);
+  const explicit = Boolean(incoming.dependencySuffix || incoming.sprint || incoming.mergePrevious || incoming.deployMain)
+    || normalized === target.task.text;
   const text = explicit ? incoming.text : normalized;
   if (!text) return { ok: false, error: 'Task text is required' };
   const parts = [text];
