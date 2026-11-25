@@ -92,6 +92,10 @@ function testEngine() {
   assertIncludes(engine, 'function finishHealerRound(', 'end-of-round teardown');
   assertIncludes(engine, 'healer.exitCode = code', 'healer exit code recorded');
   assertIncludes(engine, 'finishHealerRound(project, healer, \'healed\'', 'analysis on healed rounds');
+  assertIncludes(engine, 'function isMergeableHealer(', 'mergeable healer guard');
+  assertIncludes(engine, 'rt.lastHealer = isMergeableHealer(healer) ? healer : null', 'failed rounds are not parked');
+  assertIncludes(engine, 'isMergeableHealer(parked)', 'parked healer view is gated');
+  assertIncludes(engine, 'isMergeableHealer(snap.lastHealer)', 'restored healer view is gated');
   assertAbsent(engine, "'push'", 'engine never publishes git');
   assertAbsent(engine, '"push"', 'engine never publishes git (double quotes)');
   assert.ok(!/'git',\s*'push'/.test(engine), 'engine has no git publish call');

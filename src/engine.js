@@ -399,7 +399,8 @@ function getState() {
         autoResumeOnStart: project.autoResumeOnStart === true,
         autoResumePending: fs.existsSync(autoResume.statePath(project)),
         selfHealer: (() => {
-          const healerView = rt.healer || rt.lastHealer;
+          const parked = rt.lastHealer;
+          const healerView = rt.healer || (isMergeableHealer(parked) && readHealerStatus(project.id) ? parked : null);
           return healerView
             ? {
                 state: healerView.state,
@@ -1224,14 +1225,18 @@ function finishHealerRound(project, healer, outcome, cause) {
     );
   }
   writeHealerStatus(project, healer);
-  // The round is over: park it in lastHealer so the pill and the merge
-  // button survive (rt is free to run another round later).
+  // Park only a fresh, unmerged healed round so the merge button survives.
+  // Failed or merged rounds must not pin the pill to a stale non-idle state.
   const rt = runtime.get(project.id);
   if (rt && rt.healer === healer) {
-    rt.lastHealer = healer;
+    rt.lastHealer = isMergeableHealer(healer) ? healer : null;
     rt.healer = null;
   }
   emitState();
+}
+
+function isMergeableHealer(healer) {
+  return !!healer && healer.state === 'healed' && !healer.mergedAt;
 }
 
 function healerAuditPhase(failedPhase) {
@@ -3402,10 +3407,10 @@ async function resumeOnStart() {
           if (restored.state === 'debugging' || restored.state === 'healing') restored.state = 'error';
           rt.healer = restored;
         }
-        if (!snap.healer && snap.lastHealer && typeof snap.lastHealer === 'object' && !Array.isArray(snap.lastHealer)) {
+        if (!snap.healer && isMergeableHealer(snap.lastHealer)) {
           rt.lastHealer = { ...snap.lastHealer };
         } else {
-          rt.lastHealer = rt.healer;
+          rt.lastHealer = null;
         }
       }
       appendLog(project.id, 'system', `↻ Auto-resume after restart (phase ${phase}).`);
