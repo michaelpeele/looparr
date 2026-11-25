@@ -163,3 +163,42 @@ write tokens through the existing `PUT /api/projects/:id/plan` (`editTask`) path
 ### R10. Backward compatibility
 Old plans without tokens parse unchanged; tokens are stripped from display text; `editTask`
 preserves them like dependency suffixes; checklist indices are unchanged.
+
+## ANALYZE verification round (2026-11-25)
+
+Fresh analysis round for the same plan.md task. The five required design questions map to the
+answers above; no new decisions, this section records the mapping and the on-disk verification.
+
+1. **Parallelism modes -> engine tick/runner pool:** Q3 + R1. `sprintMode`
+   (`off|serial|parallel`) selects tasks-inside-sprint behavior; `sprintsParallel` selects
+   sprints-in-parallel; both true = both. Three requested modes are the three non-off combinations.
+   Serialization assumption broken: one `rt.child` per project becomes `rt.child` plus
+   `rt.sprintRuns[]`; only implement runs concurrent; `maxWorkers()` counts all children.
+2. **Branch topology:** Q4 + R2 + Q8 + R3. Task branch `looparr/task/<sprint>/<task-slug>` cut from
+   the sprint integration branch `looparr/sprint/<sprint>` (or live HEAD when absent); dedicated
+   validation task merges all task branches in task-index order at sprint end, then runs
+   `sprintTestCommand` in the sprint worktree.
+3. **Merge options storage/injection/gray-out:** Q5 + Q6 + Q9 + R4 + R5. `[merge-previous]` and
+   `[deploy-main]` tokens in task text; injected as a sprint block in the implement prompt (R8);
+   gray-out rule is disk truth: runtime current/last-run task OR `looparr/task/<sprint>/<slug>`
+   branch exists OR sprint worktree exists (`startedTaskIndexes`, exposed via `/api/state` and
+   `/api/projects/:id/plan`).
+4. **Validation naming/parsing/UI:** Q7 + R3. `(validation: <Type>)` prefix renders as
+   `[Type] Validation`; add-task row offers Sprint/Backend/Frontend/Docs suggestions.
+5. **Failure handling:** Q8 + R5 + R6. Merge conflict -> abort merge, keep branch/worktree, set
+   error with redacted git output. Validation fail -> error with redacted test-log tail, no main
+   merge, validation task stays unchecked. Manual retry via idempotent
+   `POST /api/projects/:id/sprint/merge` (R9). No auto-reseed of failed sprint tasks.
+
+On-disk verification (2026-11-25): implementation exists and is committed (`6b524ea`).
+`src/config.js` normalizes all five sprint fields; `src/plan.js` parses/strips the tokens and
+`(validation:)` marker; `src/sprint.js` holds branch/worktree/merge/test helpers with
+`looparr/*` guards; `src/engine.js` has `sprintRuns`/`sprintPending`/`sprintValidation`,
+sprint-aware task choice, `startedTaskIndexes`, and the prompt block; `server.js:848` has the
+manual merge route; `public/index.html` has the sprints drawer section and validation-type
+dropdown; `public/app.js` renders the two task-card toggles with `disabled` when started.
+`scripts/test-sprint-parse.js` (8 groups), `scripts/test-sprint-branches.js` (8 groups),
+`scripts/test-sprint-scheduling.js` (10 groups), `scripts/test-plan-helpers.js`, and
+`scripts/test-plan-prompt-flow.js` all pass. Remaining work is the implement-phase audit of
+R1-R10 against the code, gap fixes if any, full verification, production promotion check, and
+the plan.md checkbox.
