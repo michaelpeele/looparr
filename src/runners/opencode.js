@@ -6,6 +6,13 @@ const path = require('path');
 const { spawn, execFileSync } = require('child_process');
 const { validateModelId } = require('../model-list');
 const { normalizeOpenCodeSessionId, opencodeSessionExists } = require('./opencode-session');
+const { loadDotEnv } = require('../env-file');
+
+// A local `opencode serve` (including the shared `--service` listener on
+// 4096) can require a password. The dev engine does not load the whole .env
+// (that would flip unrelated flags such as LOOPARR_EXECUTOR_URL), so pull in
+// only the attach password before any child inherits process.env.
+loadDotEnv(path.join(__dirname, '..', '..', '.env'), { keys: ['OPENCODE_PASSWORD'] });
 
 const SERVER_PORT = 4096;
 const SERVER_URL = `http://localhost:${SERVER_PORT}`;
