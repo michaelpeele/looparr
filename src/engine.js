@@ -2647,7 +2647,7 @@ async function startStep(project) {
     const sprintOn = sprintSettings.mode !== 'off';
     const task = sprintOn ? chooseSprintCandidate(plan, project, rt) : plan.next;
     if (!task) {
-      if (sprintOn && !plan.next) {
+      if (!plan.next) {
         rt.status = 'done';
         rt.active = false;
         rt.currentTask = '';

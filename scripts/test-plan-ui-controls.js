@@ -472,7 +472,15 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
       expectedDisabled[index],
       `row ${index} move-button disabled states`
     );
-    assertEqual((row.match(/<button[^>]*data-task-index="\d+"/g) || []).length, 7, `row ${index} control indexes`);
+    const buttons = [...row.matchAll(/<button[^>]*>/g)].map((match) => match[0]);
+    assertEqual(buttons.length, 9, `row ${index} button count`);
+    assert.ok(
+      buttons.every((button) => button.includes(`data-task-index="${checklistPlan.tasks[index].index}"`)),
+      `row ${index} control indexes`
+    );
+    const flags = [...row.matchAll(/data-action="toggle-flag" data-flag="(merge-previous|deploy-main)" data-task-index="(\d+)"/g)]
+      .map((match) => `${match[1]}:${match[2]}`);
+    assertEqual(flags.join(','), `merge-previous:${index},deploy-main:${index}`, `row ${index} flag controls`);
   });
   assertIncludes(normalRows[1], 'task-deps warn', 'dependency warning stays in label after controls');
   const editingRows = checklistRows(loadChecklistRenderer(appSource, 1).render(checklistPlan));
@@ -700,8 +708,8 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
 
   assertIncludes(appSource, "const UI_STATE_KEY = 'looparr.uiState.v1';", 'ui state key');
   assertIncludes(appSource, "const GLOBAL_SETTINGS_UI_STATE_KEY = 'looparr.settingsUiState.v1';", 'settings ui state key');
-  assertIncludes(appSource, "const UI_SECTION_KEYS = ['constraint', 'runner', 'startup', 'questions', 'plan', 'logs'];", 'ui section keys');
-  for (const sectionKey of ['constraint', 'runner', 'startup', 'questions', 'plan', 'logs']) {
+  assertIncludes(appSource, "const UI_SECTION_KEYS = ['constraint', 'runner', 'startup', 'questions', 'plan', 'logs', 'sprints'];", 'ui section keys');
+  for (const sectionKey of ['constraint', 'runner', 'startup', 'questions', 'plan', 'logs', 'sprints']) {
     assertIncludes(indexHtml, `data-section="${sectionKey}"`, `drawer section ${sectionKey}`);
     assertIncludes(indexHtml, `aria-controls="section-${sectionKey}-body"`, `section controls ${sectionKey}`);
     assertIncludes(indexHtml, `id="section-${sectionKey}-body"`, `section body ${sectionKey}`);

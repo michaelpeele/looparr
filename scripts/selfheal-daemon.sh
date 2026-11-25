@@ -265,11 +265,12 @@ install_unit() {
 [Unit]
 Description=Looparr standby self-heal engine (host)
 Documentation=file://$ROOT/SELFHEALING.md
-After=network-online.target docker.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=forking
+Environment=PATH=/home/michaelpeele/.opencode/bin:/home/michaelpeele/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 PIDFile=$PID_FILE
 WorkingDirectory=$ROOT
 ExecStart=$ROOT/scripts/selfheal-daemon.sh start

@@ -262,6 +262,38 @@ function testOpencodeBridgePayload() {
   );
 }
 
+function testDirectAttachFlagGuard() {
+  const executorUrl = process.env.LOOPARR_EXECUTOR_URL;
+  const runnerPath = require.resolve('../src/runners/opencode');
+  const registryPath = require.resolve('../src/runners');
+  try {
+    delete process.env.LOOPARR_EXECUTOR_URL;
+    delete require.cache[runnerPath];
+    delete require.cache[registryPath];
+    const opencode = require('../src/runners/opencode');
+    assert.equal(opencode.probeAttachFlag('Usage\n      --server <url>\n'), '', 'modern help yields no attach flag');
+    assert.equal(opencode.probeAttachFlag('Usage\n      --attach <url>\n'), '--attach', 'legacy help yields attach flag');
+
+    opencode.setHelpProviderForTests(() => 'Usage\n      --server <url>\n');
+    const modern = opencode.buildCommand({ prompt: 'fix bug', cwd: process.cwd() });
+    assert.equal(modern.command, 'opencode', 'direct mode uses the opencode CLI');
+    assert.equal(modern.args[0], 'run', 'direct mode starts with run');
+    assert.ok(!modern.args.includes('--attach'), 'modern help never emits --attach');
+    assert.ok(!modern.args.includes('--server'), 'modern help never emits --server');
+    assert.ok(!modern.args.some((arg) => arg.startsWith('http')), 'modern help never passes an explicit URL');
+
+    opencode.setHelpProviderForTests(() => 'Usage\n      --attach <url>\n');
+    const legacy = opencode.buildCommand({ prompt: 'fix bug', cwd: process.cwd() });
+    assert.equal(legacy.args[1], '--attach', 'legacy help still passes --attach');
+    assert.equal(legacy.args[2], 'http://localhost:4096', 'legacy help still passes the URL');
+  } finally {
+    if (executorUrl === undefined) delete process.env.LOOPARR_EXECUTOR_URL;
+    else process.env.LOOPARR_EXECUTOR_URL = executorUrl;
+    delete require.cache[runnerPath];
+    delete require.cache[registryPath];
+  }
+}
+
 function testRunnersReachExecutor() {
   // Every CLI runner delegates cancellation to the same executor endpoints.
   const opencode = getRunner('opencode');
@@ -280,6 +312,7 @@ testVibeArgs();
 testKiloBridgePayload();
 testVibeBridgePayload();
 testOpencodeBridgePayload();
+testDirectAttachFlagGuard();
 testRunnersReachExecutor();
 
 console.log('runner payload tests passed');

@@ -74,15 +74,28 @@ function waitForServer(timeoutMs) {
   });
 }
 
+// Legacy builds take an explicit attach URL; modern builds connect to the
+// background service themselves, and their `--server` URL requires a server
+// password we do not have, so it exits 1. Prefer no attach flag there.
+function probeAttachFlag(help) {
+  return /^\s+--attach\b/m.test(help) ? '--attach' : '';
+}
+
+let helpProvider = null;
+function setHelpProviderForTests(provider) {
+  helpProvider = provider;
+  attachProbed = false;
+  attachFlag = null;
+}
+
 function getAttachFlag() {
   if (attachProbed) return attachFlag;
   attachProbed = true;
   try {
-    const help = execFileSync('opencode', ['run', '--help'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    // Legacy builds take an explicit attach URL; modern builds connect to the
-    // background service themselves, and their `--server` URL requires a server
-    // password we do not have, so it exits 1. Prefer no attach flag there.
-    attachFlag = /^\s+--attach\b/m.test(help) ? '--attach' : '';
+    const help = helpProvider
+      ? helpProvider()
+      : execFileSync('opencode', ['run', '--help'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    attachFlag = probeAttachFlag(help);
   } catch {
     // Older OpenCode builds use --attach; newer builds use --server.
     attachFlag = '--attach';
@@ -322,6 +335,8 @@ module.exports = {
     : 'Shared opencode serve on port 4096; fresh opencode run per step.',
   models: MODELS,
   rateLimitSignalText,
+  probeAttachFlag,
+  setHelpProviderForTests,
   ensureServer,
   buildCommand,
   isRateLimit,
