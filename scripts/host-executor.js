@@ -119,6 +119,7 @@ try {
 const activeRuns = new Map();
 const replacingRuns = new Map();
 let attachFlag = null;
+let attachProbed = false;
 let serverPromise = null;
 let managedServer = null;
 
@@ -211,14 +212,18 @@ function waitForServer(child, url) {
 }
 
 function getAttachFlag() {
-  if (attachFlag) return attachFlag;
+  if (attachProbed) return attachFlag;
+  attachProbed = true;
   try {
     const help = execFileSync(opencodeBin, ['run', '--help'], {
       encoding: 'utf8',
       timeout: 10000,
       stdio: ['ignore', 'pipe', 'pipe']
     });
-    attachFlag = help.includes('--attach') ? '--attach' : '--server';
+    // Legacy builds take an explicit attach URL; modern builds connect to the
+    // background service themselves, and their `--server` URL requires a server
+    // password we do not have, so it exits 1. Prefer no attach flag there.
+    attachFlag = /^\s+--attach\b/m.test(help) ? '--attach' : '';
   } catch {
     attachFlag = '--attach';
   }
@@ -416,7 +421,9 @@ async function handleRun(req, res) {
       return sendJson(res, 500, { error: error.message });
     }
     const flag = getAttachFlag();
-    args = ['run', flag, serverUrl, '--auto', '--format', 'json'];
+    args = ['run'];
+    if (flag) args.push(flag, serverUrl);
+    args.push('--auto', '--format', 'json');
     let resumeSessionId = '';
     if (payload.sessionInvalid) {
       sessionFrame = '[host-executor] session-invalid; starting fresh run\n';

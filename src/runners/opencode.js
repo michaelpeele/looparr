@@ -47,6 +47,7 @@ const MODELS = [
 ];
 
 let attachFlag = null;
+let attachProbed = false;
 let serverPromise = null;
 let managedServer = null;
 
@@ -74,10 +75,14 @@ function waitForServer(timeoutMs) {
 }
 
 function getAttachFlag() {
-  if (attachFlag) return attachFlag;
+  if (attachProbed) return attachFlag;
+  attachProbed = true;
   try {
     const help = execFileSync('opencode', ['run', '--help'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    attachFlag = help.includes('--attach') ? '--attach' : '--server';
+    // Legacy builds take an explicit attach URL; modern builds connect to the
+    // background service themselves, and their `--server` URL requires a server
+    // password we do not have, so it exits 1. Prefer no attach flag there.
+    attachFlag = /^\s+--attach\b/m.test(help) ? '--attach' : '';
   } catch {
     // Older OpenCode builds use --attach; newer builds use --server.
     attachFlag = '--attach';
@@ -143,7 +148,10 @@ function buildCommand({ prompt, cwd, url = SERVER_URL, files = [], model = '', r
       }
     };
   }
-  const args = ['run', getAttachFlag(), url, '--auto', '--format', 'json'];
+  const args = ['run'];
+  const attachFlag = getAttachFlag();
+  if (attachFlag) args.push(attachFlag, url);
+  args.push('--auto', '--format', 'json');
   if (model) args.push('--model', model);
   for (const file of files) {
     if (file) args.push('--file', file);
