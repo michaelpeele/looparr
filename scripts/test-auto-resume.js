@@ -152,14 +152,28 @@ async function spawnServer(gated, extraEnv = {}) {
   throw lastError;
 }
 
+async function portBusy() {
+  return new Promise((resolve) => {
+    const probe = http.get(`${BASE_URL}/api/state`, (response) => {
+      response.resume();
+      resolve(true);
+    });
+    probe.once('error', () => resolve(false));
+  });
+}
+
 async function killServer(child) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
   child.kill('SIGTERM');
-  const exited = await Promise.race([
-    once(child, 'exit').then(() => true),
-    delay(3000).then(() => false)
-  ]);
-  if (!exited) child.kill('SIGKILL');
+  await Promise.race([once(child, 'exit'), delay(1500)]);
+  if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  await once(child, 'exit');
+  // The spawn that follows binds the same port; under load the kernel can
+  // keep the socket alive briefly after exit, so wait until it is free.
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (!(await portBusy())) return;
+    await delay(200);
+  }
 }
 
 async function getState() {
@@ -1491,29 +1505,43 @@ async function testStandbyGate() {
   await waitForAudit(standby.id, 'resume-skipped-primary-live', true);
   await waitForAudit(standby.id, 'resume-on-start', false);
 
-  writeForeignIntent(standby.id, 'error', 'analyze');
-  await killServer(server);
-  server = await spawnServer(false, { LOOPARR_SELFHEAL: '1' });
-  state = await getState();
-  findProject(state, standby.id);
-  await waitForAudit(standby.id, 'resume-on-start', true);
-  await killServer(server);
-
-  // 18. Live trigger: a standing engine with self-healing on must start one
-  // healer round per unique foreign error while it runs — no restart needed.
+  // A fresh errored checkpoint from the primary belongs to the primary: the
+  // healing engine does not adopt it, and the live trigger starts the round.
   // A failing git stub stops the round at the worktree step, so the probe
   // asserts trigger + guard wiring without touching real repo state.
   const gitStub = path.join(BIN_DIR, 'git');
   fs.writeFileSync(gitStub, '#!/bin/sh\necho "git stub: unavailable for trigger test" >&2\nexit 1\n');
   fs.chmodSync(gitStub, 0o755);
+  writeForeignIntent(standby.id, 'error', 'analyze');
+  await killServer(server);
   server = await spawnServer(false, {
     LOOPARR_SELFHEAL: '1',
-    PATH: `${BIN_DIR}:${process.env.PATH || ''}`,
+    PATH: `${BIN_DIR}:${process.env.PATH || ''}`
   });
   state = await getState();
-  findProject(state, standby.id);
-  // Phase 3's same-hostname resume may have adopted the standby task; the
-  // live-trigger guard refuses anything with its own live child, so stop it.
+  const nonAdopted = findProject(state, standby.id);
+  assertEqual(nonAdopted.active, false, 'foreign errored primary: healing engine does not adopt');
+  await waitForAudit(standby.id, 'resume-skipped-foreign-error', true);
+  await waitForAudit(standby.id, 'resume-on-start', false);
+
+  // Live trigger: refresh the checkpoint like the primary would until the
+  // engine's cadence picks it up.
+  let triggerSeen = false;
+  for (let attempt = 0; attempt < 200 && !triggerSeen; attempt += 1) {
+    writeForeignIntent(standby.id, 'error', 'analyze', { error: 'boot gate seed step exited with code 1' });
+    triggerSeen = countAudit(standby.id, 'healer-triggered-by-primary') > 0;
+    if (!triggerSeen) await delay(200);
+  }
+  assert.ok(triggerSeen, 'boot-gated errored primary still gets a healer round');
+  assert.equal(countAudit(standby.id, 'healer-spawned'), 0, 'worktree stub kept the probe out of real repo state');
+  await killServer(server);
+
+  // 19. Live trigger on a running engine: one round per unique error. A new
+  // process starts with a clean digest map, so the same error triggers once.
+  server = await spawnServer(false, {
+    LOOPARR_SELFHEAL: '1',
+    PATH: `${BIN_DIR}:${process.env.PATH || ''}`
+  });
   await stopAllProjects();
 
   // Mimic the primary: keep refreshing a fresh errored checkpoint until the

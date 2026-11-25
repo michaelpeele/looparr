@@ -1323,7 +1323,6 @@ function maybeStartHealer(project, rt, failedPhase, opts = {}) {
 // engine never adopts or resumes the primary's task itself.
 function maybeHealForeignPrimary(project, rt) {
   if (!selfHealingEnabled()) return;
-  if (!selfHealingEnabled()) return;
   if (rt.child || rt.healer) return;
   let decision;
   try {
@@ -2493,17 +2492,22 @@ async function resumeOnStart() {
     // checkpoints roughly every CHECKPOINT_INTERVAL_MS while some engine's
     // tick steps it, so a fresh, non-error checkpoint written by another
     // hostname means a live primary is mid-task: adopting it would dispatch
-    // the same step twice, so this engine stands by. An errored primary
-    // checkpoint still resumes (that is the state a healer round exists for),
-    // and same-hostname writers — an engine restarting into itself — always
-    // resume so crash recovery is untouched.
+    // the same step twice, so this engine stands by. A fresh errored
+    // checkpoint from another hostname belongs to that live primary too: the
+    // healing engine must not adopt the task (that would race the primary's
+    // own recovery) — it lets the live trigger start the healer round
+    // instead; the primary rewrites the checkpoint on its own cadence so the
+    // trigger sees it even after this consume. Same-hostname writers — an
+    // engine restarting into itself — always resume so crash recovery is
+    // untouched.
     const capturedAtMs = Date.parse(intent.capturedAt);
     const freshCheckpoint = Number.isFinite(capturedAtMs)
       && Date.now() - capturedAtMs < CHECKPOINT_INTERVAL_MS * 3
       && intent.reason === 'checkpoint';
+    const foreignWriter = Boolean(intent.hostname)
+      && intent.hostname !== (process.env.HOSTNAME || '');
     const primaryStepping = freshCheckpoint
-      && Boolean(intent.hostname)
-      && intent.hostname !== (process.env.HOSTNAME || '')
+      && foreignWriter
       && typeof intent.status === 'string'
       && intent.status !== 'error';
     if (selfHealingEnabled() && primaryStepping) {
@@ -2513,6 +2517,20 @@ async function resumeOnStart() {
         cause: `age=${Math.max(0, Date.now() - capturedAtMs)}ms;writer=${intent.hostname}`
       });
       appendLog(project.id, 'system', `✋ Primary engine "${intent.hostname}" is mid-task; standing by instead of resuming.`);
+      emitState();
+      continue;
+    }
+    if (selfHealingEnabled() && freshCheckpoint && foreignWriter && intent.status === 'error') {
+      autoResume.appendAudit(project, 'resume-skipped-foreign-error', {
+        phase: intent.nextPhase,
+        task: intent.currentTask,
+        cause: `age=${Math.max(0, Date.now() - capturedAtMs)}ms;writer=${intent.hostname}`
+      });
+      appendLog(
+        project.id,
+        'system',
+        `✋ Primary engine "${intent.hostname}" is in error; its checkpoint stays theirs — the healer handles it, no adoption.`
+      );
       emitState();
       continue;
     }

@@ -69,6 +69,12 @@ primary's task; it only starts the healer, and the merge stays human-gated.
 The flow above is unchanged: same one round, same branch, same preview
 validation, same pill and merge button.
 
+At boot the same rule applies: a healing-capable engine that finds a fresh
+foreign checkpoint — healthy *or* errored — never adopts the primary's task.
+It audits `resume-skipped-primary-live` or `resume-skipped-foreign-error`
+and lets the live trigger handle the error. Only a stale intent (no live
+primary for a while) or a same-hostname restart is adopted as before.
+
 ## Host healer, prod viewer
 
 The healer needs `git` worktrees and the Docker CLI, which exist only on the host
