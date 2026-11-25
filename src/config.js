@@ -415,10 +415,49 @@ function normalizedRunner(value, fallback) {
   }
 }
 
+// Sprint/phase config (R7): per-project only, no global defaults. sprintMode
+// selects the scheduling flavor; the other four fields are direct inputs to
+// the sprint scheduler and the end-of-sprint validation round.
+const SPRINT_MODES = ['off', 'serial', 'parallel'];
+const SPRINT_LIST_LIMIT = 50;
+
+function normalizedSprintMode(value) {
+  const mode = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return SPRINT_MODES.includes(mode) ? mode : 'off';
+}
+
+function normalizedSprintList(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  const sprints = [];
+  for (const entry of value.slice(0, SPRINT_LIST_LIMIT)) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const name = typeof entry.name === 'string' ? entry.name.trim().slice(0, 80) : '';
+    if (!name) continue;
+    let id = typeof entry.id === 'string' && entry.id.trim() ? entry.id.trim().slice(0, 80) : '';
+    if (!id) id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || name.toLowerCase();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    sprints.push({ id, name });
+  }
+  return sprints;
+}
+
+function normalizedSprintTestCommand(value) {
+  if (typeof value !== 'string') return 'npm test';
+  const command = value.trim();
+  return command || 'npm test';
+}
+
 function normalizeProject(project) {
   if (!project || typeof project !== 'object') return project;
   return {
     ...project,
+    sprintMode: normalizedSprintMode(project.sprintMode),
+    sprintsParallel: project.sprintsParallel === true,
+    sprints: normalizedSprintList(project.sprints),
+    sprintTestCommand: normalizedSprintTestCommand(project.sprintTestCommand),
+    sprintDeployMain: project.sprintDeployMain === true,
     runner: normalizedRunner(project.runner, ''),
     runnerRotation: normalizedRotation(project.runnerRotation),
     model: normalizedFreeModel(project.model, '', MODEL_FIELD_LABELS.model),
@@ -536,6 +575,7 @@ function saveConfig(config) {
 module.exports = {
   CONFIG_PATH,
   DEFAULT_SETTINGS,
+  SPRINT_MODES,
   DEFAULT_SEED_PROMPT_TEMPLATE,
   DEFAULT_ANALYZE_PROMPT_TEMPLATE,
   DEFAULT_IMPLEMENT_PROMPT_TEMPLATE,
@@ -566,6 +606,9 @@ module.exports = {
   normalizedModel,
   normalizeProject,
   normalizeSettings,
+  normalizedSprintMode,
+  normalizedSprintList,
+  normalizedSprintTestCommand,
   resolveBlockPolicy,
   resolveCooloff
 };

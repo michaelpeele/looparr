@@ -282,6 +282,60 @@ function applyRotationFields(body, target, allowNull = false) {
   return { ok: true };
 }
 
+// Sprint/phase fields (DESIGN R7). Shaped like config.js normalization but
+// rejecting instead of silently defaulting, per route style.
+const SPRINT_MODES = ['off', 'serial', 'parallel'];
+
+function parseSprintMode(value) {
+  if (value === undefined) return { ok: true };
+  if (!SPRINT_MODES.includes(value)) return { ok: false, error: 'sprintMode must be off, serial, or parallel' };
+  return { ok: true, value };
+}
+
+function parseSprints(value) {
+  if (value === undefined) return { ok: true };
+  if (!Array.isArray(value) || value.length > 50) return { ok: false, error: 'sprints must be an array of at most 50 entries' };
+  const normalized = [];
+  const seen = new Set();
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry) || typeof entry.name !== 'string' || !entry.name.trim()) {
+      return { ok: false, error: 'Each sprint needs a non-empty name' };
+    }
+    const name = entry.name.trim().slice(0, 80);
+    let id = typeof entry.id === 'string' && entry.id.trim() ? entry.id.trim().slice(0, 80) : '';
+    if (!id) id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || name.toLowerCase();
+    if (seen.has(id)) return { ok: false, error: `Duplicate sprint id: ${id}` };
+    seen.add(id);
+    normalized.push({ id, name });
+  }
+  return { ok: true, value: normalized };
+}
+
+function parseSprintTestCommand(value) {
+  if (value === undefined) return { ok: true };
+  if (typeof value !== 'string' || !value.trim()) return { ok: false, error: 'sprintTestCommand must be a non-empty string' };
+  if (value.length > 500) return { ok: false, error: 'sprintTestCommand must be at most 500 characters' };
+  return { ok: true, value: value.trim() };
+}
+
+function applySprintFields(body, target) {
+  const mode = parseSprintMode(body.sprintMode);
+  if (!mode.ok) return mode;
+  if (mode.value !== undefined) target.sprintMode = mode.value;
+  const sprints = parseSprints(body.sprints);
+  if (!sprints.ok) return sprints;
+  if (sprints.value !== undefined) target.sprints = sprints.value;
+  const testCommand = parseSprintTestCommand(body.sprintTestCommand);
+  if (!testCommand.ok) return testCommand;
+  if (testCommand.value !== undefined) target.sprintTestCommand = testCommand.value;
+  for (const field of ['sprintsParallel', 'sprintDeployMain']) {
+    if (body[field] === undefined) continue;
+    if (typeof body[field] !== 'boolean') return { ok: false, error: `${field} must be a boolean` };
+    target[field] = body[field];
+  }
+  return { ok: true };
+}
+
 const PROMPT_TEMPLATE_FIELDS = configStore.PROMPT_TEMPLATE_FIELDS;
 
 app.get('/api/state', (req, res) => {
@@ -370,6 +424,9 @@ app.post('/api/projects', (req, res) => {
   if (!temporaryLift.ok) return fail(res, 400, temporaryLift.error);
   const permanentLift = parseLiftScope(body.permanentLift, '', 'Permanent lift');
   if (!permanentLift.ok) return fail(res, 400, permanentLift.error);
+  const sprintFields = {};
+  const sprintParsed = applySprintFields(body, sprintFields);
+  if (!sprintParsed.ok) return fail(res, 400, sprintParsed.error);
 
   if (body.autoResumeOnStart !== undefined && typeof body.autoResumeOnStart !== 'boolean') {
     return fail(res, 400, 'autoResumeOnStart must be a boolean');
@@ -386,7 +443,8 @@ app.post('/api/projects', (req, res) => {
       cooloffSeconds: cooloff.value,
       temporaryLiftScope: temporaryLift.value,
       permanentLift: permanentLift.value,
-      autoResumeOnStart: body.autoResumeOnStart
+      autoResumeOnStart: body.autoResumeOnStart,
+      ...sprintFields
     });
     return res.status(201).json({ ok: true, project });
   } catch (error) {
@@ -511,6 +569,8 @@ app.patch('/api/projects/:id', (req, res) => {
   const permanentLift = parseLiftScope(body.permanentLift, '', 'Permanent lift');
   if (!permanentLift.ok) return fail(res, 400, permanentLift.error);
   if (permanentLift.value !== undefined) patch.permanentLift = permanentLift.value;
+  const sprintParsed = applySprintFields(body, patch);
+  if (!sprintParsed.ok) return fail(res, 400, sprintParsed.error);
   if (!Object.keys(patch).length) return fail(res, 400, 'No project fields to update');
   try {
     const project = engine.updateProject(req.params.id, patch);
@@ -782,8 +842,18 @@ app.post('/api/projects/:id/plan-confirm', (req, res) => {
   return res.json({ ok: true });
 });
 
-app.post('/api/projects/:id/selfheal/merge', async (req, res) => {
+// Idempotent manual end-of-sprint merge retry (R9): merges the sprint's task
+// branches into looparr/sprint/<name>, local only. Mirrors the self-heal
+// merge route style; also used to retry after a conflict is resolved.
+app.post('/api/projects/:id/sprint/merge', (req, res) => {
   if (!findProject(req.params.id)) return fail(res, 404, 'Project not found');
+  const sprintName = typeof req.body?.sprint === 'string' ? req.body.sprint.trim() : '';
+  const result = engine.mergeSprintBranches(req.params.id, sprintName);
+  if (!result.ok) return fail(res, result.status || 500, result.error || 'Could not merge sprint branches');
+  return res.json(result);
+});
+
+app.post('/api/projects/:id/selfheal/merge', async (req, res) => {  if (!findProject(req.params.id)) return fail(res, 404, 'Project not found');
   // Dev checkout: the local engine owns the checkout and merges in-process.
   if (engine.selfHealingEnabled()) {
     const result = engine.mergeHealerBranch(req.params.id);

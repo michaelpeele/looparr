@@ -175,35 +175,48 @@ Stale production assets have shipped three times. For every batch that changes s
 - [ ] Investigate desktop layout, div not going wide on project card, awkward placement of sidebar and detail just goes to the right side instead of overlay like mobile.
 - [ ] Add Triangle to main screen project card. Look at legibility for up next in div, vertical on home page but correct on detail page.
 
+## Paseo spawned-agent transport batch
+
+Opt-in Paseo transport so spawned agent CLI sessions (mobile session visibility via the Paseo daemon) back Looparr runs, with direct CLI calls as the unchanged default. Build in the numbered order; each PLAN doc carries its own verification steps.
+
+- [ ] (plan 01) Paseo transport setting — see [PLAN-01-paseo-transport-setting.md](.project_documents/PLAN-01-paseo-transport-setting.md): add opt-in global `paseoTransport` setting (default false) plus settings-UI checkbox near `globalRunner`; validate in `PATCH /api/settings`.
+- [ ] (plan 02) Paseo run adapter — see [PLAN-02-paseo-run-adapter.md](.project_documents/PLAN-02-paseo-run-adapter.md): new `src/paseo-transport.js` adapter (spawn Paseo agent, stream output, wait, stop on cancel) integrated into the engine and self-heal spawn paths.
+- [ ] (plan 03) OpenCode through Paseo — see [PLAN-03-opencode-paseo-wiring.md](.project_documents/PLAN-03-opencode-paseo-wiring.md): map the `opencode` runner to Paseo's built-in provider, strip Looparr model-id namespace, fall back to Paseo default model.
+- [ ] (plan 04) Vibe and Kilo through Paseo — see [PLAN-04-vibe-kilo-paseo-wiring.md](.project_documents/PLAN-04-vibe-kilo-paseo-wiring.md): map `vibe` → `mistral-vibe` and `kilo` Paseo providers; fresh-agent scope first.
+- [ ] (plan 05) Verification, rollback, rollout — see [PLAN-05-verification-and-rollout.md](.project_documents/PLAN-05-verification-and-rollout.md): focused tests from 01-04, direct mode regression with `paseoTransport=false`, Paseo mode with `true`, production deploy verification per lines 3-11, rollback path.
+
 ## Durable resume and self-healing batch
 
 - [ ] (plan) Durable resume snapshot — see [PLAN-durable-resume-snapshot.md](.project_documents/PLAN-durable-resume-snapshot.md). Current task: persist a serializable runtime snapshot (phase, status, task, step bookkeeping, rotation cursor, session ids) so a crash or purposeful restart resumes the same resumable state instead of dropping to seed; capture error/idle states; restore with the existing provenance/TTL gates.
-- [ ] (plan) Handoff recovery sweep — see [PLAN-handoff-recovery-sweep.md](.project_documents/PLAN-handoff-recovery-sweep.md). Next task: periodic recheck that un-sticks an errored project to analyze/implement once a valid, provenance-matched handoff appears; opt-in `handoffRecovery` setting, throttled audit, never overrides waiting plan states.
-- [ ] (plan) Self-healing debugging mode — see [PLAN-self-healing.md](.project_documents/PLAN-self-healing.md). Dev-only, opt-in, one-round worktree-isolated healer with a Debugging/Healing/Error/Healed header pill and a human-gated GitHub button; git stays local (no push to origin) and the PR is human-driven for now.
+- [x] (plan) Handoff recovery sweep — see [PLAN-handoff-recovery-sweep.md](.project_documents/PLAN-handoff-recovery-sweep.md). Done 2026-11-24: opt-in `handoffRecovery` sweeps every 15s, un-sticking errored analyze/implement projects only on a provenance-matched, non-meta handoff, and stands down for waiting states and active OpenCode sessions with a throttled `handoff-recovery-waiting` audit; `npm test` and `git diff --check` clean.
+- [x] (plan) Self-healing debugging mode — see [PLAN-self-healing.md](.project_documents/PLAN-self-healing.md). Done 2026-11-24: dev-signalled `selfHealing` runs one worktree-isolated healer round, validates the branch with two preview cycles, reports Debugging/Healing/Healed/Error in the header pill, and merges locally only (no push); `SELFHEALING.md`, `scripts/test-self-heal.js`, `npm test`, and `git diff --check` clean.
 
 ## Desktop layout and drawer batch
 
 - [ ] (plan) Promotion concurrency lock — see [PLAN-promotion-lock.md](.project_documents/PLAN-promotion-lock.md)
 - [ ] (plan) Watchdog timer — see [PLAN-watchdog-timer.md](.project_documents/PLAN-watchdog-timer.md)
-- [ ] Link GitHub repo, push to origin with tag as v1.0
-- [ ] Publish docker container with multi arch testing similar to how we did Curatarr. Link docker container repo link to project so button appears
-- [ ] Add GitHub button to project detail on home page and detail page, if a GitHub repo is linked. Add a whale icon to link to docker image repo if one is linked.
 - [x] Add desktop-only CSS for centered page width, compact icon rail, aligned full-width cards, and unchanged mobile breakpoints.
+- [x] Convert desktop project drawer to a centered modal overlay with stable scrollbar gutter, pinned header/toolbar, and scrolling body.
+- [x] Run unit tests, diff checks, local and production browser checks at all required widths, promote to production, verify served assets, and commit tracked changes.
+- [x] Send card Remove through `DELETE /api/projects/:id`, keep confirm text and start/pause/stop POST paths, add regression test, remove the two `.tmp-browser-fixture` temp projects, and verify production per lines 3-11. Handoff: `.project_documents/PROGRESS.md`.
 
 ## Project removal batch (2026-11-22)
 
-- [x] Convert desktop project drawer to a centered modal overlay with stable scrollbar gutter, pinned header/toolbar, and scrolling body.
-
-- [x] Run unit tests, diff checks, local and production browser checks at all required widths, promote to production, verify served assets, and commit tracked changes.
-- [x] Send card Remove through `DELETE /api/projects/:id`, keep confirm text and start/pause/stop POST paths, add regression test, remove the two `.tmp-browser-fixture` temp projects, and verify production per lines 3-11. Handoff: `.project_documents/PROGRESS.md`.
 - [x] Plan task split prompt — see [PLAN-plan-task-split.md](.project_documents/PLAN-plan-task-split.md)
+
 - [x] Plan file modal — see [PLAN-plan-file-modal.md](.project_documents/PLAN-plan-file-modal.md)
+- [x] Add `GET /api/projects/:id/icon.png` that returns real PNG bytes, preserves icon discovery versioning, and uses a `-png` ETag.
+- [x] Rasterize SVG and other supported source formats to PNG in the server; pass through or re-encode PNG without changing the source.
+- [x] Reuse the existing project/icon path containment checks before reading or rendering any icon.
 
 ## Scriptable PNG icon batch
 
 Why: Scriptable on iOS uses native image decoding. It cannot decode SVG (`image/svg+xml`) from `GET /api/projects/:id/icon`, so the widget falls back to initials even though the browser renders the project's SVG favicon. Looparr discovery often selects SVG first. Keep the browser endpoint unchanged and add a PNG endpoint for native clients.
 
-- [x] Add `GET /api/projects/:id/icon.png` that returns real PNG bytes, preserves icon discovery versioning, and uses a `-png` ETag.
-- [x] Rasterize SVG and other supported source formats to PNG in the server; pass through or re-encode PNG without changing the source.
-- [x] Reuse the existing project/icon path containment checks before reading or rendering any icon.
 - [x] Update README and tests, then verify local and production per lines 3-11 before marking complete.
+- [ ] I don't need to know the access route (card on project table). Make this a setting on the settings tab to show the card, and then turn it off
+- [ ] I don't need to know all settings are done in a card, if there are settings that need to be done put a badge in the upper right of the gear icon for settings with a count of how many items need to be completed instead.
+- [ ] Fill the space of the selected runners/models on the project page bottom card so it is same width as project card and fills the area.
+- [ ] Link GitHub repo, push to origin with tag as v1.0
+- [ ] Publish docker container with multi arch testing similar to how we did Curatarr. Link docker container repo link to project so button appears
+- [ ] Add GitHub button to project detail on home page and detail page, if a GitHub repo is linked. Add a whale icon to link to docker image repo if one is linked.

@@ -14,9 +14,11 @@ error, the project does not notice on its own — it waits indefinitely for a ma
 ## Goal
 
 A periodic sweep that, for a project in an error state, re-checks whether a valid handoff now
-exists and, if so, un-sticks it back to its `analyze`/`implement` phase automatically. This is
-the *wait-for-handoff* remediation that complements persistence (item 1) and self-heal (item 3):
-persistence can't help when the handoff is absent; this rechecks until it appears.
+exists and, if so, un-sticks it back to its `analyze`/`implement` phase automatically. It also
+detects when the error has already been cleared or the session was resumed by hand, and stands
+down so it never fights a continuing session. This is the *wait-for-handoff* remediation that
+complements persistence (item 1) and self-heal (item 3): persistence can't help when the handoff
+is absent; this rechecks until it appears.
 
 ## Current building blocks
 
@@ -47,33 +49,64 @@ persistence can't help when the handoff is absent; this rechecks until it appear
 4. When not ready: leave in `error`, and emit at most one throttled
    `handoff-recovery-waiting` audit per project per interval (store `rt.lastRecoveryAuditAt`) so
    the wait is observable without log spam.
-5. Gate behind a per-project `handoffRecovery` boolean (default `false`), so auto-resume is
-   opt-in; never run for `WAITING_STATUSES` (already excluded by the `status === 'error'` check).
-6. Keep `shouldReseedOnStart` unchanged for the manual Start path; this sweep is the automatic
+5. Gate behind a global `handoffRecovery` setting (default `false`), surfaced in the settings
+   page like `stickyAddTaskRow`; never run for `WAITING_STATUSES` (already excluded by the
+   `status === 'error'` check).
+6. Detect a cleared or continuing session on every sweep tick, so the sweep never fights a
+   session the user resumed by hand:
+   - If `rt.status !== 'error'`, the project is already continuing (Start pressed or the loop
+     resumed) — stand down for this and all later prompts.
+   - If `rt.status === 'error'` but an OpenCode session for this project is active
+     (`getRunner('opencode').listActiveRuns({ projectId, cwd })` returns a non-empty array), the
+     user resumed the session outside Looparr — emit `handoff-recovery-session-active` and skip.
+   - The sweep is stateless per interval, so once the session continues it never re-fires.
+7. Keep `shouldReseedOnStart` unchanged for the manual Start path; this sweep is the automatic
    complement, not a replacement.
+
+## Files to change
+
+- `src/engine.js` — sweep constants, `handoffReadyForResume`, the action, the `tick` hook, and the
+  active-session check.
+- `src/config.js` — `handoffRecovery` in `DEFAULT_SETTINGS` (~310) and `normalizeSettings`.
+- `public/index.html` — a settings toggle `id="handoff-recovery-toggle"`.
+- `public/app.js` — load/save the toggle and include `handoffRecovery` in the settings PATCH body
+  (mirror `stickyAddTaskRow`).
+- `scripts/test-auto-resume.js` — predicate/action unit tests.
+- `scripts/test-plan-ui-controls.js` — served-asset assertions for the toggle.
 
 ## Requirements
 
 1. Add the throttled sweep to `tick` with the predicate above; it only acts on `error` projects.
 2. On a valid handoff, un-stick to `analyze`/`implement` without bypassing `maxWorkers`.
 3. Never override `waitingAnswer`/`waitingConfirm`, and never act while a child is live.
-4. Emit `handoff-recovered` / `handoff-recovery-waiting` audit events; throttle the waiting
-   event to one per interval per project.
-5. Add a `handoffRecovery` setting (default `false`) surfaced in the settings page like
-   `autoResumeOnStart` (`public/app.js:1732`, `:2520`), and default it in `src/config.js`
-   (`DEFAULT_SETTINGS`, `src/config.js:310`).
-6. Tests in `scripts/test-auto-resume.js`: error+valid handoff → recovers; error+meta handoff →
+4. Detect a cleared or continuing session: stand down when `rt.status !== 'error'`; when an
+   OpenCode run is already active for the project, emit `handoff-recovery-session-active` and skip.
+5. Emit `handoff-recovered` / `handoff-recovery-waiting` / `handoff-recovery-session-active`
+   audit events; throttle the waiting event to one per interval per project.
+6. Add a global `handoffRecovery` setting (default `false`) in `DEFAULT_SETTINGS`
+   (`src/config.js:310`) and a settings-page toggle like `stickyAddTaskRow`.
+7. Tests in `scripts/test-auto-resume.js`: error+valid handoff → recovers; error+meta handoff →
    stays error; provenance mismatch → stays error and handoff cleared; active project not
-   double-started; waiting states untouched.
-7. `npm test` and `git diff --check` clean. Commit only `src/engine.js`, `src/config.js`,
-   `public/index.html`, `public/app.js`, and `scripts/test-auto-resume.js` (plus
-   `scripts/test-plan-ui-controls.js` if a served-asset assertion is added).
+   double-started; waiting states untouched; error+active session → skips with
+   `handoff-recovery-session-active`; status not error → no action.
+8. `npm test` and `git diff --check` clean.
+
+## Commit scope and plan marker
+
+Commit only: `src/engine.js`, `src/config.js`, `public/index.html`, `public/app.js`,
+`scripts/test-auto-resume.js`, `scripts/test-plan-ui-controls.js`.
+After implementation and verification are complete, change the plan.md
+`(plan) Handoff recovery sweep` line from `- [ ]` to `- [x]` with a one-line Done note.
 
 ## Verification
 
-- Unit: drive the predicate/action with a fake `rt` in each state; assert audit events.
+- Unit: drive the predicate/action with a fake `rt` in each state; assert audit events. Include
+  error + an active OpenCode run → `handoff-recovery-session-active` with no state change, and
+  `status !== 'error'` → no action.
 - Live (manual, after rebuild): with a project in `error` and a valid handoff written, confirm
   the sweep flips it to `implement` within one interval and the audit logs `handoff-recovered`.
+  With the session already resumed by hand, confirm the sweep stands down and logs
+  `handoff-recovery-session-active` (or nothing) and never double-runs.
 - Confirm `git diff --check` clean.
 
 ## Acceptance criteria

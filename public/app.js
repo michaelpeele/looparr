@@ -138,6 +138,19 @@
     drawerTemporaryLiftScope: $('drawer-temporary-lift-scope'),
     drawerPermanentLift: $('drawer-permanent-lift'),
     saveBlockPolicy: $('save-block-policy'),
+    drawerSprintMode: $('drawer-sprint-mode'),
+    drawerSprintTestCommand: $('drawer-sprint-test-command'),
+    drawerSprintsParallel: $('drawer-sprints-parallel'),
+    drawerSprintDeployMain: $('drawer-sprint-deploy-main'),
+    drawerSprintList: $('drawer-sprint-list'),
+    drawerNewSprint: $('drawer-new-sprint'),
+    addSprint: $('add-sprint'),
+    saveSprintSettings: $('save-sprint-settings'),
+    sprintMerge: $('sprint-merge'),
+    sprintStatus: $('sprint-status'),
+    sprintSummary: $('sprint-summary'),
+    taskSprintSelect: $('task-sprint-select'),
+    taskValidationType: $('task-validation-type'),
     planFileModal: $('plan-file-modal'),
     planFileTitle: $('plan-file-title'),
     planFileContent: $('plan-file-content'),
@@ -437,7 +450,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
   }
 
   const UI_STATE_KEY = 'looparr.uiState.v1';
-  const UI_SECTION_KEYS = ['constraint', 'runner', 'startup', 'questions', 'plan', 'logs'];
+  const UI_SECTION_KEYS = ['constraint', 'runner', 'startup', 'questions', 'plan', 'logs', 'sprints'];
   let uiStateMemory = null;
   let uiStateStorageAvailable = true;
 
@@ -1045,6 +1058,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       }
       if (!disabled && (action === 'move-up' || action === 'move-top')) disabled = taskIndex === 0;
       if (!disabled && (action === 'move-down' || action === 'move-bottom')) disabled = taskIndex === taskCount - 1;
+      if (!disabled && action === 'toggle-flag') disabled = app.currentPlan?.started?.[taskIndex] === true;
       button.disabled = disabled;
     });
     dom.checklist.querySelectorAll('input[data-index]').forEach((input) => {
@@ -2062,8 +2076,17 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       const depsMarkup = depLabel || depWarning
         ? `<span class="task-deps${dependencyView?.blocked ? ' warn' : ''}">${esc(depLabel)}</span>${depWarning}`
         : '';
+      // Sprint chip plus merge-previous/deploy-main toggles; locked once the
+      // task started (plan.started from disk truth).
+      const started = plan.started?.[task.index] === true;
+      const cardOptions = [
+        task.sprint ? `<span class="sprint-chip${started ? ' started' : ''}" title="Sprint: ${esc(task.sprint)}">Sprint: ${esc(task.sprint)}</span>` : '',
+        `<button class="task-flag-toggle${task.mergePrevious ? ' active' : ''}" type="button" data-action="toggle-flag" data-flag="merge-previous" data-task-index="${taskIndex}" ${started ? 'disabled' : ''} title="Merge completed earlier sprint branches into this task before it starts">Merge previous</button>`,
+        `<button class="task-flag-toggle${task.deployMain ? ' active' : ''}" type="button" data-action="toggle-flag" data-flag="deploy-main" data-task-index="${taskIndex}" ${started ? 'disabled' : ''} title="Merge this task branch into main locally after completion">Deploy main</button>`
+      ].filter(Boolean).join('');
+      const optionsMarkup = cardOptions ? `<div class="task-card-options${started ? ' locked' : ''}">${cardOptions}</div>` : '';
       return `
-      <div class="check-item${task.checked ? ' checked' : ''}" data-task-index="${taskIndex}">
+      <div class="check-item${task.checked ? ' checked' : ''}${started ? ' task-started' : ''}" data-task-index="${taskIndex}">
         <div class="task-controls">
           <button class="move-button drag-handle" type="button" data-action="drag" data-task-index="${taskIndex}" title="Drag to reorder task" aria-label="Drag to reorder task">☰</button>
           <div class="task-move">
@@ -2085,6 +2108,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
           ${taskText}
           ${depsMarkup}
         </div>
+        ${optionsMarkup}
       </div>`;
     }).join('');
     dom.checklist.querySelectorAll('.task-text').forEach((span) => linkPlanReferences(span, app.drawerId));
@@ -2323,6 +2347,14 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
         }
         taskText = formatLinkedTask(title, file);
       }
+      // Validation-type dropdown and sprint assignment compose the tokens.
+      const validationType = dom.taskValidationType && dom.taskValidationType.value ? dom.taskValidationType.value : '';
+      const sprintName = dom.taskSprintSelect && dom.taskSprintSelect.value ? dom.taskSprintSelect.value : '';
+      if (validationType) {
+        taskText = `(validation: ${validationType}) ${validationType} Validation` + (sprintName ? ` [sprint:${sprintName}]` : '');
+      } else if (sprintName && !/\[sprint:[^\]]*\]/i.test(taskText)) {
+        taskText = `${taskText} [sprint:${sprintName}]`;
+      }
       const content = await ensurePlanContent();
       const next = appendTask(content, taskText);
       if (!next) {
@@ -2429,6 +2461,89 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     focusEditButton(previous);
   }
 
+  // Tokens live outside task.text after parsing, so a plain text edit would
+  // drop them; re-attach what the stored line carried (mirrors src/plan.js).
+  function appendTaskTokens(text, task) {
+    const parts = [text];
+    if (task.mergePrevious) parts.push('[merge-previous]');
+    if (task.deployMain) parts.push('[deploy-main]');
+    if (task.sprint) parts.push(`[sprint:${task.sprint}]`);
+    if (task.dependencySuffix) parts.push(task.dependencySuffix);
+    return parts.join(' ');
+  }
+
+  function stripTaskTokens(text) {
+    let value = String(text || '');
+    for (;;) {
+      const next = value
+        .replace(/\s*\(depends:\s*[^)]*\)\s*$/i, '')
+        .replace(/\s*\[sprint:[^\]]*\]\s*$/i, '')
+        .replace(/\s*\[merge-previous\]\s*$/i, '')
+        .replace(/\s*\[deploy-main\]\s*$/i, '');
+      if (next === value) break;
+      value = next.trim();
+    }
+    return value;
+  }
+
+  async function toggleTaskFlag(taskIndex, flag) {
+    const id = app.drawerId;
+    if (!id || app.savingPlan || app.planDirty || editingTaskIndex !== -1) return;
+    if (flag !== 'merge-previous' && flag !== 'deploy-main') return;
+    const task = taskByIndex(taskIndex);
+    if (!task) return;
+    if (app.currentPlan?.started?.[taskIndex] === true) {
+      dom.taskStatus.textContent = 'Task already started: options are locked.';
+      return;
+    }
+    const token = flag === 'merge-previous' ? '[merge-previous]' : '[deploy-main]';
+    const previousEditor = dom.planEditor.value;
+    const previousStatus = dom.planStatus.textContent;
+    try {
+      const content = await ensurePlanContent();
+      const target = taskEditTarget(content, taskIndex);
+      if (!target) {
+        dom.taskStatus.textContent = 'Could not find the task line.';
+        return;
+      }
+      const inner = target.match[4];
+      let newInner;
+      if (inner.includes(token)) {
+        newInner = inner.replace(new RegExp(`\\s*\\[${flag}\\]`, 'g'), '').replace(/\s+/g, ' ').trim();
+      } else {
+        newInner = `${inner.trim()} ${token}`;
+      }
+      if (!newInner.trim()) newInner = token;
+      const result = editPlanTaskContent(content, taskIndex, newInner);
+      if (!result.ok) {
+        dom.taskStatus.textContent = result.error;
+        return;
+      }
+      editingTaskIndex = -1;
+      dom.planEditor.value = result.content;
+      markPlanDirty();
+      dom.taskStatus.textContent = 'Saving…';
+      const saved = await savePlanContent(result.content, 'Task updated', {
+        type: 'edit',
+        index: taskIndex,
+        oldText: task.text,
+        newText: stripTaskTokens(newInner)
+      });
+      if (app.drawerId !== id) return;
+      if (saved) dom.taskStatus.textContent = 'Task updated';
+      else {
+        dom.planEditor.value = previousEditor;
+        app.planDirty = false;
+        dom.planStatus.textContent = previousStatus;
+        updatePlanControls();
+        await loadPlan(id);
+        dom.taskStatus.textContent = 'Could not update task.';
+      }
+    } catch (error) {
+      if (app.drawerId === id) dom.taskStatus.textContent = error.message;
+    }
+  }
+
   async function saveTaskEdit(taskIndex) {
     const id = app.drawerId;
     if (!id || app.savingPlan || app.planDirty || editingTaskIndex !== taskIndex) return;
@@ -2443,11 +2558,12 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       return;
     }
     const oldText = task.text;
+    const newTextWithTokens = appendTaskTokens(newText, task);
     const previousEditor = dom.planEditor.value;
     const previousStatus = dom.planStatus.textContent;
     try {
       const content = await ensurePlanContent();
-      const result = editPlanTaskContent(content, taskIndex, newText);
+      const result = editPlanTaskContent(content, taskIndex, newTextWithTokens);
       if (!result.ok) {
         if (app.drawerId === id) dom.taskStatus.textContent = result.error;
         return;
@@ -2649,6 +2765,131 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     }
   }
 
+  /* ---------- sprints ---------- */
+
+  // Mirror of the [sprint:<name>]/[merge-previous]/[deploy-main] token layer.
+  function sprintListFromEditor() {
+    return [...dom.drawerSprintList.querySelectorAll('.sprint-row-name')].map((input) => {
+      const row = input.closest('.sprint-row');
+      return { id: row?.dataset.sprintId || '', name: input.value };
+    }).filter((sprint) => sprint.name.trim());
+  }
+
+  function sprintAddText(text, sprintName, validationType) {
+    let taskText = String(text || '').trim();
+    if (!taskText) return taskText;
+    const hasValidation = Boolean(validationType);
+    if (hasValidation) taskText = `(validation: ${validationType}) ${validationType} Validation`;
+    if (sprintName) taskText += ` [sprint:${sprintName}]`;
+    return taskText;
+  }
+
+  function updateDrawerSprints(project) {
+    if (!dom.drawerSprintMode) return;
+    const ids = ['drawerSprintMode', 'drawerSprintTestCommand', 'drawerSprintsParallel', 'drawerSprintDeployMain'];
+    if (ids.some((key) => document.activeElement === dom[key])) {
+      // Do not clobber fields the user is editing.
+    } else {
+      dom.drawerSprintMode.value = project.sprintMode || 'off';
+      dom.drawerSprintTestCommand.value = project.sprintTestCommand || 'npm test';
+      dom.drawerSprintsParallel.checked = project.sprintsParallel === true;
+      dom.drawerSprintDeployMain.checked = project.sprintDeployMain === true;
+    }
+    const sprints = project.sprints || [];
+    const markup = sprints.map((sprint) => `
+      <div class="sprint-row" data-sprint-id="${esc(sprint.id)}">
+        <input class="sprint-row-name" type="text" value="${esc(sprint.name)}" aria-label="Sprint name">
+        <button class="icon-button sprint-row-remove" type="button" data-action="remove-sprint" data-sprint-id="${esc(sprint.id)}" aria-label="Remove sprint ${esc(sprint.name)}" title="Remove sprint">✕</button>
+      </div>`).join('');
+    if (dom.drawerSprintList.innerHTML !== markup) dom.drawerSprintList.innerHTML = markup;
+    const summary = !(sprints.length) && (project.sprintMode || 'off') === 'off'
+      ? 'off'
+      : `${sprints.map((sprint) => sprint.name).join(', ') || 'no sprints'} · ${project.sprintMode || 'off'}`;
+    if (document.activeElement !== dom.sprintSummary && dom.sprintSummary.textContent !== summary) {
+      dom.sprintSummary.textContent = summary;
+    }
+    if (dom.taskSprintSelect) {
+      const options = `<option value="">No sprint</option>${sprints.map((sprint) =>
+        `<option value="${esc(sprint.name)}">${esc(sprint.name)}</option>`).join('')}`;
+      if (dom.taskSprintSelect.innerHTML !== options) dom.taskSprintSelect.innerHTML = options;
+    }
+  }
+
+  async function saveSprintSettings() {
+    const id = app.drawerId;
+    if (!id) return;
+    dom.sprintStatus.textContent = 'saving…';
+    dom.saveSprintSettings.disabled = true;
+    try {
+      const project = projectById(id);
+      const storedSprints = project?.sprints || [];
+      const sprints = sprintListFromEditor().map((sprint) => ({
+        // A renamed sprint keeps its id so existing [sprint:tokens] keep working.
+        id: storedSprints.find((stored) => stored.id === sprint.id)?.id || sprint.id,
+        name: sprint.name
+      }));
+      await api(`/api/projects/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          sprintMode: dom.drawerSprintMode.value,
+          sprints,
+          sprintsParallel: dom.drawerSprintsParallel.checked,
+          sprintTestCommand: dom.drawerSprintTestCommand.value.trim() || 'npm test',
+          sprintDeployMain: dom.drawerSprintDeployMain.checked
+        })
+      });
+      await refreshState();
+      dom.sprintStatus.textContent = 'saved';
+    } catch (error) {
+      dom.sprintStatus.textContent = error.message;
+    } finally {
+      dom.saveSprintSettings.disabled = false;
+    }
+  }
+
+  async function mergeSprintBranches() {
+    const id = app.drawerId;
+    if (!id) return;
+    dom.sprintStatus.textContent = 'merging…';
+    dom.sprintMerge.disabled = true;
+    try {
+      const result = await api(`/api/projects/${encodeURIComponent(id)}/sprint/merge`, {
+        method: 'POST',
+        body: JSON.stringify({})
+      });
+      dom.sprintStatus.textContent = `merged: ${(result.sprints || []).join(', ') || 'nothing to merge'}`;
+    } catch (error) {
+      dom.sprintStatus.textContent = error.message;
+    } finally {
+      dom.sprintMerge.disabled = false;
+    }
+  }
+
+  function addSprintRow() {
+    const name = dom.drawerNewSprint.value.trim();
+    if (!name) {
+      dom.sprintStatus.textContent = 'Enter a sprint name.';
+      return;
+    }
+    const existing = sprintListFromEditor();
+    existing.push({ id: '', name });
+    dom.drawerNewSprint.value = '';
+    const stored = projectById(app.drawerId || '')?.sprints || [];
+    dom.drawerSprintList.innerHTML = existing.map((sprint, index) => {
+      const id = sprint.id || stored.find((entry) => entry.name === sprint.name)?.id || derivedSprintId(sprint.name, index);
+      return `
+      <div class="sprint-row" data-sprint-id="${esc(id)}">
+        <input class="sprint-row-name" type="text" value="${esc(sprint.name)}" aria-label="Sprint name">
+        <button class="icon-button sprint-row-remove" type="button" data-action="remove-sprint" data-sprint-id="${esc(id)}" aria-label="Remove sprint ${esc(sprint.name)}" title="Remove sprint">✕</button>
+      </div>`;
+    }).join('');
+    dom.sprintStatus.textContent = 'unsaved';
+  }
+
+  function derivedSprintId(name, index) {
+    return `${String(name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}-${index + 1}`;
+  }
+
   /* ---------- state ---------- */
 
   function applyState(state) {
@@ -2719,6 +2960,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
         closeDrawer();
       } else {
         updateDrawerHeader(project);
+        updateDrawerSprints(project);
         const key = `${project.path}|${project.progress?.completed || 0}/${project.progress?.total || 0}`;
         if (!app.planDirty && key !== app.lastPlanKey) {
           app.lastPlanKey = key;
@@ -3283,6 +3525,24 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
   });
   dom.saveAutoResume.addEventListener('click', saveAutoResume);
   dom.saveBlockPolicy.addEventListener('click', saveBlockPolicy);
+  dom.saveSprintSettings?.addEventListener('click', saveSprintSettings);
+  dom.sprintMerge?.addEventListener('click', mergeSprintBranches);
+  dom.addSprint?.addEventListener('click', addSprintRow);
+  dom.drawerNewSprint?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    addSprintRow();
+  });
+  dom.drawerSprintList?.addEventListener('click', (event) => {
+    const remove = event.target.closest('button[data-action="remove-sprint"]');
+    if (!remove) return;
+    const row = remove.closest('.sprint-row');
+    if (row) row.remove();
+    dom.sprintStatus.textContent = 'unsaved';
+  });
+  dom.drawerSprintList?.addEventListener('input', () => {
+    dom.sprintStatus.textContent = 'unsaved';
+  });
   dom.autoResumeToggle.addEventListener('change', () => {
     app.autoResumeDirty = true;
     dom.autoResumeStatus.textContent = 'unsaved';
@@ -3414,9 +3674,13 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       toggleCompleted();
       return;
     }
-    const taskIndex = Number(button.dataset.taskIndex);
-    if (!Number.isInteger(taskIndex)) return;
-    if (action === 'edit-task') {
+      const taskIndex = Number(button.dataset.taskIndex);
+      if (!Number.isInteger(taskIndex)) return;
+      if (action === 'toggle-flag') {
+        void toggleTaskFlag(taskIndex, button.dataset.flag);
+        return;
+      }
+      if (action === 'edit-task') {
       startTaskEdit(taskIndex);
       return;
     }

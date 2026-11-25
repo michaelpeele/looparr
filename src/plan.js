@@ -5,6 +5,66 @@ const path = require('path');
 
 const TASK_RE = /^(\s*[-*+]\s+\[)([ xX])(\]\s*)(.*)$/;
 const DEPENDENCY_SUFFIX_RE = /\s*\(depends:\s*([^)]*)\)\s*$/i;
+// Trailing bracket tokens: [sprint:<name>], [merge-previous], [deploy-main].
+// Only these three keys are consumed; unknown bracket tokens stay in the text
+// so old or third-party plans keep parsing unchanged.
+const SPRINT_TOKEN_RE = /\s*\[sprint:([^\]]*)\]\s*$/i;
+const MERGE_PREVIOUS_TOKEN_RE = /\s*\[merge-previous\]\s*$/i;
+const DEPLOY_MAIN_TOKEN_RE = /\s*\[deploy-main\]\s*$/i;
+// "(validation: Backend) [Backend] Validation" prefix marker, parsed the same
+// way as "(plan)". The marker stays in the task text for the agent (Q7).
+const VALIDATION_TASK_MARKER_RE = /^\(validation:\s*([^)\s][^)]*)\)\s(?:|$)/i;
+
+function parseTaskTokens(text) {
+  const value = String(text);
+  let working = value;
+  let sprint = '';
+  let mergePrevious = false;
+  let deployMain = false;
+  for (;;) {
+    const sprintMatch = working.match(SPRINT_TOKEN_RE);
+    if (sprintMatch) {
+      sprint = sprintMatch[1].trim();
+      working = working.slice(0, sprintMatch.index).trimEnd();
+      continue;
+    }
+    const mergeMatch = working.match(MERGE_PREVIOUS_TOKEN_RE);
+    if (mergeMatch) {
+      mergePrevious = true;
+      working = working.slice(0, mergeMatch.index).trimEnd();
+      continue;
+    }
+    const deployMatch = working.match(DEPLOY_MAIN_TOKEN_RE);
+    if (deployMatch) {
+      deployMain = true;
+      working = working.slice(0, deployMatch.index).trimEnd();
+      continue;
+    }
+    break;
+  }
+  return { text: working, sprint, mergePrevious, deployMain };
+}
+
+// Cropped task view: dependency suffix plus sprint/merge tokens, all in one
+// place so parseTasks and editTask agree on what is metadata.
+// Cropped task view: dependency suffix plus sprint/merge tokens, all in one
+// place so parseTasks and editTask agree on what is metadata. Suffix and
+// tokens alternate-strip so '[sprint:x] (depends: 1)' parses too.
+function parseTaskMetadata(text) {
+  const firstDeps = parseDependencySuffix(text);
+  const firstTokens = parseTaskTokens(firstDeps.text);
+  const lastDeps = parseDependencySuffix(firstTokens.text);
+  const lastTokens = parseTaskTokens(lastDeps.text);
+  return {
+    text: lastTokens.text,
+    deps: lastDeps.deps.length ? lastDeps.deps : firstDeps.deps,
+    dependencySuffix: lastDeps.suffix || firstDeps.suffix,
+    dependencyIssue: lastDeps.issue || firstDeps.issue,
+    sprint: firstTokens.sprint || lastTokens.sprint,
+    mergePrevious: firstTokens.mergePrevious || lastTokens.mergePrevious,
+    deployMain: firstTokens.deployMain || lastTokens.deployMain
+  };
+}
 
 function parseDependencySuffix(text) {
   const value = String(text);
@@ -37,7 +97,7 @@ function parseTasks(content) {
   lines.forEach((line, lineIndex) => {
     const match = line.match(TASK_RE);
     if (!match) return;
-    const parsed = parseDependencySuffix(match[4].trim());
+    const parsed = parseTaskMetadata(match[4].trim());
     tasks.push({
       index: tasks.length,
       line: lineIndex,
@@ -45,8 +105,11 @@ function parseTasks(content) {
       text: parsed.text,
       raw: line,
       deps: parsed.deps,
-      dependencySuffix: parsed.suffix,
-      dependencyIssue: parsed.issue
+      dependencySuffix: parsed.dependencySuffix,
+      dependencyIssue: parsed.dependencyIssue,
+      sprint: parsed.sprint,
+      mergePrevious: parsed.mergePrevious,
+      deployMain: parsed.deployMain
     });
   });
   return tasks;
@@ -214,12 +277,25 @@ function editTask(content, index, newText) {
   if (!target) return { ok: false, error: `No checklist item at index ${index}` };
   const normalized = normalizeTaskText(newText);
   if (!normalized) return { ok: false, error: 'Task text is required' };
-  const parsed = parseDependencySuffix(normalized);
-  const text = parsed.suffix ? parsed.text : normalized;
+  const incoming = parseTaskMetadata(normalized);
+  // Tokens the caller stripped or never sent ride in from the existing line so
+  // a plain text edit can never drop sprint membership or merge flags (R10).
+  // Tokens the caller explicitly sent on the new line win over the old ones so
+  // an API edit can add or drop a flag.
+  const explicit = Boolean(incoming.dependencySuffix || incoming.sprint || incoming.mergePrevious || incoming.deployMain);
+  const text = explicit ? incoming.text : normalized;
   if (!text) return { ok: false, error: 'Task text is required' };
-  const suffix = parsed.suffix || target.task.dependencySuffix || '';
-  const spacing = suffix ? ' ' : '';
-  target.lines[target.task.line] = `${target.match[1]}${target.match[2]}${target.match[3]}${text}${spacing}${suffix}${target.lineEnding}`;
+  const parts = [text];
+  const deployMain = explicit ? incoming.deployMain : target.task.deployMain;
+  if (deployMain) parts.push('[deploy-main]');
+  const mergePrevious = explicit ? incoming.mergePrevious : target.task.mergePrevious;
+  if (mergePrevious) parts.push('[merge-previous]');
+  const sprint = incoming.sprint || target.task.sprint || '';
+  if (sprint) parts.push(`[sprint:${sprint}]`);
+  const suffix = incoming.dependencySuffix || target.task.dependencySuffix || '';
+  if (suffix) parts.push(suffix);
+  const line = parts.join(' ');
+  target.lines[target.task.line] = `${target.match[1]}${target.match[2]}${target.match[3]}${line}${target.lineEnding}`;
   return { ok: true, content: target.lines.join('\n') };
 }
 
@@ -253,12 +329,68 @@ function isPlanTask(task) {
   return PLAN_TASK_MARKER_RE.test(String(task || '').trim());
 }
 
+// "(validation: Backend)" prefix — the marker stays in the text the agent sees.
+function validationTypeOfText(text) {
+  const match = String(text || '').trim().match(VALIDATION_TASK_MARKER_RE);
+  return match ? match[1].trim() : '';
+}
+
+function isValidationTask(taskOrText) {
+  const text = typeof taskOrText === 'string' ? taskOrText : String(taskOrText?.text || '');
+  return Boolean(validationTypeOfText(text));
+}
+
+function sprintOfTask(task) {
+  if (task && typeof task === 'object' && typeof task.sprint === 'string') return task.sprint;
+  return parseTaskTokens(String(task?.text ?? task ?? '')).sprint;
+}
+
+function taskFlags(task) {
+  const text = typeof task === 'string' ? task : String(task?.text ?? '');
+  const tokens = parseTaskTokens(
+    typeof task === 'object' && task !== null && typeof task.text === 'string'
+      ? joinTaskTokens(task)
+      : text
+  );
+  return {
+    sprint: typeof task === 'object' && task !== null && typeof task.sprint === 'string'
+      ? task.sprint
+      : tokens.sprint,
+    mergePrevious: task?.mergePrevious === true || tokens.mergePrevious,
+    deployMain: task?.deployMain === true || tokens.deployMain,
+    validationType: validationTypeOfText(tasks_text(task, text))
+  };
+}
+
+// Text carrying only the bracket tokens, rebuilt from a parsed task when a
+// caller hands us one (flags live outside .text after parseTasks).
+function joinTaskTokens(task) {
+  const parts = [task.text];
+  if (task.mergePrevious) parts.push('[merge-previous]');
+  if (task.deployMain) parts.push('[deploy-main]');
+  if (task.sprint) parts.push(`[sprint:${task.sprint}]`);
+  if (task.dependencySuffix) parts.push(task.dependencySuffix);
+  return parts.join(' ');
+}
+
+function tasks_text(task, fallback) {
+  if (typeof task === 'object' && task !== null && typeof task.text === 'string') return task.text;
+  return fallback;
+}
+
 module.exports = {
   TASK_RE,
   PLAN_TASK_MARKER_RE,
+  VALIDATION_TASK_MARKER_RE,
   parseTasks,
   parseDependencySuffix,
+  parseTaskTokens,
   isPlanTask,
+  isValidationTask,
+  validationTypeOfText,
+  sprintOfTask,
+  taskFlags,
+  joinTaskTokens,
   analyzeDependencies,
   firstUnchecked,
   nextUncheckedAfter,

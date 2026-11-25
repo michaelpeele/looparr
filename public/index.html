@@ -466,6 +466,48 @@
         </div>
       </section>
 
+      <section class="drawer-section" data-section="sprints">
+        <button type="button" class="section-heading section-toggle" data-action="toggle-section" aria-expanded="false" aria-controls="section-sprints-body"><span class="section-heading-text">Sprints and phases</span><span class="muted small-text" id="sprint-summary"></span><span class="section-chevron" aria-hidden="true">▼</span></button>
+        <div class="section-body" id="section-sprints-body" hidden>
+          <div class="drawer-policy-editor">
+            <label class="field">
+              <span>Sprint mode</span>
+              <select id="drawer-sprint-mode">
+                <option value="off">Off — linear flow</option>
+                <option value="serial">Serial — one task per sprint</option>
+                <option value="parallel">Parallel — every ready task runs</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Sprint test command</span>
+              <input type="text" id="drawer-sprint-test-command" placeholder="npm test" autocomplete="off">
+            </label>
+            <label class="auto-resume-row">
+              <input type="checkbox" id="drawer-sprints-parallel" />
+              <span>Run several sprints in parallel</span>
+            </label>
+            <label class="auto-resume-row">
+              <input type="checkbox" id="drawer-sprint-deploy-main" />
+              <span>Merge sprint branch into main after validation</span>
+            </label>
+            <div class="sprint-list-editor">
+              <span class="field-label">Sprint list</span>
+              <div class="sprint-list" id="drawer-sprint-list"></div>
+              <div class="sprint-add-row">
+                <input type="text" id="drawer-new-sprint" placeholder="New sprint name" autocomplete="off">
+                <button class="button small" id="add-sprint" type="button">Add sprint</button>
+              </div>
+            </div>
+          </div>
+          <div class="editor-actions">
+            <button class="button small primary" id="save-sprint-settings" type="button">Save sprints</button>
+            <button class="button small" id="sprint-merge" type="button" title="Merge task branches into the sprint branch locally">Merge sprint branches</button>
+            <span class="muted small-text" id="sprint-status" aria-live="polite"></span>
+          </div>
+          <small class="field-hint">Tasks join a sprint with an [sprint:name] marker. Task cards carry [merge-previous] and [deploy-main] toggles — locked once the task starts. The validation task ([Type] Validation) runs the test command at the end of its sprint. All merges stay local.</small>
+        </div>
+      </section>
+
       <section class="drawer-section" data-section="runner">
         <button type="button" class="section-heading section-toggle" data-action="toggle-section" aria-expanded="true" aria-controls="section-runner-body"><span class="section-heading-text">Runner and model</span><span class="muted small-text" id="project-model-status"></span><span class="section-chevron" aria-hidden="true">▼</span></button>
         <div class="section-body" id="section-runner-body">
@@ -537,6 +579,16 @@
           </div>
           <div class="task-add-row">
             <input type="text" id="task-input" placeholder="Add a task" autocomplete="off">
+            <select id="task-sprint-select" class="task-sprint-select" aria-label="Assign to sprint" title="Assign to sprint">
+              <option value="">No sprint</option>
+            </select>
+            <select id="task-validation-type" class="task-validation-type" aria-label="Validation type" title="Validation task type">
+              <option value="">Validation: none</option>
+              <option value="Sprint">Sprint</option>
+              <option value="Backend">Backend</option>
+              <option value="Frontend">Frontend</option>
+              <option value="Docs">Docs</option>
+            </select>
             <label class="task-link-doc-row">
               <input type="checkbox" id="task-link-doc">
               <span>Link doc</span>

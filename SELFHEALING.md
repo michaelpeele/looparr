@@ -121,6 +121,65 @@ The relay refuses non-healed states, foreign project ids, branch names outside
 conflict keeps the branch and returns `409`. Once `mergedAt` is set the merge
 button hides and cannot be pressed twice across a restart.
 
+## Standby daemon (managed host service)
+
+The host-side healer can run as one managed standby process beside the prod
+container. Prod stays exactly as it is: `docker-compose.yml` never sets
+`LOOPARR_SELFHEAL=1`, never spawns git or docker, and only reads the status
+files and relays the merge.
+
+```bash
+npm run selfheal:start     # start (idempotent) and sync the arming setting
+npm run selfheal:status    # state, pid, port, hostname, paths, armed
+npm run selfheal:stop      # stop via the PID file
+npm run selfheal:restart   # after toggling the checkbox
+npm run selfheal:install   # write the systemd --user unit
+```
+
+Arming flow:
+
+1. In Settings turn on **Self-healing debugging mode**. The checkbox only
+   writes `settings.selfHealing` to the config; it never sets an environment
+   variable and never spawns a process.
+2. Run `npm run selfheal:start` (or `selfheal:restart` after a change). `start`
+   copies the arming config to the standby config, so the checkbox is the
+   single switch.
+
+What the script composes (each value is overridable, see the header of
+`scripts/selfheal-daemon.sh`):
+
+| Setting | Default | Why |
+| --- | --- | --- |
+| `NODE_ENV` | `development` | host recipe; the explicit signal is what arms spawning |
+| `LOOPARR_SELFHEAL` | `1` | required; the prod container never carries it |
+| `LOOPARR_SELFHEAL_STANDBY` | `1` | the engine refuses every primary intent, so it never adopts tasks |
+| `HOSTNAME` | `looparr-heal-host` | must differ from prod's `looparr`; that is how checkpoints and status are recognised as foreign. `start` refuses `looparr` |
+| `HOST` / `PORT` | `127.0.0.1` / `4400` | separate listener, not the prod port |
+| `CONFIG_PATH` | `data/selfheal/config.json` | copy of the arming config; its directory is also the standby log dir, so it never writes prod's config |
+| PID / log | `.looparr/selfheal-daemon.pid` / `logs/selfheal-daemon.log` | one managed process, one dedicated log |
+| entry | `server.js` | the same engine, sharing `.looparr` with prod |
+
+`start` is idempotent, refuses to start when the setting is off, requires host
+`git` and `docker`, waits for `/api/state`, and stops again if
+`selfHealingAvailable` is false. Otherwise it exits non-zero with the log tail.
+
+The standby watches fresh foreign errored checkpoints (same one-round, dedupe,
+cooldown, worktree and preview rules as the dev engine), writes
+`.looparr/selfheal/status/<projectId>.json` with `state: idle` at boot and a
+60-second heartbeat, and never resumes or adopts the primary's task — intents
+are peeked, never consumed. Merge stays human-gated: prod validates the status
+file and relays `POST /selfheal/merge` to the host executor, which merges
+locally and restarts. Nothing is pushed.
+
+`npm run selfheal:install` writes
+`~/.config/systemd/user/looparr-selfheal.service` (`forking` with the PID file)
+and prints `systemctl --user enable --now looparr-selfheal`; add
+`loginctl enable-linger $USER` so it survives logout. Without systemd, run
+`npm run selfheal:start` from a startup hook or a terminal.
+
+Do not drive project tasks from the standby's browser UI: it is a healer
+standby, not a second primary.
+
 ## Caps and state
 
 - One round per error, one healer process, a 20-minute wall-clock timeout, and a
@@ -169,7 +228,8 @@ Rollback is "drop the branch and restore the snapshot": delete the
 
 ## Contributing
 
-1. Clone Looparr, enable the setting, export `LOOPARR_SELFHEAL=1`.
+1. Clone Looparr, enable the setting, export `LOOPARR_SELFHEAL=1` (or use
+   `npm run selfheal:start` for the managed host standby).
 2. Force or wait for an error, then watch the pill and the project log.
 3. Inspect the branch: `git log --oneline HEAD..looparr-selfheal-<run-id>` and
    `git worktree list`.
@@ -189,4 +249,7 @@ Rollback is "drop the branch and restore the snapshot": delete the
   contract (freshness, identity, status, error round-trip) and the live
   trigger: a standing engine picks up a fresh foreign errored checkpoint, does
   not re-trigger for the same digest, and re-arms when the error changes.
-- `npm test` (includes all three files), and `git diff --check`.
+- `node scripts/test-selfheal-daemon.js` covers the standby env composition,
+  the distinct-hostname refusal, prod's no-spawn guarantee, the intent
+  non-adoption gate, and the idle status-file handoff to the prod viewer.
+- `npm test` (includes these files), and `git diff --check`.

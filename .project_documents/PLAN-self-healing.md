@@ -72,6 +72,18 @@ state text. A git-branch `.icon-button` sits to the right in `healed` (and optio
    user explicitly changes this.
 6. Spin the heal stack down after the round; keep the branch for review.
 
+## Files to change
+
+- `src/config.js` — `selfHealing` in `DEFAULT_SETTINGS` (~310) and `normalizeSettings`.
+- `src/engine.js` — healer trigger, one-round runner, two-cycle check, `rt.healer` state, audits.
+- `docker-compose.heal.yml` — separate preview stack (project `looparr-heal`) built from the worktree.
+- `public/index.html` — header state pill after `.brand-word` (~line 64) and a settings toggle.
+- `public/app.js` — load/save `selfHealing`, render the state pill and GitHub button.
+- `public/styles.css` — pill state colors and dim/engaged icon styles.
+- `SELFHEALING.md` — mode overview, enable steps, threat model, human-review rule.
+- `scripts/test-self-heal.js` — static guards.
+- `scripts/test-plan-ui-controls.js` — served-asset assertions for the pill and toggle.
+
 ## Requirements
 
 1. Dev-only gate: `selfHealing` setting (default `false`) **and** an explicit dev signal; hard-
@@ -108,6 +120,14 @@ state text. A git-branch `.icon-button` sits to the right in `healed` (and optio
   (two-cycle) or flags and stops; rollback is "drop the branch + restore the snapshot".
 - Git remains local; no push to origin; the human drives the PR.
 - `npm test` green; `SELFHEALING.md` documents the mode and the human-review rule.
+
+## Commit scope and plan marker
+
+Commit only: `src/config.js`, `src/engine.js`, `docker-compose.heal.yml`, `public/index.html`,
+`public/app.js`, `public/styles.css`, `SELFHEALING.md`, `scripts/test-self-heal.js`,
+`scripts/test-plan-ui-controls.js`.
+After implementation and verification are complete, change the plan.md
+`(plan) Self-healing debugging mode` line from `- [ ]` to `- [x]` with a one-line Done note.
 
 ## Risks
 

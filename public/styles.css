@@ -1084,3 +1084,90 @@ body.plan-dragging .checklist { cursor: grabbing; }
   visibility: visible;
   transform: translate(-50%, 0);
 }
+
+/* Sprint chips and per-task flag toggles */
+.sprint-chip {
+  display: inline-block;
+  margin: 0 8px 0 0;
+  padding: 2px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: #111b2c;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.sprint-chip.started {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.task-card-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 100%;
+  margin-top: 6px;
+}
+.task-flag-toggle {
+  border: 1px solid var(--border-soft);
+  background: #111b2c;
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 4px 9px;
+  font-size: 11px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.task-flag-toggle:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.task-flag-toggle.active {
+  border-color: var(--accent);
+  color: var(--text);
+  background: rgba(48, 164, 108, 0.14);
+}
+.task-flag-toggle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.check-item.locked .task-flag-toggle { opacity: 0.4; cursor: not-allowed; }
+
+/* Drawer sprint section */
+.sprint-list-editor { display: grid; gap: 6px; margin: 10px 0; }
+.sprint-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+.sprint-row-name { min-width: 0; padding: 5px 8px; font-size: 12px; }
+.sprint-row-remove {
+  border: 1px solid var(--border-soft);
+  background: #111b2c;
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.sprint-row-remove:hover { color: var(--text); border-color: var(--red); }
+.sprint-add-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sprint-add-row input { flex: 1 1 160px; min-width: 0; }
+.sprint-summary { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
+#task-sprint-select,
+#task-validation-type { flex: 0 1 auto; min-width: 0; }
+.drawer-section label.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  margin: 8px 0 4px;
+}
+.drawer-section label.checkbox-row input { accent-color: var(--accent); }
+.sprint-field-hint { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.sprint-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+#sprint-status { font-size: 11px; color: var(--muted); }
