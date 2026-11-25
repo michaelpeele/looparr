@@ -206,12 +206,22 @@ async function main() {
   await recoverCreatedContainer('preflight');
 
   let state;
-  try {
-    state = await getState();
-  } catch (error) {
-    console.error(`[looparr] Preflight failed: ${error.message}`);
+  let preflightError = null;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    try {
+      state = await getState();
+      preflightError = null;
+      break;
+    } catch (error) {
+      preflightError = error;
+      if (attempt < 29) await sleep(2000);
+    }
+  }
+  if (preflightError || !state) {
+    const message = preflightError?.message || 'API not ready after container recovery';
+    console.error(`[looparr] Preflight failed: ${message}`);
     console.error('[looparr] No rebuild started. Start Looparr and retry.');
-    reportError('PREFLIGHT_FAILED', error.message);
+    reportError('PREFLIGHT_FAILED', message);
     process.exitCode = 1;
     return;
   }

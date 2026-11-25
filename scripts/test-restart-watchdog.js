@@ -72,6 +72,11 @@ assert.match(
 assert.match(restartScript, /await recoverCreatedContainer\('preflight'\)/, 'recovery must run before API preflight');
 assert.match(restartScript, /recoverCreatedContainer\('post-compose'\)/, 'recovery must run after compose');
 assert.match(restartScript, /CONTAINER_RECOVERY_FAILED/, 'failed recovery must be reported loudly');
+assert.match(
+  restartScript,
+  /API not ready after container recovery/,
+  'preflight must retry API readiness after starting a recovered container'
+);
 
 // 3. The watchdog exists, is valid bash, and fixes the exactly-observed state.
 const watchdogScript = fs.readFileSync(watchdogPath, 'utf8');
