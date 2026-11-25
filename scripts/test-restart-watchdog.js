@@ -50,6 +50,29 @@ for (const match of restartScript.matchAll(/execSync\(([^,)]+)/g)) {
   );
 }
 
+// 2b. Created/exited recovery must inspect, start once, and show logs.
+assert.match(restartScript, /function inspectLooparrState\(/, 'restart helper must inspect container state');
+assert.match(
+  restartScript,
+  /\['inspect', 'looparr', '--format', '\{\{\.State\.Status\}\}'\]/,
+  'restart helper must read State.Status with docker inspect'
+);
+assert.match(restartScript, /function recoverCreatedContainer\(phase\)/, 'restart helper must recover created containers');
+assert.match(restartScript, /\['created', 'exited', 'dead'\]/, 'restart helper must recover non-running states');
+assert.match(
+  restartScript,
+  /\['compose', 'start', 'looparr'\]/,
+  'restart helper must start the created container once'
+);
+assert.match(
+  restartScript,
+  /\['logs', '--tail', '60', 'looparr'\]/,
+  'restart helper must show logs when recovery fails'
+);
+assert.match(restartScript, /await recoverCreatedContainer\('preflight'\)/, 'recovery must run before API preflight');
+assert.match(restartScript, /recoverCreatedContainer\('post-compose'\)/, 'recovery must run after compose');
+assert.match(restartScript, /CONTAINER_RECOVERY_FAILED/, 'failed recovery must be reported loudly');
+
 // 3. The watchdog exists, is valid bash, and fixes the exactly-observed state.
 const watchdogScript = fs.readFileSync(watchdogPath, 'utf8');
 assert.match(watchdogScript, /restart-lock\.sh.*restart-watchdog\.sh/, 'watchdog fix mode must run under the restart lock');

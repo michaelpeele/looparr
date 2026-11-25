@@ -1,6 +1,6 @@
 # Promotion concurrency lock — implementation prompt
 
-Status: open. Plan item: `(plan) Promotion concurrency lock`.
+Status: complete. Plan item: `(plan) Promotion concurrency lock`.
 Batch: Desktop layout and drawer batch (before the GitHub tasks).
 
 ## Incident this prevents
@@ -45,3 +45,15 @@ Every promotion path goes through one guarded command, and a container left in
 - Two simultaneous promotions cannot leave `looparr` unstarted.
 - A `Created`-state container after promotion is detected, recovered, or escalates loudly.
 - `npm test` passes with the new helper coverage.
+
+## Verification (2026-11-25 19:10 UTC)
+
+- `scripts/restart-looparr.js` now inspects `looparr` with `docker inspect looparr --format '{{.State.Status}}'`.
+- `created`, `exited`, and `dead` containers are recovered with one `docker compose start looparr`, then polled until running.
+- Recovery runs before API preflight, after detached `docker compose build && docker compose up -d`, and as a fallback after a failed health wait.
+- Failed recovery prints the last 60 container lines and reports `CONTAINER_RECOVERY_FAILED`.
+- `scripts/test-restart-watchdog.js` asserts the recovery calls, signal trap, detached compose, watchdog, and lock usage.
+- `node scripts/test-restart-watchdog.js` passed: `test-restart-watchdog: OK`.
+- Full `npm test` exited 0.
+- `git diff --check` clean.
+- Status set to complete. The separate watchdog timer plan remains complete and is not part of this fix.

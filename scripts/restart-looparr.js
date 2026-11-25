@@ -156,10 +156,58 @@ async function waitForRestart(label) {
   return false;
 }
 
+function inspectLooparrState() {
+  const result = spawnSync(
+    'docker',
+    ['inspect', 'looparr', '--format', '{{.State.Status}}'],
+    { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+  );
+  if (result.error || result.status !== 0) return '';
+  return String(result.stdout || '').trim();
+}
+
+function showLooparrLogs(reason) {
+  console.error(`[looparr] ${reason}; last container logs:`);
+  const result = spawnSync('docker', ['logs', '--tail', '60', 'looparr'], {
+    cwd: REPO_ROOT,
+    stdio: 'inherit'
+  });
+  if (result.error) console.error(`[looparr] docker logs failed: ${result.error.message}`);
+}
+
+function recoverCreatedContainer(phase) {
+  const containerState = inspectLooparrState();
+  if (containerState === 'running') return true;
+  if (!['created', 'exited', 'dead'].includes(containerState)) return false;
+
+  console.log(`[looparr] ${phase}: looparr container is ${containerState}; attempting one start.`);
+  const start = spawnSync('docker', ['compose', 'start', 'looparr'], {
+    cwd: REPO_ROOT,
+    stdio: 'inherit'
+  });
+  if (start.error || start.status !== 0) {
+    showLooparrLogs(`container start failed (${start.status ?? 'unknown'})`);
+    return false;
+  }
+
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    if (inspectLooparrState() === 'running') {
+      console.log(`[looparr] ${phase}: container started.`);
+      return true;
+    }
+    sleep(2000);
+  }
+  showLooparrLogs(`container did not start after ${phase}`);
+  return false;
+}
+
 async function main() {
   console.log('[looparr] Checking current Looparr instance');
+  await recoverCreatedContainer('preflight');
+
+  let state;
   try {
-    await getState();
+    state = await getState();
   } catch (error) {
     console.error(`[looparr] Preflight failed: ${error.message}`);
     console.error('[looparr] No rebuild started. Start Looparr and retry.');
@@ -201,7 +249,20 @@ async function main() {
     return;
   }
 
-  const ready = await waitForRestart('post-restart');
+  if (!recoverCreatedContainer('post-compose')) {
+    removeRestartContinueMarker();
+    console.error('[looparr] Container recovery failed after rebuild.');
+    reportError('CONTAINER_RECOVERY_FAILED', 'could not start looparr after compose', {
+      phase: 'post-compose'
+    });
+    process.exitCode = 1;
+    return;
+  }
+
+  let ready = await waitForRestart('post-restart');
+  if (!ready && recoverCreatedContainer('post-restart')) {
+    ready = await waitForRestart('post-restart recovery');
+  }
   if (!ready) {
     console.error('[looparr] Restart check timed out. Check the container manually.');
     reportError('RESTART_TIMEOUT', 'restart check timed out', { phase: 'post-restart' });
