@@ -60,7 +60,7 @@ Everything else in the chain was run individually and passes, including `test-se
 
 ### F. Restart resets the cooldown and dedupe map
 
-`HEALER_COOLDOWN_MS` (10 min) and `foreignHealedErrors` are in-memory. Two rounds fired 100 s apart because the daemon was restarted in between (12:32:54 and 12:34:31). The live round (12:37:30) needed the restart to clear the pre-fix failure. Document this as an operational caveat, or persist the last-healed digest and cooldown.
+`HEALER_COOLDOWN_MS` (10 min) and the healed-error digest were in-memory. Two rounds fired 100 s apart because the daemon was restarted in between (12:32:54 and 12:34:31). Fixed in commit `f37ada2`: both now persist in `.looparr/selfheal/round-state.json`, so restart no longer resets cooldown or dedupe.
 
 ### G. Shared checkpoint file must stay unconsumed
 
@@ -124,3 +124,14 @@ The daemon shares `.looparr/auto-resume-state.json` with prod. It does not clobb
 ## Commit scope
 
 `src/runners/opencode.js`, `scripts/host-executor.js`, any test files touched, this plan, and docs updates. Keep `.tmp-*` and `looparr-a-open.yml` untracked.
+
+## Status (2026-11-25 14:14 UTC)
+
+- Done: runner attach fix committed as `323b67f`; regression guard in `scripts/test-runner-payload.js` proves modern help emits no `--attach`/`--server`/URL and legacy help still emits `--attach`.
+- Done: five red tests repaired by fixing causes — completed non-sprint projects now reach `done` (`src/engine.js:2650`), stale UI expectations updated for 9 indexed buttons and the `sprints` drawer section. Full `npm test` passed all 34 scripts; `git diff --check` clean after each commit.
+- Done: `da30d76` repaired tests and daemon unit; `f37ada2` persisted cooldown/digest and made the 20-minute timeout SIGKILL a hung healer 10 s after SIGTERM. Managed unit has runner `PATH`, no meaningless `After=docker.service`, and linger is already enabled.
+- Done: `npm run selfheal:install`, `enable --now`, and two restarts verified. Final `systemctl --user show looparr-selfheal` active/running, `MainPID=992387`, `ExecMainStatus=0`; `npm run selfheal:status` reports `state=running`, `pid=992387`, `armed=on`, `daemon_armed=on`, `git=ok`, `docker=ok`. Heartbeat refreshed the project status to `idle` within 60 s and no healer spawned after restart: `.looparr/selfheal/round-state.json` held the cooldown/digest, and the audit shows `healer-triggered-by-primary` without `healer-spawned`.
+- Done: live round `looparr-selfheal-1795613988549-0` produced `healer-triggered-by-primary` + `healer-spawned`, branch and worktree, and a fresh status file with `hostname=looparr-heal-host`. It ended in evidenced `error`/timeout: `.looparr/selfheal/1795613988549-0-analysis.md` records exit n/a, 0/2 preview cycles, branch kept, worktree removed. Runner command had no attach flag or URL. No merge was performed; the healer's branch `83c664c` remains for review only.
+- Limitation: prod `/api/state` on port 3000 returned `401 Unauthorized` / `Invalid API key` with the available `.env` token, and no browser extension was connected, so direct prod pill reflection could not be verified. Prod was not modified: `.looparr/auto-resume-state.json` stayed `status=error`, `hostname=looparr`, unconsumed at 14:13:57Z. Standby `/api/state` reported `selfHealingAvailable:true`.
+- Limitation: no host executor is running, so standby uses direct mode; prod-mediated merge relay is unavailable. Merge stays local and manual.
+- Deferred with approval required: failed healer branches (`looparr-selfheal-*`) and `.tmp-*` artifacts remain untouched. No push, no auto-merge.
