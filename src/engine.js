@@ -2790,7 +2790,18 @@ async function startStep(project) {
     } else {
       let handoff = '';
       try { handoff = fs.readFileSync(promptFile, 'utf8').trim(); } catch { /* missing */ }
-      if (!handoff) throw new Error(`No .looparr/next_prompt.txt for ${phase} step`);
+      if (!handoff) {
+        if (phase === 'analyze' || phase === 'implement') {
+          rt.nextPhase = 'seed';
+          rt.status = 'idle';
+          rt.error = '';
+          clearHandoff(project);
+          appendLog(project.id, 'system', '↻ Reseed — missing .looparr/next_prompt.txt for ' + phase + ' step.');
+          emitState();
+          return;
+        }
+        throw new Error(`No .looparr/next_prompt.txt for ${phase} step`);
+      }
       if (phase === 'implement') {
         const metaCheck = isMetaPromptHandoff(handoff);
         if (metaCheck.poisoned) {
