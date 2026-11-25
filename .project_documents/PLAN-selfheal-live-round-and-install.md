@@ -135,3 +135,15 @@ The daemon shares `.looparr/auto-resume-state.json` with prod. It does not clobb
 - Limitation: prod `/api/state` on port 3000 returned `401 Unauthorized` / `Invalid API key` with the available `.env` token, and no browser extension was connected, so direct prod pill reflection could not be verified. Prod was not modified: `.looparr/auto-resume-state.json` stayed `status=error`, `hostname=looparr`, unconsumed at 14:13:57Z. Standby `/api/state` reported `selfHealingAvailable:true`.
 - Limitation: no host executor is running, so standby uses direct mode; prod-mediated merge relay is unavailable. Merge stays local and manual.
 - Deferred with approval required: failed healer branches (`looparr-selfheal-*`) and `.tmp-*` artifacts remain untouched. No push, no auto-merge.
+
+## Status (2026-11-25 16:45 UTC)
+
+- Request: `do the needfull to get all fixes into prod`.
+- Done: healer fix `83c664c` cherry-picked as `9e7730f` (`fix(engine): reseed when implement/analyze handoff missing`). Full `npm test` passed all 34 scripts and `git diff --check` was clean after the cherry-pick.
+- Done: prod rebuilt with `docker compose up -d --build --no-deps looparr`; image manifest `b7c653e2f7f784ff2d93384fcc69c32f0b6160c8915dca25ef1a27dae546bbad`. Container reports healthy; `ts-looparr` was not rebuilt or restarted.
+- Done: host and container hashes match for `src/engine.js`, `src/runners/opencode.js`, `public/app.js`, and `scripts/selfheal-daemon.sh`. Container contains persisted cooldown/digest, SIGKILL timeout, missing-handoff reseed, and `probeAttachFlag`.
+- Done: host executor enabled as `looparr-host-executor.service` (`node scripts/host-executor.js`, `172.17.0.1:4187`, runner `PATH`, token from `.env`). Health succeeded from host and container. This fixed prod bridge runs failing with `ECONNREFUSED 172.17.0.1:4187`.
+- Done: error recovery via `POST http://127.0.0.1:4188/api/projects/d76e436a-8816-4342-9511-b4706e2320e4/start` returned `{"ok":true}`. At 16:43:49Z prod project was `status=analyze`, `active=true`, `error=""`; seed had completed through the bridge.
+- Caveat: prod bridge prompts still reference `/app/scripts/validate-handoff.js` from `src/config.js:20`; the host executor has no `/app`. Vibe adapted by finding the host path, so this did not block recovery. A follow-up can switch `HANDOFF_VALIDATOR_PATH` to a relative path, rerun tests, and rebuild prod.
+- Caveat: host port 3000 belongs to another service. Prod is reachable through tailscale port 4188 and container-internal `127.0.0.1:3000`.
+- Standby daemon remains stopped intentionally while prod recovers; restart only on request. No push, no healer-branch merge.

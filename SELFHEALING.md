@@ -181,6 +181,16 @@ unit cannot order itself after `docker.service`; if the standby must validate
 Docker availability, use `ExecStartPre=/usr/bin/docker info` instead. Without
 systemd, run `npm run selfheal:start` from a startup hook or a terminal.
 
+Prod uses a separate managed process,
+`~/.config/systemd/user/looparr-host-executor.service`, running
+`node scripts/host-executor.js` on `172.17.0.1:4187` with the same runner `PATH`
+and the bearer token from `.env`. Verify it with
+`curl http://172.17.0.1:4187/health` from the host or inside the container. A
+missing executor makes prod bridge runs fail with `ECONNREFUSED
+172.17.0.1:4187`; the UI Start action then cannot recover the errored project.
+The standby daemon and host executor are independent units. The standby stays
+stopped while prod recovers; `looparr-host-executor.service` stays enabled.
+
 Do not drive project tasks from the standby's browser UI: it is a healer
 standby, not a second primary.
 
