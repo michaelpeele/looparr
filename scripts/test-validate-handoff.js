@@ -80,6 +80,9 @@ try {
   ]) {
     assert.ok(template.includes('.looparr/next_prompt.handoff.tmp'), 'template must use a draft file');
     assert.ok(template.includes('scripts/validate-handoff.js'), 'template must run the validator');
+    const validatorCommand = template.match(/Run node ("[^"]+") /);
+    assert.ok(validatorCommand, 'template must quote the validator path');
+    assert.ok(!path.isAbsolute(JSON.parse(validatorCommand[1])), 'validator path must be relative');
     assert.ok(template.includes('until it passes'), 'template must require a clean rerun');
   }
 

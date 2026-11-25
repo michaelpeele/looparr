@@ -17,7 +17,7 @@ const DEFAULT_PLAN_MODEL_IDS = [DEFAULT_OPENCODE_MODEL, DEFAULT_KILO_MODEL].join
 const CONFIG_PATH = path.resolve(process.env.CONFIG_PATH || path.join(__dirname, '..', 'config.json'));
 
 const HANDOFF_DRAFT_PATH = '.looparr/next_prompt.handoff.tmp';
-const HANDOFF_VALIDATOR_PATH = JSON.stringify(path.join(__dirname, '..', 'scripts', 'validate-handoff.js'));
+const HANDOFF_VALIDATOR_PATH = JSON.stringify('scripts/validate-handoff.js');
 const HANDOFF_VALIDATION_STEPS = [
   `Draft the handoff to ${HANDOFF_DRAFT_PATH} (create .looparr/ if needed).`,
   `Run node ${HANDOFF_VALIDATOR_PATH} ${HANDOFF_DRAFT_PATH}.`,
