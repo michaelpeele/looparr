@@ -85,9 +85,21 @@ const SNAPSHOT_MAX_PLAN_STRING = 500;
 const SNAPSHOT_MAX_HEALER_STRING = 200;
 const SNAPSHOT_HEALER_KEYS = ['state', 'round', 'cycles', 'branch', 'worktree', 'phase', 'errorAt', 'mergedAt'];
 const SNAPSHOT_KEY_MAX = 64;
+const STATE_ERROR_MAX_CHARS = 500;
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function sanitizeHealer(value) {
+  if (!isPlainObject(value)) return undefined;
+  const healer = {};
+  for (const key of SNAPSHOT_HEALER_KEYS) {
+    const entry = value[key];
+    if (typeof entry === 'string') healer[key] = redactText(entry, SNAPSHOT_MAX_HEALER_STRING);
+    else if (typeof entry === 'number' && Number.isFinite(entry)) healer[key] = entry;
+  }
+  return Object.keys(healer).length ? healer : undefined;
 }
 
 // Serializable projection of the runtime for crash/restart resume. Only JSON
@@ -128,13 +140,12 @@ function sanitizeSnapshot(input) {
   const resumeSessionId = normalizeOpenCodeSessionId(input.resumeSessionId);
   if (resumeSessionId) out.resumeSessionId = resumeSessionId;
   if (isPlainObject(input.healer)) {
-    const healer = {};
-    for (const key of SNAPSHOT_HEALER_KEYS) {
-      const value = input.healer[key];
-      if (typeof value === 'string') healer[key] = redactText(value, SNAPSHOT_MAX_HEALER_STRING);
-      else if (typeof value === 'number' && Number.isFinite(value)) healer[key] = value;
-    }
-    if (Object.keys(healer).length) out.healer = healer;
+    const healer = sanitizeHealer(input.healer);
+    if (healer) out.healer = healer;
+  }
+  if (isPlainObject(input.lastHealer)) {
+    const lastHealer = sanitizeHealer(input.lastHealer);
+    if (lastHealer) out.lastHealer = lastHealer;
   }
   if (isPlainObject(input.planPhaseSnapshot)) {
     const plan = {};
@@ -167,6 +178,9 @@ function writeIntent(project, fields) {
     pid: Number.isInteger(fields.pid) ? fields.pid : process.pid,
     hostname: redactText(fields.hostname ?? process.env.HOSTNAME ?? '', 60)
   };
+  if (typeof fields.error === 'string' && fields.error.trim()) {
+    intent.error = redactText(fields.error, STATE_ERROR_MAX_CHARS);
+  }
   if (typeof fields.runKey === 'string' && fields.runKey.trim()) {
     intent.runKey = fields.runKey.trim().slice(0, 128);
   }
@@ -214,7 +228,8 @@ function readIntent(project) {
       currentTask: typeof data.currentTask === 'string' ? data.currentTask : '',
       resumeAt: Number.isFinite(data.resumeAt) && data.resumeAt > Date.now() ? Number(data.resumeAt) : null,
       pid: Number.isInteger(data.pid) ? data.pid : process.pid,
-      hostname: typeof data.hostname === 'string' ? data.hostname : ''
+      hostname: typeof data.hostname === 'string' ? data.hostname : '',
+      error: typeof data.error === 'string' ? data.error : ''
     };
     if (typeof data.runKey === 'string' && data.runKey.trim()) intent.runKey = data.runKey.trim().slice(0, 128);
   const sessionId = normalizeOpenCodeSessionId(data.opencodeSessionId);
@@ -274,7 +289,8 @@ function consumeIntent(project) {
       currentTask: typeof data.currentTask === 'string' ? data.currentTask : '',
       resumeAt: Number.isFinite(data.resumeAt) && data.resumeAt > Date.now() ? Number(data.resumeAt) : null,
       pid: Number.isInteger(data.pid) ? data.pid : process.pid,
-      hostname: typeof data.hostname === 'string' ? data.hostname : ''
+      hostname: typeof data.hostname === 'string' ? data.hostname : '',
+      error: typeof data.error === 'string' ? data.error : ''
     };
     if (typeof data.runKey === 'string' && data.runKey.trim()) intent.runKey = data.runKey.trim().slice(0, 128);
   const sessionId = normalizeOpenCodeSessionId(data.opencodeSessionId);
@@ -286,6 +302,29 @@ function consumeIntent(project) {
     try { fs.unlinkSync(consuming); } catch { /* ignore */ }
     return { ok: false, reason: 'invalid' };
   }
+}
+
+// Look at (never consume) the primary's checkpoint for errors the primary
+// recorded. A standing healing engine polls this: the writer refreshes the
+// file roughly every CHECKPOINT_INTERVAL_MS while a project is active or
+// errored, so freshness identifies a live primary; an errored status with a
+// foreign hostname is a heal request. `selfHostname` is this checking
+// process's identity; a same-hostname writer is an engine restarting into
+// itself, not a primary.
+function foreignErrorIntent(project, selfHostname, options = {}) {
+  const checked = readIntent(project);
+  if (!checked.ok) return { ok: false, reason: checked.reason };
+  const intent = checked.intent;
+  const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
+  const freshMs = Number.isFinite(options.freshMs) ? options.freshMs : 90_000;
+  const capturedAtMs = Date.parse(intent.capturedAt);
+  const fresh = Number.isFinite(capturedAtMs)
+    && capturedAtMs <= nowMs
+    && nowMs - capturedAtMs < freshMs;
+  if (!fresh || intent.reason !== 'checkpoint') return { ok: false, reason: 'not-live' };
+  if (intent.hostname && intent.hostname === selfHostname) return { ok: false, reason: 'own-identity' };
+  if (intent.status !== 'error') return { ok: false, reason: 'primary-active' };
+  return { ok: true, intent };
 }
 
 module.exports = {
@@ -305,5 +344,6 @@ module.exports = {
   readIntent,
   hasIntent,
   clearIntent,
-  consumeIntent
+  consumeIntent,
+  foreignErrorIntent
 };

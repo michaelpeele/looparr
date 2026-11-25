@@ -43,6 +43,9 @@ let roundRobinCursor = 0;
 let lastCheckpointAt = 0;
 let lastHandoffRecoveryAt = 0;
 let lastSelfhealHeartbeatAt = 0;
+// One healer round per unique error: project id -> runKey + error digest of
+// the foreign checkpoint already acted on. A changed digest re-arms.
+const foreignHealedErrors = new Map();
 // Heartbeat cadence so a healthy idle dev daemon keeps the status file fresh.
 const SELFHEAL_HEARTBEAT_MS = 60_000;
 
@@ -337,19 +340,22 @@ function getState() {
         effectiveCooloffSeconds: configStore.resolveCooloff(project, config.settings),
         autoResumeOnStart: project.autoResumeOnStart === true,
         autoResumePending: fs.existsSync(autoResume.statePath(project)),
-        selfHealer: rt.healer
-          ? {
-              state: rt.healer.state,
-              round: rt.healer.round || 0,
-              cycles: rt.healer.cycles || 0,
-              branch: rt.healer.branch || '',
-              phase: rt.healer.phase || '',
-              errorAt: rt.healer.errorAt || '',
-              mergedAt: rt.healer.mergedAt || null
-            }
-          : (prodViewer
-            ? (readHealerStatus(project.id) || (available ? idleHealer : null))
-            : (available ? idleHealer : null)),
+        selfHealer: (() => {
+          const healerView = rt.healer || rt.lastHealer;
+          return healerView
+            ? {
+                state: healerView.state,
+                round: healerView.round || 0,
+                cycles: healerView.cycles || 0,
+                branch: healerView.branch || '',
+                phase: healerView.phase || '',
+                errorAt: healerView.errorAt || '',
+                mergedAt: healerView.mergedAt || null
+              }
+            : (prodViewer
+              ? (readHealerStatus(project.id) || (available ? idleHealer : null))
+              : (available ? idleHealer : null));
+        })(),
         error: rt.error || (plan.ok ? '' : `plan.md: ${plan.error}`),
         logs: rt.logs.slice(-200)
       };
@@ -631,6 +637,19 @@ function snapshotRuntime(project, rt) {
       mergedAt: rt.healer.mergedAt || ''
     };
   }
+  if (!rt.healer && rt.lastHealer && typeof rt.lastHealer === 'object') {
+    const last = rt.lastHealer;
+    snapshot.lastHealer = {
+      state: last.state || '',
+      round: last.round || 0,
+      cycles: last.cycles || 0,
+      branch: last.branch || '',
+      worktree: last.worktree || '',
+      phase: last.phase || '',
+      errorAt: last.errorAt || '',
+      mergedAt: last.mergedAt || ''
+    };
+  }
   return Object.keys(snapshot).length ? snapshot : undefined;
 }
 
@@ -650,6 +669,7 @@ function writeCheckpointIntent(project, rt) {
     nextPhase: phase,
     status: rt.status,
     currentTask: rt.currentTask,
+    error: rt.error,
     resumeAt: rt.resumeAt,
     runKey,
     pid: process.pid,
@@ -1010,17 +1030,19 @@ function heartbeatHealerStatus(now) {
   lastSelfhealHeartbeatAt = now;
   for (const project of config.projects) {
     const rt = ensureRuntime(project);
-    writeHealerStatus(project, rt.healer);
+    // An active round writes live; a finished round stays sticky (healed,
+    // failed or merged) so prod keeps seeing how the last round ended.
+    writeHealerStatus(project, rt.healer || rt.lastHealer);
   }
 }
 
-function healerPrompt(project, rt, healer) {
+function healerPrompt(project, ctx, healer) {
   const context = [
     `Error at: ${healer.errorAt}`,
     `Phase: ${healer.phase || 'unknown'}`,
-    `Task: ${rt.currentTask || ''}`,
-    `Error: ${autoResume.redactText(rt.error || '', 800)}`,
-    `Log tail: ${autoResume.redactText(String(rt.stepOutput || '')
+    `Task: ${ctx.task || ''}`,
+    `Error: ${autoResume.redactText(ctx.error || '', 800)}`,
+    `Log tail: ${autoResume.redactText(String(ctx.logTail || '')
       .split(/\r?\n/).slice(-40).join('\n'), 4000)}`,
     `Repo: ${healer.repoRoot}`,
     `Worktree: ${healer.worktree}`,
@@ -1124,6 +1146,13 @@ function finishHealerRound(project, healer, outcome, cause) {
     );
   }
   writeHealerStatus(project, healer);
+  // The round is over: park it in lastHealer so the pill and the merge
+  // button survive (rt is free to run another round later).
+  const rt = runtime.get(project.id);
+  if (rt && rt.healer === healer) {
+    rt.lastHealer = healer;
+    rt.healer = null;
+  }
   emitState();
 }
 
@@ -1131,8 +1160,11 @@ function healerAuditPhase(failedPhase) {
   return autoResume.PHASES.has(failedPhase) ? failedPhase : undefined;
 }
 
-// Triggered only from an error transition. Returns true when one round started.
-function maybeStartHealer(project, rt, failedPhase) {
+// Triggered by an error transition or, with opts.foreign, by the live
+// watchdog that noticed a foreign engine's errored checkpoint. The foreign
+// path overrides error/task/log context from the checkpoint intent, because
+// this engine's own runtime holds none of the primary's state.
+function maybeStartHealer(project, rt, failedPhase, opts = {}) {
   if (!selfHealingEnabled()) {
     const reason = selfHealDisabledReason();
     if (config.settings.selfHealing === true && reason) {
@@ -1144,11 +1176,14 @@ function maybeStartHealer(project, rt, failedPhase) {
     }
     return false;
   }
-  if (!rt || rt.status !== 'error' || rt.healer) return false;
+  if (!rt || rt.healer) return false;
+  if (!opts.foreign && rt.status !== 'error') return false;
   if (failedPhase === HEALER_PHASE) return false; // never recurse on a healer error
   if (rt.healerLastExitAt && Date.now() - rt.healerLastExitAt < HEALER_COOLDOWN_MS) return false;
   const auditPhase = healerAuditPhase(failedPhase);
-  const task = rt.currentTask || '';
+  const task = opts.task !== undefined ? String(opts.task || '') : (rt.currentTask || '');
+  const errorText = opts.error !== undefined ? String(opts.error || '') : (rt.error || '');
+  const logTail = opts.logTail !== undefined ? String(opts.logTail || '') : String(rt.stepOutput || '');
   const repoRoot = path.resolve(__dirname, '..');
   const runId = `${Date.now()}-${String(rt.token)}`;
   const branch = `looparr-selfheal-${runId}`;
@@ -1191,7 +1226,7 @@ function maybeStartHealer(project, rt, failedPhase) {
     phase: failedPhase,
     errorAt: new Date().toISOString(),
     startedAt: Date.now(),
-    error: autoResume.redactText(rt.error || '', 500),
+    error: autoResume.redactText(errorText, 500),
     task,
     exitCode: null,
     mergedAt: null
@@ -1199,7 +1234,7 @@ function maybeStartHealer(project, rt, failedPhase) {
   let built;
   try {
     built = runner.buildCommand({
-      prompt: healerPrompt(project, rt, healer),
+      prompt: healerPrompt(project, { task, error: errorText, logTail }, healer),
       cwd: worktree,
       files: [],
       model,
@@ -1280,6 +1315,47 @@ function maybeStartHealer(project, rt, failedPhase) {
     finish(code === 0, code === 0 ? 'edits-complete' : `exit-${code}`);
   });
   return true;
+}
+
+// Live trigger: the standing dev engine scans fresh checkpoint intents on the
+// checkpoint cadence. When the primary engine wrote an errored checkpoint,
+// one healer round starts here — same flow, same human-gated merge; the dev
+// engine never adopts or resumes the primary's task itself.
+function maybeHealForeignPrimary(project, rt) {
+  if (!selfHealingEnabled()) return;
+  if (!selfHealingEnabled()) return;
+  if (rt.child || rt.healer) return;
+  let decision;
+  try {
+    decision = autoResume.foreignErrorIntent(project, process.env.HOSTNAME || '', {
+      nowMs: Date.now(),
+      freshMs: CHECKPOINT_INTERVAL_MS
+    });
+  } catch {
+    return;
+  }
+  if (!decision.ok) return;
+  const intent = decision.intent;
+  const digest = `${intent.runKey || ''}|${String(intent.error || '').slice(0, 300)}`;
+  if (foreignHealedErrors.get(project.id) === digest) return;
+  foreignHealedErrors.set(project.id, digest);
+  autoResume.appendAudit(project, 'healer-triggered-by-primary', {
+    phase: healerAuditPhase(intent.nextPhase),
+    task: intent.currentTask || '',
+    cause: intent.hostname || 'primary'
+  });
+  appendLog(
+    project.id,
+    'system',
+    `✚ Primary engine (${intent.hostname || 'unknown host'}) reported an error; starting a healer round.`
+  );
+  emitState();
+  maybeStartHealer(project, rt, intent.nextPhase, {
+    foreign: true,
+    error: intent.error,
+    task: intent.currentTask || '',
+    logTail: intent.snapshot?.stepOutput || ''
+  });
 }
 
 function stopHealPreview(healer) {
@@ -1374,7 +1450,7 @@ function mergeHealerBranch(id) {
   if (!project) return { ok: false, status: 404, error: 'Project not found' };
   if (!selfHealingEnabled()) return { ok: false, status: 403, error: 'Self-healing is disabled' };
   const rt = ensureRuntime(project);
-  const healer = rt.healer;
+  const healer = rt.healer || rt.lastHealer;
   if (!healer || healer.state !== 'healed') {
     return { ok: false, status: 409, error: 'No healed self-heal branch to merge' };
   }
@@ -2214,7 +2290,11 @@ function tick() {
   const now = Date.now();
   if (now - lastCheckpointAt >= CHECKPOINT_INTERVAL_MS) {
     lastCheckpointAt = now;
-    for (const project of config.projects) writeCheckpointIntent(project, ensureRuntime(project));
+    for (const project of config.projects) {
+      const rt = ensureRuntime(project);
+      writeCheckpointIntent(project, rt);
+      maybeHealForeignPrimary(project, rt);
+    }
   }
   heartbeatHealerStatus(now);
   if (now - lastHandoffRecoveryAt >= HANDOFF_RECOVERY_INTERVAL_MS) {
@@ -2589,6 +2669,11 @@ async function resumeOnStart() {
           if (restored.state === 'debugging' || restored.state === 'healing') restored.state = 'error';
           rt.healer = restored;
         }
+        if (!snap.healer && snap.lastHealer && typeof snap.lastHealer === 'object' && !Array.isArray(snap.lastHealer)) {
+          rt.lastHealer = { ...snap.lastHealer };
+        } else {
+          rt.lastHealer = rt.healer;
+        }
       }
       appendLog(project.id, 'system', `↻ Auto-resume after restart (phase ${phase}).`);
       if (waitingStatus && (phase === 'planWrite' || phase === 'analyze')) {
@@ -2646,7 +2731,10 @@ function init() {
     // Seed an idle status per project so a prod viewer sees a live idle pill
     // from the moment the dev engine is up, before any round runs.
     lastSelfhealHeartbeatAt = Date.now();
-    for (const project of config.projects) writeHealerStatus(project, ensureRuntime(project).healer);
+    for (const project of config.projects) {
+      const rt = ensureRuntime(project);
+      writeHealerStatus(project, rt.healer || rt.lastHealer);
+    }
   }
   tickTimer = setInterval(tick, 1000);
   logStore.prune();

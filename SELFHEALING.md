@@ -55,6 +55,20 @@ states light the pixel cyan (`debugging`), amber (`healing`), red (`error`), or
 the Looparr
 gradient with a green dot (`healed`).
 
+### Live trigger: healing a running primary
+
+The standing dev engine also watches the primary's checkpoint intents on the
+checkpoint cadence. When a fresh (≤ one checkpoint interval) checkpoint from a
+different hostname is in `status: error`, the same single-round flow starts
+automatically — no restart of either engine. Guards: the dev engine's own
+project is idle (no child, no healer), the cooldown is clear, and a digest of
+`runKey + error` dedupes the trigger — the same error never starts two rounds,
+while a changed error text re-arms. The dev engine never adopts or resumes the
+primary's task; it only starts the healer, and the merge stays human-gated.
+
+The flow above is unchanged: same one round, same branch, same preview
+validation, same pill and merge button.
+
 ## Host healer, prod viewer
 
 The healer needs `git` worktrees and the Docker CLI, which exist only on the host
@@ -112,7 +126,12 @@ button hides and cannot be pressed twice across a restart.
 - `rt.healer` records `state`, `round`, `cycles`, branch, worktree, phase, and
   timestamps. It is included in the durable resume snapshot, and an interrupted
   `debugging`/`healing` round is restored as `error` so it can never look live.
-- Audit events: `healer-spawned`, `healer-exit`, `healer-healed`,
+- A finished round is parked in `rt.lastHealer` (also snapshot-persisted), so
+  the engine is free to heal again later while the pill — and, for a `healed`
+  round, the merge button — stays visible. The merge works from `lastHealer`;
+  `mergedAt` set on it keeps the button hidden across restarts.
+- Audit events: `healer-triggered-by-primary` (live trigger picked up a
+  foreign error), `healer-spawned`, `healer-exit`, `healer-healed`,
   `healer-failed`, `healer-spundown`, plus `healer-merged` for the human-gated
   merge.
 
@@ -160,4 +179,8 @@ Rollback is "drop the branch and restore the snapshot": delete the
   path containment, malformed-file rejection, prod `getState()` mapping, merge
   request refusal cases (bad token `401`, non-healed/already-merged `409`, bad
   branch `400`), the executor relay over HTTP, and the no-push guard.
-- `npm test` (includes both files), and `git diff --check`.
+- `node scripts/test-auto-resume.js` covers the foreign-error intent unit
+  contract (freshness, identity, status, error round-trip) and the live
+  trigger: a standing engine picks up a fresh foreign errored checkpoint, does
+  not re-trigger for the same digest, and re-arms when the error changes.
+- `npm test` (includes all three files), and `git diff --check`.

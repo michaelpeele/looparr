@@ -17,6 +17,7 @@ const FIXTURE_PATH = path.join(TEMP_DIR, 'fake-runner.js');
 const BIN_DIR = path.join(TEMP_DIR, 'bin');
 const DOCKER_MARKER = path.join(TEMP_DIR, 'docker-was-called');
 const RESTART_CONTINUE_TEST_FILE = path.join(TEMP_DIR, 'restart-continue.json');
+const CHECKPOINT_WAIT_MS = 30_000;
 const PORT = '4200';
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 
@@ -453,6 +454,57 @@ function testIntentSessionFields() {
   assert.ok(!audit.includes(rawSessionId), 'audit log contains no raw session id');
 }
 
+function testForeignErrorIntent() {
+  const projectPath = path.join(TEMP_DIR, 'foreign-error-project');
+  fs.mkdirSync(path.join(projectPath, '.looparr'), { recursive: true });
+  const project = { id: 'foreign-error-test', name: 'Foreign Error Test', path: projectPath };
+  const selfHostname = 'healing-host';
+  const base = {
+    version: 1,
+    projectId: project.id,
+    capturedAt: new Date().toISOString(),
+    reason: 'checkpoint',
+    nextPhase: 'analyze',
+    status: 'error',
+    currentTask: 'Task foreign',
+    error: 'analyze step exited with code 1',
+    pid: 424242,
+    hostname: 'looparr'
+  };
+  function write(raw, extra = {}) {
+    fs.writeFileSync(autoResume.statePath(project), JSON.stringify({ ...raw, ...extra }, null, 2), 'utf8');
+  }
+  function rawIntent() {
+    return JSON.parse(fs.readFileSync(autoResume.statePath(project), 'utf8'));
+  }
+
+  autoResume.clearIntent(project);
+  write(base);
+  let decision = autoResume.foreignErrorIntent(project, selfHostname);
+  assert.equal(decision.ok, true, 'fresh foreign error intent triggers');
+  assert.equal(decision.intent.error, base.error, 'error text round-trips through the intent');
+
+  assert.equal(autoResume.foreignErrorIntent(project, 'looparr').ok, false, 'own hostname is not a foreign primary');
+
+  write(base, { capturedAt: new Date(Date.now() - 10 * 60_000).toISOString() });
+  assert.equal(autoResume.foreignErrorIntent(project, selfHostname).ok, false, 'stale intent never triggers');
+
+  write(base, { status: 'seed' });
+  decision = autoResume.foreignErrorIntent(project, selfHostname);
+  assert.equal(decision.ok, false, 'healthy primary never triggers');
+  assert.equal(decision.reason, 'primary-active', 'healthy primary rejection reason');
+
+  write(base);
+  const noErrorField = rawIntent();
+  delete noErrorField.error;
+  fs.writeFileSync(autoResume.statePath(project), JSON.stringify(noErrorField), 'utf8');
+  decision = autoResume.foreignErrorIntent(project, selfHostname);
+  assert.equal(decision.ok, true, 'intent without an error field still triggers (older writers)');
+  assert.equal(decision.intent.error, '', 'missing error defaults to empty');
+
+  autoResume.clearIntent(project);
+}
+
 function testSnapshotFields(engine) {
   const projectPath = path.join(TEMP_DIR, 'snapshot-project');
   fs.mkdirSync(path.join(projectPath, '.looparr'), { recursive: true });
@@ -673,6 +725,7 @@ async function testHandoffRecovery(engine) {
 
 async function main() {
   testIntentSessionFields();
+  testForeignErrorIntent();
   fs.rmSync(TEMP_DIR, { recursive: true, force: true });
   fs.mkdirSync(PROJECTS_ROOT, { recursive: true });
   createFixture();
@@ -1084,7 +1137,7 @@ async function main() {
     LOOPARR_RESTART_CONTINUE_FILE: RESTART_CONTINUE_TEST_FILE,
     LOOPARR_RESTART_LOCK_PATH: path.join(TEMP_DIR, 'restart.lock'),
     LOOPARR_PROMOTIONS_LOG: path.join(TEMP_DIR, 'promotions.log'),
-    PATH: `${BIN_DIR}:${process.env.PATH || ''}`
+    PATH: `${BIN_DIR}:${process.env.PATH || ''}`,
   };
   delete helperEnv.LOOPARR_ALLOW_RESUME_INTENT;
   const originalHelperBaseUrl = helperEnv.LOOPARR_BASE_URL;
@@ -1393,10 +1446,13 @@ async function main() {
   );
   assert.equal(countAudit(hardProject.id, 'resume-on-start'), 1, 'hard recreation audited resume-on-start');
 
-  await testStandbyGate();
-
+  // The standby gate spawns its own server on the same port: the main
+  // suite server must be down first or its spawn is a doomed race. The gate
+  // kills its own last server before returning.
   await stopAllProjects();
   await killServer(server);
+  await testStandbyGate();
+
   console.log('auto-resume smoke tests passed');
 }
 
@@ -1442,9 +1498,68 @@ async function testStandbyGate() {
   findProject(state, standby.id);
   await waitForAudit(standby.id, 'resume-on-start', true);
   await killServer(server);
+
+  // 18. Live trigger: a standing engine with self-healing on must start one
+  // healer round per unique foreign error while it runs — no restart needed.
+  // A failing git stub stops the round at the worktree step, so the probe
+  // asserts trigger + guard wiring without touching real repo state.
+  const gitStub = path.join(BIN_DIR, 'git');
+  fs.writeFileSync(gitStub, '#!/bin/sh\necho "git stub: unavailable for trigger test" >&2\nexit 1\n');
+  fs.chmodSync(gitStub, 0o755);
+  server = await spawnServer(false, {
+    LOOPARR_SELFHEAL: '1',
+    PATH: `${BIN_DIR}:${process.env.PATH || ''}`,
+  });
+  state = await getState();
+  findProject(state, standby.id);
+  // Phase 3's same-hostname resume may have adopted the standby task; the
+  // live-trigger guard refuses anything with its own live child, so stop it.
+  await stopAllProjects();
+
+  // Mimic the primary: keep refreshing a fresh errored checkpoint until the
+  // standby engine's checkpoint cadence picks it up.
+  let primaryErrorSeen = '';
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    writeForeignIntent(standby.id, 'error', 'analyze', { error: 'live trigger seed step exited with code 1' });
+    const audit = readAudit(standby.id);
+    const triggered = audit.filter((entry) => entry.event === 'healer-triggered-by-primary');
+    if (triggered.length > 0) {
+      primaryErrorSeen = triggered[0].cause || '';
+      break;
+    }
+    await delay(200);
+  }
+  assert.equal(
+    primaryErrorSeen,
+    'looparr',
+    'standing engine picked up the primary error without a restart'
+  );
+  await waitForAudit(standby.id, 'healer-failed', true);
+  assert.equal(countAudit(standby.id, 'healer-spawned'), 0, 'worktree stub kept the probe out of real repo state');
+
+  // Same error digest: the checkpoint cadence keeps seeing the errored file,
+  // but the round must not re-trigger for it.
+  await delay(CHECKPOINT_WAIT_MS + 5_000);
+  assert.equal(
+    countAudit(standby.id, 'healer-triggered-by-primary'),
+    1,
+    'same-error digest does not re-trigger'
+  );
+
+  // A changed error re-arms the trigger (cooldown aside, the digest moves).
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    writeForeignIntent(standby.id, 'error', 'seed', { error: 'live trigger second failure mode' });
+    if (countAudit(standby.id, 'healer-triggered-by-primary') >= 2) break;
+    await delay(200);
+  }
+  assert.ok(
+    countAudit(standby.id, 'healer-triggered-by-primary') >= 2,
+    'changed error digest re-arms the trigger'
+  );
+  await killServer(server);
 }
 
-function writeForeignIntent(projectId, status, nextPhase) {
+function writeForeignIntent(projectId, status, nextPhase, overrides = {}) {
   const dir = path.join(PROJECTS_ROOT, 'standby-project', '.looparr');
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(
@@ -1459,7 +1574,8 @@ function writeForeignIntent(projectId, status, nextPhase) {
       currentTask: 'Task standby-project',
       resumeAt: null,
       pid: 424242,
-      hostname: 'looparr'
+      hostname: 'looparr',
+      ...overrides
     }, null, 2) + '\n',
     { encoding: 'utf8', mode: 0o600 }
   );
