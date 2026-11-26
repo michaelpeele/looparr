@@ -53,6 +53,13 @@ function makeElement() {
     className: '',
     textContent: '',
     dataset: {},
+    attributes: {},
+    setAttribute(name, value) {
+      el.attributes[name] = String(value);
+    },
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(el.attributes, name) ? el.attributes[name] : null;
+    },
     children: [],
     scrollTop: 0,
     scrollHeight: 120,
@@ -120,11 +127,13 @@ function makeDocumentStub() {
 function loadLogLineFunctions() {
   const source = readRepoFile('public/app.js');
   const streamClass = extractFunction(source, 'function streamClass(stream)');
+  const formatLogText = extractFunction(source, 'function formatLogText(text)');
   const makeLogLine = extractFunction(source, 'function makeLogLine(entry)');
   const factory = new Function('document', [
     streamClass,
+    formatLogText,
     makeLogLine,
-    'return { streamClass, makeLogLine };'
+    'return { streamClass, formatLogText, makeLogLine };'
   ].join('\n'));
   return factory(makeDocumentStub());
 }
@@ -132,10 +141,12 @@ function loadLogLineFunctions() {
 function loadRenderTerminalLogs(logs) {
   const source = readRepoFile('public/app.js');
   const streamClass = extractFunction(source, 'function streamClass(stream)');
+  const formatLogText = extractFunction(source, 'function formatLogText(text)');
   const makeLogLine = extractFunction(source, 'function makeLogLine(entry)');
   const renderLogs = extractFunction(source, 'function renderTerminalLogs(id)');
   const factory = new Function('app', 'dom', 'document', [
     streamClass,
+    formatLogText,
     makeLogLine,
     renderLogs,
     'return { renderTerminalLogs };'
@@ -148,6 +159,7 @@ function loadRenderTerminalLogs(logs) {
 function loadOverlayFunctions({ drawerId = null, open = false } = {}) {
   const source = readRepoFile('public/app.js');
   const streamClass = extractFunction(source, 'function streamClass(stream)');
+  const formatLogText = extractFunction(source, 'function formatLogText(text)');
   const makeLogLine = extractFunction(source, 'function makeLogLine(entry)');
   const appendLine = extractFunction(source, 'function appendTerminalLine(entry)');
   const isTerminalOpen = extractFunction(source, 'function isTerminalOpen()');
@@ -170,6 +182,7 @@ function loadOverlayFunctions({ drawerId = null, open = false } = {}) {
     "function projectById(id) { return id === 'p1' ? { id: 'p1', name: 'Demo' } : null; }",
     'function renderTerminalLogs(id) { calls.renderTerminalLogs.push(id); }',
     streamClass,
+    formatLogText,
     makeLogLine,
     isTerminalOpen,
     appendLine,
@@ -245,6 +258,46 @@ function testMakeLogLineSafety() {
   assert.ok(!('innerHTML' in textSpan) || !Object.prototype.hasOwnProperty.call(textSpan, 'innerHTML'), 'log text sets no innerHTML');
   const meta = line.children.find((child) => child.className === 'log-meta');
   assert.ok(meta && meta.textContent !== entry.text, 'meta holds the timestamp');
+}
+
+function testFormatLogText() {
+  const { formatLogText, makeLogLine } = loadLogLineFunctions();
+  const event = JSON.stringify({
+    type: 'text',
+    part: { type: 'text', text: 'Promotion verify dry-run' }
+  });
+  const formatted = formatLogText(`${event}\nplain output`);
+  assertIncludes(formatted, 'text: Promotion verify dry-run', 'JSON event summarized');
+  assertIncludes(formatted, 'plain output', 'plain chunk kept');
+  assert.ok(!formatted.includes('{') && !formatted.includes('"'), 'summary has no JSON delimiters');
+
+  const plain = '<script>alert(1)</script>\nsecond line';
+  assertEqual(formatLogText(plain), plain, 'non-JSON text verbatim');
+
+  const malformed = '{"type":"text","part":{"text":"broken"}';
+  assertEqual(formatLogText(malformed), malformed, 'malformed JSON verbatim');
+
+  const fragment = '{"type":"text","part":{"text":"half"';
+  const partial = `${event}\n${fragment}`;
+  assertEqual(
+    formatLogText(partial),
+    `text: Promotion verify dry-run\n${fragment}`,
+    'partial trailing chunk verbatim'
+  );
+
+  const kilo = JSON.stringify({
+    type: 'message',
+    role: 'user',
+    content: [{ type: 'text', text: 'Open terminal' }]
+  });
+  assertEqual(formatLogText(kilo), 'user: Open terminal', 'kilo message summarized');
+
+  const line = makeLogLine({ seq: 8, stream: 'out', ts: 0, text: event });
+  const textSpan = line.children.find((child) => child.className === 'log-text');
+  assert.ok(textSpan, 'formatted line has a text span');
+  assertEqual(textSpan.textContent, 'text: Promotion verify dry-run', 'makeLogLine uses summary');
+  assertEqual(textSpan.getAttribute('title'), event, 'raw JSON kept in title');
+  assertEqual(textSpan.getAttribute('data-raw-text'), event, 'raw JSON kept in data attribute');
 }
 
 function testRenderTerminalLogsEmptyState() {
@@ -407,6 +460,7 @@ async function main() {
   testStyles();
   testPackageRegistration();
   testMakeLogLineSafety();
+  testFormatLogText();
   testRenderTerminalLogsEmptyState();
   testRenderTerminalLogsEntries();
   testAppendTerminalLineGuards();

@@ -1642,6 +1642,107 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     return String(stream || 'system').replace(/[^a-z0-9-]/gi, '');
   }
 
+  function formatLogText(text) {
+    const input = text == null ? '' : String(text);
+
+    function plain(value, limit = 160) {
+      if (value == null) return '';
+      let output = String(value).replace(/\s+/g, ' ').trim();
+      if (output.length > limit) output = `${output.slice(0, limit - 1)}…`;
+      return output;
+    }
+
+    function firstText(value, depth = 0) {
+      if (depth > 2 || value == null) return '';
+      if (typeof value === 'string' || typeof value === 'number') return plain(value);
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          const found = firstText(item, depth + 1);
+          if (found) return found;
+        }
+        return '';
+      }
+      if (typeof value === 'object') {
+        for (const key of ['text', 'message', 'content', 'summary', 'title', 'detail', 'display']) {
+          const found = firstText(value[key], depth + 1);
+          if (found) return found;
+        }
+      }
+      return '';
+    }
+
+    function summary(event) {
+      const type = plain(event.type || event.kind || '', 40);
+      const role = plain(event.role || '', 40);
+      const part = event.part && typeof event.part === 'object' && !Array.isArray(event.part)
+        ? event.part
+        : null;
+      const partType = part ? plain(part.type || '', 40) : '';
+      const label = type || role || partType || 'event';
+
+      if (type === 'text' || partType === 'text') {
+        const detail = firstText(part && part.text != null ? part.text : event.text);
+        return detail ? `${label}: ${detail}` : label;
+      }
+      if (type === 'reasoning') {
+        const detail = firstText(event.text || event.summary);
+        return detail ? `${label}: ${detail}` : label;
+      }
+      if (type === 'message') {
+        const detail = firstText(event.content);
+        const who = role || label;
+        return detail ? `${who}: ${detail}` : who;
+      }
+      if (type === 'effect') {
+        const detailObj = event.detail && typeof event.detail === 'object' ? event.detail : null;
+        const display = detailObj && detailObj.display && typeof detailObj.display === 'object'
+          ? detailObj.display
+          : null;
+        const detail = plain(event.title || (display && display.summary) || (display && display.message) || '');
+        return detail ? `${label}: ${detail}` : label;
+      }
+      if (type === 'error' || type === 'retry') {
+        const error = event.error && typeof event.error === 'object' ? event.error : null;
+        const data = error && error.data && typeof error.data === 'object' ? error.data : null;
+        let detail = plain(event.message || (error && error.message) || (data && data.message) || '');
+        if (type === 'retry' && event.attempt != null) {
+          detail = `attempt ${plain(event.attempt, 10)}${detail ? ` · ${detail}` : ''}`;
+        }
+        return detail ? `${label}: ${detail}` : label;
+      }
+      if (type === 'tool_use' || partType === 'tool') {
+        const state = part && part.state && typeof part.state === 'object' ? part.state : null;
+        const inputObj = state && state.input && typeof state.input === 'object' ? state.input : null;
+        const tool = part ? plain(part.tool || '', 60) : '';
+        const target = inputObj
+          ? plain(inputObj.path || inputObj.filePath || inputObj.command || inputObj.url || '', 100)
+          : '';
+        const status = state ? plain(state.status || '', 30) : '';
+        const detail = [tool, target, status].filter(Boolean).join(' · ');
+        return detail ? `${label}: ${detail}` : label;
+      }
+      if (type === 'step_finish' || partType === 'step-finish') {
+        const detail = plain((part && part.reason) || event.reason || '', 60);
+        return detail ? `${label}: ${detail}` : label;
+      }
+      const detail = part
+        ? firstText(part.text || part.message || part.content || part.summary || '')
+        : firstText(event.text || event.message || event.content || event.summary || '');
+      return detail ? `${label}: ${detail}` : label;
+    }
+
+    function formatLine(line) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed[0] !== '{' || trimmed[trimmed.length - 1] !== '}') return line;
+      let event;
+      try { event = JSON.parse(trimmed); } catch { return line; }
+      if (!event || typeof event !== 'object' || Array.isArray(event)) return line;
+      return plain(summary(event), 400) || line;
+    }
+
+    return input.split('\n').map(formatLine).join('\n');
+  }
+
   function makeLogLine(entry) {
     const line = document.createElement('div');
     line.className = `log-line log-${streamClass(entry.stream)}`;
@@ -1654,9 +1755,15 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       ? '--:--:--'
       : date.toLocaleTimeString([], { hour12: false });
 
+    const rawText = entry.text == null ? '' : String(entry.text);
+    const formatted = formatLogText(rawText);
     const text = document.createElement('span');
     text.className = 'log-text';
-    text.textContent = entry.text;
+    text.textContent = formatted;
+    if (formatted !== rawText) {
+      text.setAttribute('title', rawText);
+      text.setAttribute('data-raw-text', rawText);
+    }
 
     line.append(meta, text);
     return line;

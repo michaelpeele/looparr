@@ -14,7 +14,7 @@ Stale production assets have shipped three times. For every batch that changes s
 
 - [x] Look at legibility for up next in div, vertical on home page but correct on detail page. On larger task verbiage it goes vertical. It is on a separate line in detail page (preferred)
 - [x] Re-verify prior promotion-lock work: `node scripts/test-restart-watchdog.js`, `npm test`, `git diff --check`; map gaps in [PLAN-promotion-concurrency-lock](.project_documents/PLAN-promotion-concurrency-lock-see-plan-promotion-lock-md-project-documents-plan-pro.md).
-- [ ] For terminal icon when clicked it is showing raw json, can you make it human readable like the CLI would show?
+- [x] For terminal icon when clicked it is showing raw json, can you make it human readable like the CLI would show?
 - [x] Convert `scripts/restart-lock.sh` contention from fail-fast to block-and-wait, preserving `LOOPARR_RESTART_LOCK_PATH`, `LOOPARR_RESTART_LOCK_HELD=1`, logging, and bounded timeout.
 - [x] Watchdog timer mapped plan — see [PLAN-watchdog-timer.md](.project_documents/PLAN-watchdog-timer.md). Tasks:
   - [x] Add `timer` mode to `scripts/restart-watchdog.sh`: cycle counter file in `logs/`, exit-75 `busy:` log-only branch, failure `FAILED:` lines, every-5th-cycle read-only `review:` check (required for acceptance: an off stack must be recovered by the fix pass earlier in the same cycle)
