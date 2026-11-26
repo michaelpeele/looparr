@@ -212,10 +212,27 @@ async function main() {
       if (!state) return null;
       if (state.currentTask !== '' || state.nextTask !== '' || state.nextPhase !== 'seed') return null;
       if (fs.existsSync(externalHandoff) || fs.existsSync(autoResume.statePath(externalProject))) return null;
-      return state;
+      let audit = '';
+      try {
+        audit = fs.readFileSync(autoResume.logPath(externalProject), 'utf8');
+      } catch {
+        return null;
+      }
+      const degraded = audit.split('\n').filter(Boolean).some((line) => {
+        let entry;
+        try {
+          entry = JSON.parse(line);
+        } catch {
+          return false;
+        }
+        return entry.event === 'plan-reconcile-degraded'
+          && entry.cause === 'task-explicitly-checked';
+      });
+      return degraded ? state : null;
     }, 10000);
     assert.strictEqual(reconciled.active, true);
     assert.strictEqual(reconciled.paused, true);
+    assert.strictEqual(fs.existsSync(externalHandoff), false, 'checked task clears stale handoff');
 
     console.log('test-start-reseed: ok');
   } finally {
