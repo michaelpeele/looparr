@@ -20,6 +20,11 @@
       <path d="M4 13a8 8 0 0 0 13.6 4.6L20 15"/>
       <path d="M20 20v-5h-5"/>
     </symbol>
+    <symbol id="icon-terminal" viewBox="0 0 24 24">
+      <rect x="2.5" y="4" width="19" height="16" rx="2.5"/>
+      <path d="M6.5 9.5 10 12.5l-3.5 3"/>
+      <path d="M12 16h5.5"/>
+    </symbol>
   </svg>
   <header class="topbar">
     <button class="nav-toggle" id="nav-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="sidebar-nav">
@@ -511,7 +516,10 @@
       <section class="drawer-section" data-section="runner">
         <button type="button" class="section-heading section-toggle" data-action="toggle-section" aria-expanded="true" aria-controls="section-runner-body"><span class="section-heading-text">Runner and model</span><span class="muted small-text" id="project-model-status"></span><span class="section-chevron" aria-hidden="true">▼</span></button>
         <div class="section-body" id="section-runner-body">
-          <div class="policy-summary mono" id="drawer-model">—</div>
+          <div class="card-model-row drawer-model-row">
+            <div class="policy-summary mono" id="drawer-model">—</div>
+            <button type="button" class="icon-button terminal-button" id="drawer-terminal-button" aria-label="Open agent terminal" title="Agent terminal"><svg class="terminal-icon" aria-hidden="true" focusable="false"><use href="#icon-terminal"></use></svg></button>
+          </div>
           <div class="editor-actions">
             <div class="model-field-row">
               <select id="drawer-runner" aria-label="Project runners" multiple size="3"></select>
@@ -654,6 +662,16 @@
       </div>
     </div>
   </dialog>
+
+  <div class="terminal-overlay" id="terminal-overlay" hidden>
+    <div class="terminal-panel" role="dialog" aria-modal="true" aria-labelledby="terminal-title">
+      <div class="terminal-header">
+        <h2 class="terminal-title mono" id="terminal-title">Agent terminal</h2>
+        <button class="icon-button" type="button" id="terminal-close" aria-label="Close agent terminal" title="Close">✕</button>
+      </div>
+      <div class="terminal-log-list mono" id="terminal-log-list" role="log" aria-live="polite"></div>
+    </div>
+  </div>
 
   <script src="/app.js" defer></script>
 </body>

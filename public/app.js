@@ -157,7 +157,13 @@
     planFileStatus: $('plan-file-status'),
     planFileSave: $('plan-file-save'),
     planFileCancel: $('plan-file-cancel'),
-    planFileClose: $('plan-file-close')
+    planFileClose: $('plan-file-close'),
+    terminalOverlay: $('terminal-overlay'),
+    terminalPanel: $('terminal-panel'),
+    terminalTitle: $('terminal-title'),
+    terminalClose: $('terminal-close'),
+    terminalLogList: $('terminal-log-list'),
+    drawerTerminalButton: $('drawer-terminal-button')
   };
 
   const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -283,6 +289,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     view: 'projects',
     logs: new Map(),
     drawerId: null,
+    terminalId: null,
     logFollow: true,
     planDirty: false,
     showCompleted: false,
@@ -1370,7 +1377,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
         <span class="badge idle"></span>
       </div>
       <p class="card-task task-detail-wrap" data-task-field="current" data-project-id="${esc(project.id)}" data-fallback="true"><span class="task-detail-text task-detail-clamped" id="${currentTextId}"></span><button class="task-expand-toggle" type="button" aria-controls="${currentTextId}" aria-expanded="false" aria-label="Expand current task" title="Expand current task" hidden>▼</button></p>
-      <div class="card-model mono"></div>
+      <div class="card-model-row"><div class="card-model mono"></div><button class="icon-button terminal-button" type="button" aria-label="Open agent terminal" title="Agent terminal"><svg class="terminal-icon" aria-hidden="true" focusable="false"><use href="#icon-terminal"></use></svg></button></div>
       <div class="card-up task-detail-wrap" data-task-field="next" data-project-id="${esc(project.id)}" data-fallback="true"><strong>Up next:</strong> <span class="task-detail-text task-detail-clamped" id="${nextTextId}"></span><button class="task-expand-toggle" type="button" aria-controls="${nextTextId}" aria-expanded="false" aria-label="Expand up next" title="Expand up next" hidden>▼</button></div>
       <div class="progress-row">
         <span>Progress</span>
@@ -1386,6 +1393,12 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       <div class="countdown" hidden></div>`;
 
     card.querySelectorAll('.task-expand-toggle').forEach(bindTaskToggle);
+
+    const terminalButton = card.querySelector('.terminal-button');
+    terminalButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      openTerminal(project.id);
+    });
 
     card.querySelector('.card-controls').addEventListener('click', (event) => {
       const button = event.target.closest('button[data-action]');
@@ -1695,6 +1708,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
         bucket.seen.delete(dropped.seq);
       }
       appendLogLine(entry);
+      appendTerminalLine(entry);
     }
   }
 
@@ -1717,6 +1731,56 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     scrollLogs(true);
     updateLogStatus();
     applyAutoEmptySections(id);
+  }
+
+  /* ---------- terminal overlay ---------- */
+
+  function isTerminalOpen() {
+    return Boolean(app.terminalId) && dom.terminalOverlay && !dom.terminalOverlay.hidden;
+  }
+
+  function appendTerminalLine(entry) {
+    if (!app.terminalId || !entry || entry.projectId !== app.terminalId) return;
+    if (!isTerminalOpen()) return;
+    if (dom.terminalLogList.querySelector(`[data-seq="${entry.seq}"]`)) return;
+    const empty = dom.terminalLogList.querySelector('.terminal-empty');
+    if (empty) empty.remove();
+    dom.terminalLogList.appendChild(makeLogLine(entry));
+    dom.terminalLogList.scrollTop = dom.terminalLogList.scrollHeight;
+  }
+
+  function renderTerminalLogs(id) {
+    dom.terminalLogList.textContent = '';
+    const bucket = app.logs.get(id);
+    if (!bucket || !bucket.entries.length) {
+      const empty = document.createElement('div');
+      empty.className = 'terminal-empty';
+      empty.textContent = 'No agent output yet. Start the project to see the live terminal.';
+      dom.terminalLogList.appendChild(empty);
+      return;
+    }
+    const fragment = document.createDocumentFragment();
+    bucket.entries.forEach((entry) => fragment.appendChild(makeLogLine(entry)));
+    dom.terminalLogList.appendChild(fragment);
+    dom.terminalLogList.scrollTop = dom.terminalLogList.scrollHeight;
+  }
+
+  function openTerminal(id) {
+    const project = projectById(id);
+    if (!project) return;
+    app.terminalId = id;
+    dom.terminalTitle.textContent = `${project.name} · agent terminal`;
+    renderTerminalLogs(id);
+    dom.terminalOverlay.hidden = false;
+    document.body.style.overflow = 'hidden';
+    dom.terminalClose.focus();
+  }
+
+  function closeTerminal() {
+    if (!app.terminalId) return;
+    app.terminalId = null;
+    dom.terminalOverlay.hidden = true;
+    if (!app.drawerId) document.body.style.overflow = '';
   }
 
   /* ---------- drawer ---------- */
@@ -3516,6 +3580,16 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
   });
   dom.drawerClose.addEventListener('click', closeDrawer);
   dom.drawerBackdrop.addEventListener('click', closeDrawer);
+  dom.drawerTerminalButton?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const id = app.drawerId;
+    if (!id) return;
+    openTerminal(id);
+  });
+  dom.terminalClose?.addEventListener('click', closeTerminal);
+  dom.terminalOverlay?.addEventListener('click', (event) => {
+    if (event.target === dom.terminalOverlay) closeTerminal();
+  });
   dom.saveProjectModel.addEventListener('click', saveProjectModel);
   document.addEventListener('click', (event) => {
     const button = event.target instanceof Element ? event.target.closest('.model-rotate-button') : null;
@@ -3616,6 +3690,12 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       event.preventDefault();
       event.stopPropagation();
       closePlanFileModal();
+      return;
+    }
+    if (app.terminalId) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeTerminal();
       return;
     }
     if (dom.folderBrowser.open && typeof dom.folderBrowser.close !== 'function') closeFolderBrowser();

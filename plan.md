@@ -33,7 +33,7 @@ Stale production assets have shipped three times. For every batch that changes s
   - [x] Verify production per mandatory deploy section before marking complete.
   - [x] Commit only `src/engine.js`, `src/auto-resume.js`, `src/config.js` if needed, and `scripts/test-auto-resume.js`.
 - [x] Ensure `scripts/restart-looparr.js` holds the lock across full build and recreate in helper, systemd-run, and detached fallback paths.
-- [ ] Add small terminal icon next to the agent - model section of the card on project and detail views. Clicking it shows a live view of what is showing in agent terminal (pretty format) based off logs
+- [x] Add small terminal icon next to the agent - model section of the card on project and detail views. Clicking it shows a live view of what is showing in agent terminal (pretty format) based off logs
 - [x] Add healthcheck-healthy gating in `scripts/restart-looparr.js`; never report success on `running` without `healthy` in the start period.
 - [x] Preserve Created/exited/dead recovery: one `docker compose start looparr`, polling, 60-line log tail, `CONTAINER_RECOVERY_FAILED`, no duplicate compose up.
 - [x] Verify and update promotion wording in `README.md`, `src/config.js`, `src/engine.js`, and the implementation template for explicit engine/session-driven helper use.
