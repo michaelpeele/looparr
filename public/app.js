@@ -100,6 +100,7 @@
     drawerControlStatus: $('drawer-control-status'),
     drawerBlockPolicy: $('drawer-block-policy'),
     drawerModel: $('drawer-model'),
+    drawerCardModel: $('drawer-card-model'),
     drawerModelInput: $('drawer-model-input'),
     drawerSeedModel: $('drawer-seed-model'),
     drawerAnalyzeModel: $('drawer-analyze-model'),
@@ -1969,8 +1970,11 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     const settings = app.state?.settings || {};
     const override = project.model || '';
     const effective = effectiveModelListsFor(project);
+    const defaultModel = displayModelList(effective.model || override || settings.model, 'OpenCode default');
+    dom.drawerCardModel.textContent = defaultModel;
+    dom.drawerCardModel.title = defaultModel;
     const rows = [
-      ['Default model', displayModelList(effective.model || override || settings.model, 'OpenCode default')],
+      ['Default model', defaultModel],
       ['Seed model', displayModelList(effective.seed || settings.seedModel || settings.model, 'OpenCode default')],
       ['Analyze model', displayModelList(effective.analyze || settings.analyzeModel || settings.model, 'OpenCode default')],
       ['Implement model', displayModelList(effective.implement || settings.implementModel || settings.model, 'OpenCode default')],
@@ -2051,7 +2055,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     const currentWrapper = dom.drawerTask.closest('.task-detail-wrap');
     currentWrapper.dataset.projectId = String(project.id);
     currentWrapper.dataset.fallback = project.currentTask ? 'false' : 'true';
-    const nextWrapper = dom.drawerNext.closest('.task-detail-wrap');
+    const nextWrapper = dom.drawerNext.closest('[data-project-id][data-task-field]');
     nextWrapper.dataset.projectId = String(project.id);
     nextWrapper.dataset.fallback = project.nextTask ? 'false' : 'true';
     syncTaskExpansion(project.id, 'current');

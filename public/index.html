@@ -426,12 +426,20 @@
   <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
   <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
     <div class="drawer-header">
-      <div class="project-visual drawer-visual" id="drawerProjectVisual"></div>
-      <div>
-        <h2 id="drawer-title">Project</h2>
-        <p class="muted mono" id="drawer-path"></p>
+      <div class="card drawer-card">
+        <div class="card-top">
+          <div class="project-visual drawer-visual" id="drawerProjectVisual"></div>
+          <div class="card-title">
+            <strong id="drawer-title">Project</strong>
+            <span class="muted mono" id="drawer-path"></span>
+          </div>
+          <span class="badge" id="drawer-status">Idle</span>
+          <button class="icon-button drawer-close" id="drawer-close" type="button" aria-label="Close project details">✕</button>
+        </div>
+        <p class="card-task task-detail-wrap" data-task-field="current" data-project-id="" data-fallback="true"><span class="task-detail-text task-detail-clamped" id="drawer-task">—</span><button class="task-expand-toggle" id="drawer-task-toggle" type="button" aria-controls="drawer-task" aria-expanded="false" aria-label="Expand current task" title="Expand current task" hidden>▼</button></p>
+        <div class="card-model-row"><div class="card-model mono" id="drawer-card-model">—</div><button type="button" class="icon-button terminal-button" id="drawer-terminal-button" aria-label="Open agent terminal" title="Agent terminal"><svg class="terminal-icon" aria-hidden="true" focusable="false"><use href="#icon-terminal"></use></svg></button></div>
+        <div class="card-up" data-task-field="next" data-project-id="" data-fallback="true"><strong>Up next:</strong> <span class="task-detail-wrap"><span class="task-detail-text task-detail-clamped" id="drawer-next">—</span><button class="task-expand-toggle" id="drawer-next-toggle" type="button" aria-controls="drawer-next" aria-expanded="false" aria-label="Expand up next" title="Expand up next" hidden>▼</button></span></div>
       </div>
-      <button class="icon-button" id="drawer-close" type="button" aria-label="Close project details">✕</button>
     </div>
     <div class="drawer-toolbar">
       <div class="drawer-controls" id="drawer-controls">
@@ -442,13 +450,6 @@
       </div>
     </div>
     <div class="drawer-body">
-      <div class="drawer-status-row">
-        <span class="badge" id="drawer-status">Idle</span>
-        <div class="drawer-activity">
-          <p class="drawer-task"><span class="muted">Current:</span> <span class="task-detail-wrap" data-task-field="current" data-project-id="" data-fallback="true"><span class="task-detail-text task-detail-clamped" id="drawer-task">—</span><button class="task-expand-toggle" id="drawer-task-toggle" type="button" aria-controls="drawer-task" aria-expanded="false" aria-label="Expand current task" title="Expand current task" hidden>▼</button></span></p>
-          <p class="drawer-next"><span class="muted">Up next:</span> <span class="task-detail-wrap" data-task-field="next" data-project-id="" data-fallback="true"><span class="task-detail-text task-detail-clamped" id="drawer-next">—</span><button class="task-expand-toggle" id="drawer-next-toggle" type="button" aria-controls="drawer-next" aria-expanded="false" aria-label="Expand up next" title="Expand up next" hidden>▼</button></span></p>
-        </div>
-      </div>
       <section class="drawer-section" data-section="constraint">
         <button type="button" class="section-heading section-toggle" data-action="toggle-section" aria-expanded="true" aria-controls="section-constraint-body"><span class="section-heading-text">Constraint block policy</span><span class="muted small-text" id="block-policy-status"></span><span class="section-chevron" aria-hidden="true">▼</span></button>
         <div class="section-body" id="section-constraint-body">
@@ -523,10 +524,7 @@
       <section class="drawer-section" data-section="runner">
         <button type="button" class="section-heading section-toggle" data-action="toggle-section" aria-expanded="true" aria-controls="section-runner-body"><span class="section-heading-text">Runner and model</span><span class="muted small-text" id="project-model-status"></span><span class="section-chevron" aria-hidden="true">▼</span></button>
         <div class="section-body" id="section-runner-body">
-          <div class="card-model-row drawer-model-row">
-            <div class="policy-summary mono" id="drawer-model">—</div>
-            <button type="button" class="icon-button terminal-button" id="drawer-terminal-button" aria-label="Open agent terminal" title="Agent terminal"><svg class="terminal-icon" aria-hidden="true" focusable="false"><use href="#icon-terminal"></use></svg></button>
-          </div>
+          <div class="policy-summary mono" id="drawer-model">—</div>
           <div class="editor-actions">
             <div class="model-field-row">
               <select id="drawer-runner" aria-label="Project runners" multiple size="3"></select>
