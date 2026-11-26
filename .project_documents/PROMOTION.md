@@ -173,6 +173,20 @@ onto `master` by hand. Both paths require the verified sequence above.
   `npm run watchdog:check` steady. Self-heal daemon `active`, unit
   `active`/`enabled`, host executor health OK, no preview container, one
   worktree.
+- 2026-11-26 — PLAN-05 verification-and-rollout close-out promotion. Focused
+  paseo/opencode/runner-payload tests, `npm test` (repo + sandbox
+  `/tmp/opencode/looparr-sandbox`), and `git diff --check` clean. Dry-run
+  clean, no Docker call. Full promotion evidence-gated skip:
+  `result: "skipped"`, `skipReason: "skipped-already-deployed"`, exit 0 —
+  container `b88a15e0a8d9` healthy on image `looparr:latest` (image id
+  `sha256:49ff51a0dc84df5fe73dc7503c421b2c44e08e2e355f5ea37d8f56e8057361ad`)
+  already serves the current source (92-file source hash evidence `ok:true`).
+  Live verification after skip: served `/`, `/app.js`, `/index.html` contain
+  the `paseo-transport` setting UI; served `app.js`/`index.html`/`styles.css`/
+  `favicon.svg` hash-match local `public/`; `/api/state` returns `projects`
+  and `settings` (incl. `paseoTransport:false`); `npm run watchdog:check`
+  steady. Paseo/direct/cancel/stale-run/mobile/bridge verification recorded in
+  PLAN-05; host-level Paseo daemon polyfill documented there.
 ## Idempotent, observable promotion (promotion-status.json)
 
 `npm run restart:looparr` is idempotent. Every run writes

@@ -1,6 +1,6 @@
 # 05 — Verification, rollback, and rollout
 
-Status: draft — implementation plan.
+Status: done — verified 2026-11-26, production promotion passed (see Promotion log in PROMOTION.md).
 
 Estimate: 1 day.
 
@@ -58,3 +58,46 @@ Production, per root `plan.md`:
 ## Done criteria
 
 All tests pass in sandbox, production verification passes, mobile view works for all three runners, and rollback is a single setting change.
+
+## Verification results (2026-11-26)
+
+- Focused tests: `node scripts/test-paseo-transport-setting.js`,
+  `node scripts/test-paseo-transport.js`, `node scripts/test-opencode-provider.js`,
+  `node scripts/test-opencode-session.js`, `node scripts/test-runner-payload.js` — all passed.
+  `npm test` green in the repo and in the sandbox copy
+  `/tmp/opencode/looparr-sandbox` (`.git`, `node_modules`, `.tmp-*` excluded).
+  `git diff --check` clean.
+- Paseo mode (`paseoTransport=true`), host-side scratch engine on
+  `127.0.0.1:4600` without `LOOPARR_EXECUTOR_URL`, one harmless task per
+  runner: `paseo agent ls --label looparr=true --json` showed each agent
+  labeled `looparr=true`, `runner=opencode|kilo|vibe`, `runKey=…`,
+  `projectId=…`; `paseo agent inspect --json <id>` reached terminal status
+  (`idle`/`closed`). Runner→provider mapping confirmed live:
+  `opencode`→`opencode`, `kilo`→`kilo`, `vibe`→`mistral-vibe`.
+- Environment fix found during verification: the Paseo daemon's opencode
+  provider (`@opencode/client` inside paseo 0.17.3) requires
+  `Promise.withResolvers` (node 22+); host node is v20, so opencode agents
+  failed with `AGENT_CREATE_FAILED`. Fixed with a user-level systemd drop-in
+  `paseo-daemon.service.d/override.conf` setting
+  `NODE_OPTIONS=--require=/home/michaelpeele/.paseo/promise-withresolvers-polyfill.js`
+  (polyfill file at `~/.paseo/promise-withresolvers-polyfill.js`). Daemon
+  restarted and healthy; opencode agents then created and ran to completion.
+  This is host-level config, not a repo file; reapply if the daemon unit or
+  paseo is reinstalled or the host node upgrades to 22+ (drop-in can be removed).
+- Direct mode (`paseoTransport=false`): one task per runner spawned the direct
+  CLI (`opencode run …`, `kilo run …`, `vibe --prompt …`); no new Paseo agents
+  were created (agent count unchanged before/after).
+- Cancellation: per runner, a running Paseo agent was cancelled via project
+  Stop; the agent left `running` within seconds (`paseo agent inspect` shows
+  the terminal state). Stale-run cleanup: an agent labeled with the project's
+  `projectId` but a foreign `runKey` was stopped by `cleanStaleRuns` within
+  ~5s of the next engine run for that project.
+- Mobile visibility: Playwright at 390x844 (mobile, touch): hamburger nav →
+  Settings → `#paseo-transport` checkbox visible, enabled, and toggling
+  (screenshot `/tmp/looparr-p05/mobile-paseo-setting.png`, scratch area). The
+  setting is global; it applies to all three runners (exercised live above).
+- Host-executor/bridge: `paseoTransport.isEnabled({paseoTransport:true})`
+  returns `false` with `LOOPARR_EXECUTOR_URL` set (live check), asserted in
+  `scripts/test-paseo-transport.js`; bridge runs stay on direct CLI.
+- Rollback: `paseoTransport=false` returns to direct CLI for all runners;
+  direct mode verified unchanged. Documented in README.md.
