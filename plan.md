@@ -255,6 +255,6 @@ Why: Scriptable on iOS uses native image decoding. It cannot decode SVG (`image/
 - [x] Add a dropdown under add task text box, add first, add last, add after [ 4-5 words of a task in the list, dynamically populated after any save of the plan]
 - [x] On terminal page add a button with same verbiage from logs page where I can jump to newest
 - [x] Mitigate stalled promotion `docker compose up -d looparr` — see [PLAN-restart-hang-mitigation.md](.project_documents/PLAN-restart-hang-mitigation.md)
-- [ ] Add GitHub button to project detail on home page and detail page, if a GitHub repo is linked. Add a whale icon to link to docker image repo if one is linked.
-- [ ] Link GitHub repo, push to origin with tag as v1.0
+- [x] Add GitHub button to project detail on home page and detail page, if a GitHub repo is linked. Add a whale icon to link to docker image repo if one is linked.
+- [x] Link GitHub repo, push to origin with tag as v1.0
 - [ ] Publish docker container with multi arch testing similar to how we did Curatarr. Link docker container repo link to project so button appears
