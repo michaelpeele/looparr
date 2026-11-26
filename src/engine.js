@@ -434,7 +434,12 @@ function getState() {
 
 function watchProject(project) {
   if (watchers.has(project.id)) return;
-  const ignored = (candidate) => /(^|\/)(\.git|node_modules|\.looparr|looparr-tailscale-data)($|\/)/.test(String(candidate));
+  const ignored = (candidate) => {
+    const value = String(candidate);
+    const relative = path.isAbsolute(value) ? path.relative(project.path, value) : value;
+    if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) return false;
+    return /(^|\/)(\.git|node_modules|\.looparr|looparr-tailscale-data)($|\/)/.test(relative.split(path.sep).join('/'));
+  };
   const watcher = chokidar.watch(project.path, {
     ignored,
     ignoreInitial: true,
