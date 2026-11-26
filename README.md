@@ -332,6 +332,8 @@ npm run restart:looparr
 
 The helper leaves `data/config.json`, the host executor, and the Tailscale sidecar alone. The full verification sequence (test gate, dry run, restart, health and image id, container source hashes, served asset hashes, `/api/state`, watchdog) is in [PROMOTION.md](.project_documents/PROMOTION.md); follow it before treating a deployment as verified.
 
+Promotion execution runs outside the requesting agent cgroup when a user systemd manager is available: `scripts/restart-looparr.js` probes `systemd-run --user`, then runs the compose chain as transient unit `looparr-promote` with `--wait --collect` and forwarded Docker env. If unavailable, it falls back to the detached signal-ignoring bash wrapper and logs `detached-spawn`. Created-not-started recovery and health wait still run in the parent after the compose command exits. Inspect with `journalctl --user -u looparr-promote -n 200 --no-pager`. Headless hosts usually need `loginctl enable-linger <user>`; the user manager must be able to reach the Docker socket.
+
 ### Future Funnel
 
 Funnel is not configured. If public access is ever approved, the host command is:

@@ -637,7 +637,9 @@ function spawnSyncGit(args, cwd) {
 
 function scheduleRestart(repoRoot) {
   // The rebuild recreates the prod container, so wait long enough for the 200 to
-  // reach prod and the browser before tearing anything down.
+  // reach prod and the browser before tearing anything down. Restart execution is
+  // delegated to restart-looparr.js, which runs compose outside the agent cgroup
+  // when systemd-run --user is available.
   setTimeout(() => {
     try {
       const child = spawn(process.execPath, [path.join(repoRoot, 'scripts', 'restart-looparr.js')], {

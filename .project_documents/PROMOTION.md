@@ -42,6 +42,29 @@ Run in order. Any failure blocks promotion.
 - [ ] `npm run watchdog:check` clean
 - [ ] Promotion log entry appended
 
+
+## Promotion execution path
+
+`scripts/restart-looparr.js` is the compose launcher. `scripts/promote.sh` and host-executor restart requests delegate to it; agents request promotions, they do not run `docker compose` directly.
+
+- **Preferred:** `systemd-run --user --unit=looparr-promote --wait --collect -p WorkingDirectory=<REPO_ROOT> --setenv=... -- bash -c 'docker compose build looparr && docker compose up -d looparr'`. The unit is managed by the user systemd manager, so agent-session SIGKILL/cgroup cleanup cannot kill compose between container creation and start. `--wait` propagates the compose exit code; `--collect` removes the finished transient unit before the next run. Overlap is prevented by the existing restart lock.
+- **Availability probe:** before first use, launcher checks `systemd-run` is in PATH and runs a cheap `--user` probe. Result cached in module constant for the process.
+- **Fallback:** when probe fails/unavailable, launcher uses the existing detached bash wrapper with `trap '' HUP INT TERM QUIT` and the same compose command. This preserves prior behavior.
+- **Logging:** launcher emits `reportEvent('promotion-execution-path', { executor: 'systemd-run' | 'detached-spawn' })` and a `[looparr]` console line before execution.
+- **After compose:** preflight recovery, post-compose recovery, and health wait still run in the parent process after the unit/child exits.
+
+## Host requirements for systemd-run path
+
+- User manager running for the executing user.
+- For headless hosts, enable linger: `loginctl enable-linger <user>`.
+- User manager must reach Docker socket (docker group membership or matching rootless Docker setup). Forwarded env when set: `PATH`, `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG`.
+
+## Observing the unit
+
+- Journal output: `journalctl --user -u looparr-promote -n 200 --no-pager`
+- Status: `systemctl --user status looparr-promote --no-pager`
+- The unit is transient and collected after completion; status is most useful immediately after a run.
+
 ## Promotion log
 
 - 2026-11-22 — Rate-limit false-positive fix promoted after `npm test`.

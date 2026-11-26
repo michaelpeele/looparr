@@ -16,28 +16,61 @@ const ROOT = path.resolve(__dirname, '..');
 const restartScript = fs.readFileSync(path.join(ROOT, 'scripts', 'restart-looparr.js'), 'utf8');
 const watchdogPath = path.join(ROOT, 'scripts', 'restart-watchdog.sh');
 
-// 1. restart-looparr.js must not run the compose command inline in the caller's
-//    process group.
+// 1. restart-looparr.js must prefer a user-systemd transient unit so the compose
+//    chain runs outside the requesting agent cgroup, and must keep the detached
+//    signal-ignore fallback for hosts without a user manager.
 assert.ok(
   !restartScript.includes('execSync(DOCKER_COMMAND'),
   'restart-looparr.js must not execSync the compose command inside the agent process group'
 );
 assert.ok(
+  restartScript.includes('systemd-run'),
+  'restart-looparr.js must support systemd-run execution'
+);
+assert.match(restartScript, /--user/, 'systemd-run path must target the user manager');
+assert.match(
+  restartScript,
+  /const SYSTEMD_UNIT\s*=\s*['"]looparr-promote['"];/,
+  'systemd-run path must define looparr-promote unit'
+);
+assert.match(
+  restartScript,
+  /`--unit=\$\{SYSTEMD_UNIT\}`|--unit=looparr-promote/,
+  'systemd-run path must use looparr-promote unit'
+);
+assert.match(restartScript, /--wait/, 'systemd-run path must wait for compose exit code');
+assert.match(restartScript, /--collect/, 'systemd-run path must collect finished transient unit');
+assert.match(restartScript, /-p/, 'systemd-run path must set WorkingDirectory property');
+assert.match(restartScript, /WorkingDirectory=/, 'systemd-run path must forward WorkingDirectory');
+assert.match(
+  restartScript,
+  /for \(const key of \['PATH', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG'\]\)[\s\S]*?if \(value\) args\.push\(`--setenv=\$\{key\}=\$\{value\}`\)/,
+  'systemd-run path must forward PATH when set'
+);
+assert.match(restartScript, /DOCKER_HOST/, 'systemd-run path must forward DOCKER_HOST when set');
+assert.match(restartScript, /DOCKER_CONTEXT/, 'systemd-run path must forward DOCKER_CONTEXT when set');
+assert.match(restartScript, /DOCKER_CONFIG/, 'systemd-run path must forward DOCKER_CONFIG when set');
+assert.match(restartScript, /systemdRunAvailable|runSystemdProbe|cachedSystemdRunAvailable/, 'restart-looparr.js must probe/cache systemd availability');
+assert.match(restartScript, /promotion-execution-path/, 'restart-looparr.js must report execution path');
+assert.ok(
   /spawnSync\(\s*'bash'/.test(restartScript),
-  'restart-looparr.js must spawn the compose command through a bash wrapper'
+  'restart-looparr.js must keep bash fallback wrapper'
 );
 assert.ok(
   restartScript.includes("detached: true"),
-  'restart-looparr.js compose child must run detached (new process group) so a session kill cannot abort the recreate'
+  'restart-looparr.js fallback compose child must run detached (new process group)'
 );
 
 // 2. The bash wrapper must ignore HUP/INT/TERM/QUIT during the recreate so the
 //    compose child survives a group-wide signal even if the detachment is not
 //    honoured on some platform.
-const wrapperMatch = restartScript.match(/const wrapper = `([^`]*)`;/);
-assert.ok(wrapperMatch, 'restart-looparr.js must define the signal-ignore wrapper source');
 assert.match(
-  wrapperMatch[1],
+  restartScript,
+  /DETACHED_WRAPPER\s*=\s*`trap '' HUP INT TERM QUIT\\n\$\{DOCKER_COMMAND\}`|const wrapper = `trap '' HUP INT TERM QUIT\\n\$\{DOCKER_COMMAND\}`;/,
+  'restart-looparr.js must define the signal-ignore wrapper source'
+);
+assert.match(
+  restartScript,
   /trap '' HUP INT TERM QUIT/,
   'wrapper must ignore HUP/INT/TERM/QUIT around the compose command'
 );

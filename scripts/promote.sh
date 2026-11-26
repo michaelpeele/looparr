@@ -156,7 +156,7 @@ sandbox_smoke() {
 }
 
 promote_prod() {
-  log "Restarting production via npm run restart:looparr"
+  log "Restarting production via npm run restart:looparr (systemd-run --user looparr-promote when available; detached fallback otherwise)"
   npm run restart:looparr
   log "Production restart passed"
 }

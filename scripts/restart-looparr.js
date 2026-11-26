@@ -30,7 +30,8 @@ function reportError(code, message, details = {}) {
   console.error(JSON.stringify({ event: 'error', code, message, ...details }));
 }
 
-if (process.env.LOOPARR_RESTART_LOCK_HELD !== '1') {
+function runLockWrapper() {
+  if (process.env.LOOPARR_RESTART_LOCK_HELD === '1') return false;
   const wrapped = spawnSync(
     'bash',
     [LOCK_WRAPPER, process.execPath, __filename, ...process.argv.slice(2)],
@@ -42,6 +43,7 @@ if (process.env.LOOPARR_RESTART_LOCK_HELD !== '1') {
     process.exit(1);
   }
   process.exit(wrapped.status ?? 1);
+  return true;
 }
 
 function sleep(ms) {
@@ -107,21 +109,87 @@ function dockerStatus() {
   }
 }
 
-// Run the compose rebuild/recreate in its own session (new process group) with
-// HUP/INT/TERM/QUIT ignored, so killing the agent session that launched this
-// restart cannot tear down `docker compose` mid-recreate and leave a
-// created-but-never-started replacement container (observed 2026-11-23 15:48:
-// compose was killed between container creation and container start).
+const SYSTEMD_UNIT = 'looparr-promote';
+const SYSTEMD_PROBE_UNIT = 'looparr-promote-probe';
+const DETACHED_WRAPPER = `trap '' HUP INT TERM QUIT\n${DOCKER_COMMAND}`;
+let cachedSystemdRunAvailable;
+
+function systemdRunPath() {
+  for (const dir of String(process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
+    const candidate = path.join(dir, 'systemd-run');
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch { /* ignore */ }
+  }
+  return '';
+}
+
+function runSystemdProbe() {
+  const systemdRun = systemdRunPath();
+  if (!systemdRun) return false;
+  const probe = spawnSync(
+    systemdRun,
+    ['--user', '--wait', '--collect', `--unit=${SYSTEMD_PROBE_UNIT}`, '--', 'true'],
+    { cwd: REPO_ROOT, stdio: 'ignore' }
+  );
+  return !probe.error && probe.status === 0;
+}
+
+function systemdRunAvailable() {
+  if (cachedSystemdRunAvailable === undefined) {
+    cachedSystemdRunAvailable = runSystemdProbe();
+  }
+  return cachedSystemdRunAvailable;
+}
+
+function resetSystemdRunProbeCache() {
+  cachedSystemdRunAvailable = undefined;
+}
+
+function buildSystemdRunArgs() {
+  const args = [
+    '--user',
+    `--unit=${SYSTEMD_UNIT}`,
+    '--wait',
+    '--collect',
+    '-p',
+    `WorkingDirectory=${REPO_ROOT}`
+  ];
+  for (const key of ['PATH', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG']) {
+    const value = process.env[key];
+    if (value) args.push(`--setenv=${key}=${value}`);
+  }
+  args.push('--', 'bash', '-c', DOCKER_COMMAND);
+  return args;
+}
+
+function logPromotionExecutionPath(executor) {
+  reportEvent('promotion-execution-path', { executor });
+  console.log(`[looparr] Promotion execution path: ${executor}`);
+}
+
+// Run the compose rebuild/recreate outside the requesting agent cgroup when a
+// user systemd manager is available. The transient unit survives agent-session
+// SIGKILL/cgroup cleanup between container creation and start. When systemd-run
+// is unavailable, fall back to the detached signal-ignoring bash wrapper.
 // The parent still waits on the child and runs the normal post-restart checks.
 function runDetachedDockerCommand() {
-  const wrapper = `trap '' HUP INT TERM QUIT\n${DOCKER_COMMAND}`;
-  const result = spawnSync('bash', ['-c', wrapper], {
-    cwd: REPO_ROOT,
-    stdio: 'inherit',
-    detached: true
-  });
+  const executor = systemdRunAvailable() ? 'systemd-run' : 'detached-spawn';
+  logPromotionExecutionPath(executor);
+
+  const result = executor === 'systemd-run'
+    ? spawnSync('systemd-run', buildSystemdRunArgs(), {
+      cwd: REPO_ROOT,
+      stdio: 'inherit'
+    })
+    : spawnSync('bash', ['-c', DETACHED_WRAPPER], {
+      cwd: REPO_ROOT,
+      stdio: 'inherit',
+      detached: true
+    });
+
   if (result.error) {
-    const wrapped = new Error(`Detached docker command failed: ${result.error.message}`);
+    const wrapped = new Error(`Docker command failed (${executor}): ${result.error.message}`);
     wrapped.status = result.status ?? null;
     throw wrapped;
   }
@@ -330,8 +398,22 @@ async function main() {
   console.log('[looparr] Complete the served-asset and container-content checks from plan.md.');
 }
 
-main().catch((error) => {
-  console.error(`[looparr] ${error.message}`);
-  reportError('UNEXPECTED_ERROR', error.message);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  if (!runLockWrapper()) {
+    main().catch((error) => {
+      console.error(`[looparr] ${error.message}`);
+      reportError('UNEXPECTED_ERROR', error.message);
+      process.exitCode = 1;
+    });
+  }
+}
+
+module.exports = {
+  DOCKER_COMMAND,
+  SYSTEMD_UNIT,
+  buildSystemdRunArgs,
+  logPromotionExecutionPath,
+  resetSystemdRunProbeCache,
+  runDetachedDockerCommand,
+  systemdRunAvailable
+};
