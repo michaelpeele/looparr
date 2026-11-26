@@ -602,6 +602,14 @@
               <option value="Frontend">Frontend</option>
               <option value="Docs">Docs</option>
             </select>
+            <select id="task-insert-position" class="task-insert-position" aria-label="Insert position" title="Where to add the task">
+              <option value="last" selected>Add last</option>
+              <option value="first">Add first</option>
+              <option value="after">Add after</option>
+            </select>
+            <select id="task-insert-after" class="task-insert-after" aria-label="Insert after task" title="Insert after this task" hidden>
+              <option value="">After which task</option>
+            </select>
             <label class="task-link-doc-row">
               <input type="checkbox" id="task-link-doc">
               <span>Link doc</span>

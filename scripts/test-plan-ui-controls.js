@@ -252,6 +252,7 @@ function loadChecklistRenderer(appSource, editingTaskIndex = -1, showCompleted =
     'updatePlanControls',
     'restoreChecklistFocus',
     'linkPlanReferences',
+    'refreshTaskInsertAfterOptions',
     `${visibleIndexesSource}\n${visibleNeighborSource}\n${renderSource}\nreturn { renderChecklist, app, dom };`
   );
   const helpers = factory(
@@ -260,6 +261,7 @@ function loadChecklistRenderer(appSource, editingTaskIndex = -1, showCompleted =
     documentStub,
     editingTaskIndex,
     String,
+    () => {},
     () => {},
     () => {},
     () => {},
@@ -725,6 +727,16 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
 
   assertIncludes(indexHtml, 'id="task-link-doc"', 'index task-link-doc checkbox');
   assertIncludes(indexHtml, 'id="task-doc-file"', 'index task-doc-file input');
+  assertIncludes(indexHtml, 'id="task-insert-position"', 'index insert-position select');
+  assertIncludes(indexHtml, 'id="task-insert-after"', 'index insert-after select');
+  assertIncludes(appSource, "taskInsertPosition: $('task-insert-position')", 'app insert-position dom binding');
+  assertIncludes(appSource, "taskInsertAfter: $('task-insert-after')", 'app insert-after dom binding');
+  assertIncludes(appSource, 'function insertTaskFirst(content, text)', 'app insert-first helper');
+  assertIncludes(appSource, 'function insertTaskAfter(content, text, targetTaskIndex)', 'app insert-after helper');
+  assertIncludes(appSource, 'function taskSnippet(text)', 'app task snippet helper');
+  assertIncludes(appSource, 'function refreshTaskInsertAfterOptions()', 'app after-options refresh helper');
+  assertIncludes(cssSource, '#task-insert-position,', 'css insert-position selector rule');
+  assertIncludes(cssSource, '#task-insert-after { flex: 0 1 auto; min-width: 0; }', 'css insert-after selector rule');
   assertIncludes(appSource, "const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|research|INVESTIGATION|investigation|HANDOFF|handoff|PROGRESS|progress';", 'app shared prefix constant');
   assertIncludes(appSource, 'function buildTaskSlug(title)', 'app buildTaskSlug helper');
   assertIncludes(appSource, 'function formatLinkedTask(title, file)', 'app formatLinkedTask helper');
@@ -957,7 +969,9 @@ async function testAddChecklistTaskStubFailureAborts() {
     taskInput: { value: 'Task link checkbox' },
     taskStatus: { textContent: '' },
     taskLinkDoc: { checked: true },
-    taskDocFile: { value: '' }
+    taskDocFile: { value: '' },
+    taskInsertPosition: { value: 'last' },
+    taskInsertAfter: { value: '' }
   };
   const app = { drawerId: 'demo', savingPlan: false };
   const factory = new Function(
@@ -970,6 +984,8 @@ async function testAddChecklistTaskStubFailureAborts() {
     'formatLinkedTask',
     'ensurePlanContent',
     'appendTask',
+    'insertTaskFirst',
+    'insertTaskAfter',
     'markPlanDirty',
     'savePlanContent',
     `${addSource}\nreturn addChecklistTask;`
@@ -990,6 +1006,8 @@ async function testAddChecklistTaskStubFailureAborts() {
       calls.appendTask += 1;
       return '# Build plan\n- [ ] [Task link checkbox](.project_documents/PLAN-task-link-checkbox.md)';
     },
+    () => { throw new Error('insert-first must not run'); },
+    () => { throw new Error('insert-after must not run'); },
     () => { calls.markPlanDirty += 1; },
     async () => {
       calls.savePlanContent += 1;
@@ -1011,7 +1029,7 @@ function loadAddChecklistTaskRunner(options = {}) {
   const source = fs.readFileSync(path.join(REPO_ROOT, 'public/app.js'), 'utf8');
   const addSource = extractFunction(source, 'async function addChecklistTask()');
   const formatSource = extractFunction(source, 'function formatLinkedTask(title, file)');
-  const calls = { ensurePlanContent: 0, appendTask: 0, markPlanDirty: 0, savePlanContent: 0, planFileExists: 0 };
+  const calls = { ensurePlanContent: 0, appendTask: 0, insertFirst: 0, insertAfter: 0, markPlanDirty: 0, savePlanContent: 0, planFileExists: 0 };
   const apiCalls = [];
   const appended = [];
   const composed = [];
@@ -1020,7 +1038,9 @@ function loadAddChecklistTaskRunner(options = {}) {
     taskStatus: { textContent: '' },
     taskLinkDoc: { checked: Boolean(options.checked) },
     taskDocFile: { value: options.docFile || '' },
-    planEditor: { value: options.planContent || '# Build plan' }
+    planEditor: { value: options.planContent || '# Build plan' },
+    taskInsertPosition: { value: options.position || 'last' },
+    taskInsertAfter: { value: options.afterTarget === undefined ? '' : String(options.afterTarget) }
   };
   const app = { drawerId: 'demo', savingPlan: false };
   const factory = new Function(
@@ -1033,6 +1053,8 @@ function loadAddChecklistTaskRunner(options = {}) {
     'formatLinkedTask',
     'ensurePlanContent',
     'appendTask',
+    'insertTaskFirst',
+    'insertTaskAfter',
     'markPlanDirty',
     'savePlanContent',
     `${addSource}\nreturn addChecklistTask;`
@@ -1053,10 +1075,25 @@ function loadAddChecklistTaskRunner(options = {}) {
     new Function(`${formatSource}\nreturn formatLinkedTask;`)(),
     async () => {
       calls.ensurePlanContent += 1;
-      return '# Build plan';
+      return options.planContent || '# Build plan';
     },
     (content, text) => {
       calls.appendTask += 1;
+      appended.push(text);
+      const next = `${content}\n- [ ] ${text}`;
+      composed.push(next);
+      return next;
+    },
+    (content, text) => {
+      calls.insertFirst += 1;
+      appended.push(text);
+      const next = `${content}\n- [ ] ${text}`;
+      composed.push(next);
+      return next;
+    },
+    (content, text, targetIndex) => {
+      calls.insertAfter += 1;
+      if (options.afterReturnsNull) return null;
       appended.push(text);
       const next = `${content}\n- [ ] ${text}`;
       composed.push(next);
@@ -1112,6 +1149,32 @@ async function testAddChecklistTaskUnchecked() {
   );
   assertEqual(runner.calls.savePlanContent, 1, 'unchecked saves plan exactly once');
   assertEqual(runner.calls.markPlanDirty, 1, 'unchecked marks plan dirty once');
+}
+
+async function testAddChecklistTaskInsertPositions() {
+  const base = { checked: false, docFile: '', title: 'Brand new task' };
+
+  const firstRunner = loadAddChecklistTaskRunner({ ...base, position: 'first' });
+  await firstRunner.addChecklistTask();
+  assertEqual(firstRunner.calls.insertFirst, 1, 'position first calls insert-first');
+  assertEqual(firstRunner.calls.appendTask, 0, 'position first does not append');
+  assertEqual(firstRunner.appended[0], 'Brand new task', 'position first passes task text');
+
+  const afterRunner = loadAddChecklistTaskRunner({ ...base, position: 'after', afterTarget: 2 });
+  await afterRunner.addChecklistTask();
+  assertEqual(afterRunner.calls.insertAfter, 1, 'position after calls insert-after');
+  assertEqual(afterRunner.calls.appendTask, 0, 'position after with valid target does not append');
+
+  const staleRunner = loadAddChecklistTaskRunner({ ...base, position: 'after', afterTarget: '', afterReturnsNull: true });
+  await staleRunner.addChecklistTask();
+  assertEqual(staleRunner.calls.insertAfter, 1, 'stale after target still attempts insert-after');
+  assertEqual(staleRunner.calls.appendTask, 1, 'stale after target falls back to append-last');
+
+  const defaultRunner = loadAddChecklistTaskRunner({ ...base, position: '' });
+  await defaultRunner.addChecklistTask();
+  assertEqual(defaultRunner.calls.appendTask, 1, 'empty position defaults to append-last');
+  assertEqual(defaultRunner.calls.insertFirst, 0, 'empty position skips insert-first');
+  assertEqual(defaultRunner.calls.insertAfter, 0, 'empty position skips insert-after');
 }
 
 function makeLinkifyDocument() {
@@ -1416,6 +1479,7 @@ async function main() {
     await testAddChecklistTaskStubFailureAborts();
     await testAddChecklistTaskLinkDocSuccess();
     await testAddChecklistTaskUnchecked();
+    await testAddChecklistTaskInsertPositions();
     testLinkPlanReferences();
     testTaskLinkDocStateFunctions();
 

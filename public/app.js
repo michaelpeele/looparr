@@ -155,6 +155,8 @@
     sprintSummary: $('sprint-summary'),
     taskSprintSelect: $('task-sprint-select'),
     taskValidationType: $('task-validation-type'),
+    taskInsertPosition: $('task-insert-position'),
+    taskInsertAfter: $('task-insert-after'),
     planFileModal: $('plan-file-modal'),
     planFileTitle: $('plan-file-title'),
     planFileContent: $('plan-file-content'),
@@ -2226,6 +2228,55 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     return lines.join('\n');
   }
 
+  function insertTaskFirst(content, text) {
+    const clean = cleanTaskText(text);
+    if (!clean) return null;
+    const source = String(content || '');
+    if (!source) return `- [ ] ${clean}\n`;
+    const lines = source.split('\n');
+    const taskLines = planTaskLineIndexes(source);
+    const insertAt = taskLines.length ? taskLines[0] : lines.length;
+    lines.splice(insertAt, 0, `- [ ] ${clean}`);
+    return lines.join('\n');
+  }
+
+  function insertTaskAfter(content, text, targetTaskIndex) {
+    const clean = cleanTaskText(text);
+    if (!clean) return null;
+    const index = Number(targetTaskIndex);
+    if (!Number.isInteger(index) || index < 0) return null;
+    const source = String(content || '');
+    const taskLines = planTaskLineIndexes(source);
+    const targetLine = taskLines[index];
+    if (targetLine === undefined) return null;
+    const lines = source.split('\n');
+    lines.splice(targetLine + 1, 0, `- [ ] ${clean}`);
+    return lines.join('\n');
+  }
+
+  function taskSnippet(text) {
+    const clean = cleanTaskText(text);
+    if (!clean) return '';
+    return clean.split(/\s+/).slice(0, 5).join(' ');
+  }
+
+  function refreshTaskInsertAfterOptions() {
+    const select = dom.taskInsertAfter;
+    if (!select) return;
+    const position = dom.taskInsertPosition ? dom.taskInsertPosition.value : 'last';
+    const tasks = app.currentPlan?.tasks || [];
+    const previous = select.value;
+    const options = ['<option value="">After which task</option>'];
+    tasks.forEach((task) => {
+      const label = taskSnippet(task.text) || `Task ${task.index + 1}`;
+      options.push(`<option value="${task.index}">${esc(label)}</option>`);
+    });
+    select.innerHTML = options.join('');
+    const stillExists = previous === '' || tasks.some((task) => String(task.index) === previous);
+    select.value = stillExists ? previous : '';
+    select.hidden = position !== 'after';
+  }
+
   async function ensurePlanContent() {
     if (dom.planEditor.value) return dom.planEditor.value;
     const id = app.drawerId;
@@ -2251,6 +2302,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     app.currentPlan = plan;
     app.planTaskCount = plan.tasks?.length || 0;
     updateToggleCompletedButton();
+    refreshTaskInsertAfterOptions();
     const visible = (plan.tasks || [])
       .map((task) => ({ task, taskIndex: task.index }))
       .filter(({ task }) => app.showCompleted || !task.checked);
@@ -2453,6 +2505,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
           const editorChanged = dom.planEditor.value !== content;
           if (editorChanged) {
             markPlanDirty();
+            refreshTaskInsertAfterOptions();
           } else {
             app.planDirty = false;
             app.lastPlanKey = '';
@@ -2562,7 +2615,17 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
         taskText = `${taskText} [sprint:${sprintName}]`;
       }
       const content = await ensurePlanContent();
-      const next = appendTask(content, taskText);
+      const insertPosition = dom.taskInsertPosition?.value || 'last';
+      let next;
+      if (insertPosition === 'first') {
+        next = insertTaskFirst(content, taskText);
+      } else if (insertPosition === 'after') {
+        const target = Number(dom.taskInsertAfter?.value);
+        next = insertTaskAfter(content, taskText, target);
+        if (!next) next = appendTask(content, taskText);
+      } else {
+        next = appendTask(content, taskText);
+      }
       if (!next) {
         dom.taskStatus.textContent = 'Could not add task.';
         return;
@@ -3888,6 +3951,11 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
   }
 
   dom.addTask.addEventListener('click', addChecklistTask);
+  dom.taskInsertPosition?.addEventListener('change', () => {
+    const position = dom.taskInsertPosition.value;
+    if (dom.taskInsertAfter) dom.taskInsertAfter.hidden = position !== 'after';
+    if (position === 'after') refreshTaskInsertAfterOptions();
+  });
   dom.taskInput.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter') return;
     event.preventDefault();

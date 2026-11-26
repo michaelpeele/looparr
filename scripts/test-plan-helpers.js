@@ -211,11 +211,91 @@ function testReorderHelpers() {
   assertEqual(adjacentUp[3], '- [x] item 5', 'shown completed single up swaps adjacent items');
 }
 
+function loadInsertHelpers() {
+  const source = fs.readFileSync(path.join(REPO_ROOT, 'public/app.js'), 'utf8');
+  const lineRegex = source.match(/^\s*const TASK_LINE_RE = .*;$/m);
+  assert.ok(lineRegex, 'Missing TASK_LINE_RE');
+  const clean = extractFunction(source, 'function cleanTaskText(value)');
+  const indexes = extractFunction(source, 'function planTaskLineIndexes(content)');
+  const append = extractFunction(source, 'function appendTask(content, text)');
+  const first = extractFunction(source, 'function insertTaskFirst(content, text)');
+  const after = extractFunction(source, 'function insertTaskAfter(content, text, targetTaskIndex)');
+  const snippet = extractFunction(source, 'function taskSnippet(text)');
+  const factory = new Function([
+    lineRegex[0],
+    clean,
+    indexes,
+    append,
+    first,
+    after,
+    snippet,
+    'return { cleanTaskText, planTaskLineIndexes, appendTask, insertTaskFirst, insertTaskAfter, taskSnippet };'
+  ].join('\n'));
+  return factory();
+}
+
+function testInsertHelpers() {
+  const { insertTaskFirst, insertTaskAfter, taskSnippet } = loadInsertHelpers();
+
+  const heading = ['# Plan', '', 'preamble line', '- [ ] one', '- [x] two', ''].join('\n');
+  const firstWithHeading = insertTaskFirst(heading, 'new first');
+  assertEqual(
+    firstWithHeading,
+    ['# Plan', '', 'preamble line', '- [ ] new first', '- [ ] one', '- [x] two', ''].join('\n'),
+    'insert-first lands before first task and keeps preamble'
+  );
+
+  const noTasks = ['# Plan', '', 'only preamble', ''].join('\n');
+  assertEqual(
+    insertTaskFirst(noTasks, 'solo'),
+    ['# Plan', '', 'only preamble', '', '- [ ] solo'].join('\n'),
+    'insert-first with no tasks appends at end'
+  );
+  assertEqual(insertTaskFirst('', 'solo'), '- [ ] solo\n', 'insert-first empty content returns single line');
+  assertEqual(insertTaskFirst(heading, '   '), null, 'insert-first empty text returns null');
+
+  const crlf = ['# Plan', '', '- [ ] one', '- [ ] two', ''].join('\r\n');
+  assertEqual(
+    insertTaskFirst(crlf, 'first'),
+    ['# Plan', '', '- [ ] first'].join('\r\n') + '\n' + ['- [ ] one', '- [ ] two', ''].join('\r\n'),
+    'insert-first preserves CRLF endings the way appendTask does'
+  );
+
+  const list = ['# Plan', '', '- [ ] zero', '- [ ] one', '- [ ] two', ''].join('\n');
+  assertEqual(
+    insertTaskAfter(list, 'after zero', 0),
+    ['# Plan', '', '- [ ] zero', '- [ ] after zero', '- [ ] one', '- [ ] two', ''].join('\n'),
+    'insert-after index 0 lands directly after first task'
+  );
+  assertEqual(
+    insertTaskAfter(list, 'after one', 1),
+    ['# Plan', '', '- [ ] zero', '- [ ] one', '- [ ] after one', '- [ ] two', ''].join('\n'),
+    'insert-after middle index lands after that task'
+  );
+  assertEqual(insertTaskAfter(list, 'x', 99), null, 'insert-after out-of-range returns null');
+  assertEqual(insertTaskAfter(list, 'x', 1.5), null, 'insert-after non-integer returns null');
+  assertEqual(insertTaskAfter(list, 'x', -1), null, 'insert-after negative returns null');
+  assertEqual(insertTaskAfter(list, '  ', 0), null, 'insert-after empty text returns null');
+
+  assertEqual(taskSnippet('- [ ] Fix the login redirect bug now please'), 'Fix the login redirect bug', 'taskSnippet returns first 5 words');
+  assertEqual(taskSnippet('one two'), 'one two', 'taskSnippet keeps short text');
+  assertEqual(taskSnippet('   '), '', 'taskSnippet empty returns empty');
+
+  const dupA = taskSnippet('- [ ] same words here repeated');
+  const dupB = taskSnippet('- [x] same words here repeated');
+  assertEqual(dupA, dupB, 'duplicate task texts share snippet text');
+  const duplicateList = ['- [ ] same words here repeated', '- [x] same words here repeated'].join('\n');
+  const dupIndexes = loadInsertHelpers().planTaskLineIndexes(duplicateList);
+  assertEqual(dupIndexes.length, 2, 'duplicate tasks get distinct line indexes');
+  assert.ok(dupIndexes[0] !== dupIndexes[1], 'duplicate snippets map to distinct option values by index');
+}
+
 async function main() {
   assertIncludes(Object.keys(planLib).join(','), 'nextUncheckedAfter', 'plan exports');
   testTaskEdits();
   await testLinkDocHelpers();
   testReorderHelpers();
+  testInsertHelpers();
 
   const run = tasksFrom([
     '- [x] zero',

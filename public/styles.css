@@ -1279,7 +1279,9 @@ body.plan-dragging .checklist { cursor: grabbing; }
 .sprint-add-row input { flex: 1 1 160px; min-width: 0; }
 .sprint-summary { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
 #task-sprint-select,
-#task-validation-type { flex: 0 1 auto; min-width: 0; }
+#task-validation-type,
+#task-insert-position,
+#task-insert-after { flex: 0 1 auto; min-width: 0; }
 .drawer-section label.checkbox-row {
   display: flex;
   align-items: center;
