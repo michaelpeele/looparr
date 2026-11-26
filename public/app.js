@@ -1395,7 +1395,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
         <span class="badge idle"></span>
       </div>
       <p class="card-task task-detail-wrap" data-task-field="current" data-project-id="${esc(project.id)}" data-fallback="true"><span class="task-detail-text task-detail-clamped" id="${currentTextId}"></span><button class="task-expand-toggle" type="button" aria-controls="${currentTextId}" aria-expanded="false" aria-label="Expand current task" title="Expand current task" hidden>▼</button></p>
-      <div class="card-model-row"><div class="card-model mono"></div><button class="icon-button terminal-button" type="button" aria-label="Open agent terminal" title="Agent terminal"><svg class="terminal-icon" aria-hidden="true" focusable="false"><use href="#icon-terminal"></use></svg></button></div>
+      <div class="card-model-row"><div class="card-model mono"></div><button class="icon-button terminal-button" type="button" aria-label="Open agent terminal" title="Agent terminal"><svg class="terminal-icon" aria-hidden="true" focusable="false"><use href="#icon-terminal"></use></svg></button><a class="icon-button repo-link" data-repo-link="github" hidden target="_blank" rel="noopener noreferrer" aria-label="Open GitHub repository" title="GitHub repository"><svg class="repo-icon" aria-hidden="true" focusable="false"><use href="#icon-github"></use></svg></a><a class="icon-button repo-link" data-repo-link="docker" hidden target="_blank" rel="noopener noreferrer" aria-label="Open Docker image repository" title="Docker image repository"><svg class="repo-icon" aria-hidden="true" focusable="false"><use href="#icon-docker"></use></svg></a></div>
       <div class="card-up" data-task-field="next" data-project-id="${esc(project.id)}" data-fallback="true"><strong>Up next:</strong> <span class="task-detail-wrap"><span class="task-detail-text task-detail-clamped" id="${nextTextId}"></span><button class="task-expand-toggle" type="button" aria-controls="${nextTextId}" aria-expanded="false" aria-label="Expand up next" title="Expand up next" hidden>▼</button></span></div>
       <div class="progress-row">
         <span>Progress</span>
@@ -1416,6 +1416,11 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     terminalButton.addEventListener('click', (event) => {
       event.stopPropagation();
       openTerminal(project.id);
+    });
+    card.querySelectorAll('.repo-link').forEach((link) => {
+      link.addEventListener('click', (event) => {
+        event.stopPropagation();
+      });
     });
 
     card.querySelector('.card-controls').addEventListener('click', (event) => {
@@ -1535,6 +1540,55 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     };
   }
 
+  function renderRepoLinks(rowElement, project) {
+    if (!rowElement) return;
+    const apply = (key, value) => {
+      const link = rowElement.querySelector(`.repo-link[data-repo-link="${key}"]`);
+      if (!link) return;
+      const url = key === 'docker' ? normalizedDockerRepoLink(value) : normalizedRepoLink(value);
+      if (url) {
+        link.setAttribute('href', url);
+        link.setAttribute('title', key === 'github' ? 'GitHub repository' : 'Docker image repository');
+        link.hidden = false;
+      } else {
+        link.removeAttribute('href');
+        link.hidden = true;
+      }
+    };
+    apply('github', project.githubRepoUrl);
+    apply('docker', project.dockerRepoUrl);
+  }
+
+  function normalizedRepoLink(value) {
+    if (typeof value !== 'string') return '';
+    const trimmed = value.trim();
+    if (!trimmed) return '';
+    let parsed;
+    try {
+      parsed = new URL(trimmed);
+    } catch {
+      return '';
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+    return trimmed;
+  }
+
+  function normalizedDockerRepoLink(value) {
+    const normalized = normalizedRepoLink(value);
+    if (!normalized) return normalized;
+    let parsed;
+    try {
+      parsed = new URL(normalized);
+    } catch {
+      return normalized;
+    }
+    if (parsed.hostname !== 'ghcr.io' && parsed.host !== 'ghcr.io') return normalized;
+    const segments = parsed.pathname.split('/').filter((segment) => segment.length > 0);
+    if (segments.length !== 2) return normalized;
+    const [owner, image] = segments;
+    return `https://github.com/users/${encodeURIComponent(owner)}/packages/container/package/${encodeURIComponent(image)}`;
+  }
+
   function updateCard(card, project) {
     card._project = project;
     setCardVisual(card, project);
@@ -1579,6 +1633,8 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       modelLine.textContent = `${runnerLabel(project.activeRunner || project.runner)}${modelName ? ` · ${modelName}` : ' · default'}`;
       modelLine.title = modelLine.textContent;
     }
+
+    renderRepoLinks(card.querySelector('.card-model-row'), project);
 
     const buttons = card.querySelectorAll('.card-controls button');
     const disabled = controlDisabled(project);
@@ -2027,6 +2083,8 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
         : settings.runnerRotation === true
     });
     dom.projectModelStatus.textContent = '';
+    const drawerRow = dom.drawerTerminalButton?.closest('.card-model-row');
+    renderRepoLinks(drawerRow, project);
   }
 
   function updateDrawerAutoResume(project) {

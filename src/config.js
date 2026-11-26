@@ -465,6 +465,38 @@ function normalizedSprintTestCommand(value) {
   return command || 'npm test';
 }
 
+function normalizedRepoUrl(value) {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return '';
+  }
+  return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? trimmed : '';
+}
+
+// ghcr.io/<owner>/<image> is a registry endpoint, not a browsable page: the
+// browser follows its redirect to a malformed github.com/-/... URL that 404s.
+// Map that exact shape to the canonical public container package page.
+function normalizedDockerRepoUrl(value) {
+  const normalized = normalizedRepoUrl(value);
+  if (!normalized) return normalized;
+  let parsed;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    return normalized;
+  }
+  if (parsed.hostname !== 'ghcr.io' && parsed.host !== 'ghcr.io') return normalized;
+  const segments = parsed.pathname.split('/').filter((segment) => segment.length > 0);
+  if (segments.length !== 2) return normalized;
+  const [owner, image] = segments;
+  return `https://github.com/users/${encodeURIComponent(owner)}/packages/container/package/${encodeURIComponent(image)}`;
+}
+
 function normalizeProject(project) {
   if (!project || typeof project !== 'object') return project;
   return {
@@ -490,7 +522,9 @@ function normalizeProject(project) {
     cooloffSeconds: normalizedCooloff(project.cooloffSeconds, null),
     temporaryLiftScope: normalizedLiftScope(project.temporaryLiftScope, ''),
     permanentLift: normalizedLiftScope(project.permanentLift, ''),
-    autoResumeOnStart: typeof project.autoResumeOnStart === 'boolean' ? project.autoResumeOnStart : false
+    autoResumeOnStart: typeof project.autoResumeOnStart === 'boolean' ? project.autoResumeOnStart : false,
+    githubRepoUrl: normalizedRepoUrl(project.githubRepoUrl),
+    dockerRepoUrl: normalizedDockerRepoUrl(project.dockerRepoUrl)
   };
 }
 
@@ -633,6 +667,7 @@ module.exports = {
   loadConfig,
   saveConfig,
   normalizedModel,
+  normalizedDockerRepoUrl,
   normalizeProject,
   normalizeSettings,
   normalizedSprintMode,

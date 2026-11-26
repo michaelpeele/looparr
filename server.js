@@ -225,6 +225,24 @@ function parseLiftScope(value, fallback, label) {
   return { ok: true, value: scope };
 }
 
+function parseRepoUrl(value, label) {
+  if (value === undefined) return { ok: true, value: undefined };
+  if (value === null || value === '') return { ok: true, value: '' };
+  if (typeof value !== 'string') return { ok: false, error: `${label} must be a string` };
+  const trimmed = value.trim();
+  if (!trimmed) return { ok: true, value: '' };
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return { ok: false, error: `${label} must be an http(s) URL` };
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { ok: false, error: `${label} must be an http(s) URL` };
+  }
+  return { ok: true, value: trimmed };
+}
+
 function parseModel(value, fallback, label) {
   return parseModelList(value, fallback, label);
 }
@@ -569,6 +587,14 @@ app.patch('/api/projects/:id', (req, res) => {
   const permanentLift = parseLiftScope(body.permanentLift, '', 'Permanent lift');
   if (!permanentLift.ok) return fail(res, 400, permanentLift.error);
   if (permanentLift.value !== undefined) patch.permanentLift = permanentLift.value;
+  const githubRepoUrl = parseRepoUrl(body.githubRepoUrl, 'GitHub repo URL');
+  if (!githubRepoUrl.ok) return fail(res, 400, githubRepoUrl.error);
+  if (githubRepoUrl.value !== undefined) patch.githubRepoUrl = githubRepoUrl.value;
+  const dockerRepoUrl = parseRepoUrl(body.dockerRepoUrl, 'Docker repo URL');
+  if (!dockerRepoUrl.ok) return fail(res, 400, dockerRepoUrl.error);
+  if (dockerRepoUrl.value !== undefined) {
+    patch.dockerRepoUrl = configStore.normalizedDockerRepoUrl(dockerRepoUrl.value);
+  }
   const sprintParsed = applySprintFields(body, patch);
   if (!sprintParsed.ok) return fail(res, 400, sprintParsed.error);
   if (!Object.keys(patch).length) return fail(res, 400, 'No project fields to update');

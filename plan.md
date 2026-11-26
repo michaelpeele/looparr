@@ -258,3 +258,4 @@ Why: Scriptable on iOS uses native image decoding. It cannot decode SVG (`image/
 - [x] Add GitHub button to project detail on home page and detail page, if a GitHub repo is linked. Add a whale icon to link to docker image repo if one is linked.
 - [x] Link GitHub repo, push to origin with tag as v1.0
 - [x] Publish docker container with multi arch testing similar to how we did Curatarr. Link docker container repo link to project so button appears
+- [x] When I click the docker button it gets 404d I see /-/ in the link correct it

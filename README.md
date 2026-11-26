@@ -257,6 +257,8 @@ docker run -d --name looparr \
 
 The container serves port 3000 and persists runtime state under a `data/` volume (`CONFIG_PATH` points at the config file inside it). Each workflow run ends with a read-only `docker buildx imagetools inspect` step that confirms the pushed manifest lists both `linux/amd64` and `linux/arm64`.
 
+The Docker button on project cards links to the GitHub container package page, not the raw registry host: a `ghcr.io/<owner>/<image>` reference maps to `https://github.com/users/<owner>/packages/container/package/<image>` (the raw `ghcr.io` page redirects to a malformed `github.com/-/...` URL that 404s). Any other `dockerRepoUrl` value is linked as entered.
+
 ### Files
 
 - `Dockerfile`: Node 20 image, production dependencies only, no OpenCode install.
