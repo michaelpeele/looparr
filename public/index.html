@@ -679,7 +679,10 @@
   <div class="terminal-overlay" id="terminal-overlay" hidden>
     <div class="terminal-panel" role="dialog" aria-modal="true" aria-labelledby="terminal-title">
       <div class="terminal-header">
-        <h2 class="terminal-title mono" id="terminal-title">Agent terminal</h2>
+        <div class="terminal-heading-actions">
+          <h2 class="terminal-title mono" id="terminal-title">Agent terminal</h2>
+          <button class="button small" id="terminal-follow" type="button" hidden>Jump to latest</button>
+        </div>
         <button class="icon-button" type="button" id="terminal-close" aria-label="Close agent terminal" title="Close">✕</button>
       </div>
       <div class="terminal-log-list mono" id="terminal-log-list" role="log" aria-live="polite"></div>

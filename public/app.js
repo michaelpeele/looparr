@@ -168,6 +168,7 @@
     terminalPanel: $('terminal-panel'),
     terminalTitle: $('terminal-title'),
     terminalClose: $('terminal-close'),
+    terminalFollow: $('terminal-follow'),
     terminalLogList: $('terminal-log-list'),
     drawerTerminalButton: $('drawer-terminal-button')
   };
@@ -297,6 +298,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     drawerId: null,
     terminalId: null,
     logFollow: true,
+    terminalFollow: true,
     planDirty: false,
     showCompleted: false,
     savingPlan: false,
@@ -1865,6 +1867,20 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     return Boolean(app.terminalId) && dom.terminalOverlay && !dom.terminalOverlay.hidden;
   }
 
+  function isTerminalNearBottom() {
+    const remaining = dom.terminalLogList.scrollHeight - dom.terminalLogList.scrollTop - dom.terminalLogList.clientHeight;
+    return remaining <= 24;
+  }
+
+  function toggleTerminalFollowButton() {
+    dom.terminalFollow.hidden = app.terminalFollow;
+  }
+
+  function scrollTerminal(force = false) {
+    if (force || app.terminalFollow) dom.terminalLogList.scrollTop = dom.terminalLogList.scrollHeight;
+    toggleTerminalFollowButton();
+  }
+
   function appendTerminalLine(entry) {
     if (!app.terminalId || !entry || entry.projectId !== app.terminalId) return;
     if (!isTerminalOpen()) return;
@@ -1872,7 +1888,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     const empty = dom.terminalLogList.querySelector('.terminal-empty');
     if (empty) empty.remove();
     dom.terminalLogList.appendChild(makeLogLine(entry));
-    dom.terminalLogList.scrollTop = dom.terminalLogList.scrollHeight;
+    scrollTerminal();
   }
 
   function renderTerminalLogs(id) {
@@ -1883,12 +1899,13 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       empty.className = 'terminal-empty';
       empty.textContent = 'No agent output yet. Start the project to see the live terminal.';
       dom.terminalLogList.appendChild(empty);
+      toggleTerminalFollowButton();
       return;
     }
     const fragment = document.createDocumentFragment();
     bucket.entries.forEach((entry) => fragment.appendChild(makeLogLine(entry)));
     dom.terminalLogList.appendChild(fragment);
-    dom.terminalLogList.scrollTop = dom.terminalLogList.scrollHeight;
+    scrollTerminal(true);
   }
 
   function openTerminal(id) {
@@ -1896,6 +1913,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     if (!project) return;
     app.terminalId = id;
     dom.terminalTitle.textContent = `${project.name} · agent terminal`;
+    app.terminalFollow = true;
     renderTerminalLogs(id);
     dom.terminalOverlay.hidden = false;
     document.body.style.overflow = 'hidden';
@@ -3882,6 +3900,14 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
   dom.logFollow.addEventListener('click', () => {
     app.logFollow = true;
     scrollLogs(true);
+  });
+  dom.terminalLogList?.addEventListener('scroll', () => {
+    app.terminalFollow = isTerminalNearBottom();
+    toggleTerminalFollowButton();
+  });
+  dom.terminalFollow?.addEventListener('click', () => {
+    app.terminalFollow = true;
+    scrollTerminal(true);
   });
   dom.planGuideSummary.addEventListener('click', () => {
     app.planGuideTouched = true;

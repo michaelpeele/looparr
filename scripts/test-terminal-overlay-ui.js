@@ -144,14 +144,20 @@ function loadRenderTerminalLogs(logs) {
   const formatLogText = extractFunction(source, 'function formatLogText(text)');
   const makeLogLine = extractFunction(source, 'function makeLogLine(entry)');
   const renderLogs = extractFunction(source, 'function renderTerminalLogs(id)');
+  const isTerminalNearBottom = extractFunction(source, 'function isTerminalNearBottom()');
+  const toggleTerminalFollowButton = extractFunction(source, 'function toggleTerminalFollowButton()');
+  const scrollTerminal = extractFunction(source, 'function scrollTerminal(force = false)');
   const factory = new Function('app', 'dom', 'document', [
     streamClass,
     formatLogText,
     makeLogLine,
     renderLogs,
+    isTerminalNearBottom,
+    toggleTerminalFollowButton,
+    scrollTerminal,
     'return { renderTerminalLogs };'
   ].join('\n'));
-  const dom = { terminalLogList: makeElement() };
+  const dom = { terminalLogList: makeElement(), terminalFollow: makeElement() };
   const helpers = factory({ logs }, dom, makeDocumentStub());
   return { dom: dom.terminalLogList, renderTerminalLogs: helpers.renderTerminalLogs };
 }
@@ -163,6 +169,9 @@ function loadOverlayFunctions({ drawerId = null, open = false } = {}) {
   const makeLogLine = extractFunction(source, 'function makeLogLine(entry)');
   const appendLine = extractFunction(source, 'function appendTerminalLine(entry)');
   const isTerminalOpen = extractFunction(source, 'function isTerminalOpen()');
+  const isTerminalNearBottom = extractFunction(source, 'function isTerminalNearBottom()');
+  const toggleTerminalFollowButton = extractFunction(source, 'function toggleTerminalFollowButton()');
+  const scrollTerminal = extractFunction(source, 'function scrollTerminal(force = false)');
   const openFn = extractFunction(source, 'function openTerminal(id)');
   const closeFn = extractFunction(source, 'function closeTerminal()');
   const documentStub = makeDocumentStub();
@@ -170,12 +179,14 @@ function loadOverlayFunctions({ drawerId = null, open = false } = {}) {
     terminalLogList: makeElement(),
     terminalOverlay: makeElement(),
     terminalTitle: makeElement(),
-    terminalClose: makeElement()
+    terminalClose: makeElement(),
+    terminalFollow: makeElement()
   };
   dom.terminalOverlay.hidden = !open;
   const app = {
     terminalId: open ? 'p1' : null,
-    drawerId
+    drawerId,
+    terminalFollow: true
   };
   const calls = { renderTerminalLogs: [] };
   const factory = new Function('app', 'dom', 'document', 'calls', [
@@ -185,6 +196,9 @@ function loadOverlayFunctions({ drawerId = null, open = false } = {}) {
     formatLogText,
     makeLogLine,
     isTerminalOpen,
+    isTerminalNearBottom,
+    toggleTerminalFollowButton,
+    scrollTerminal,
     appendLine,
     openFn,
     closeFn,
