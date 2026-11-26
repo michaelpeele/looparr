@@ -1,6 +1,7 @@
 'use strict';
 
 const { execSync, spawnSync } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
@@ -9,7 +10,11 @@ const planLib = require('../src/plan');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const LOCK_WRAPPER = path.join(__dirname, 'restart-lock.sh');
+const WATCHDOG_SCRIPT = path.join(__dirname, 'restart-watchdog.sh');
 const DRY_RUN = process.argv.includes('--dry-run');
+const FORCE =
+  process.argv.includes('--force') ||
+  process.env.LOOPARR_FORCE_PROMOTION === '1';
 const BASE_URL = (
   process.env.LOOPARR_BASE_URL ||
   `http://127.0.0.1:${process.env.LOOPARR_LOCAL_PORT || '4188'}`
@@ -25,6 +30,40 @@ const CONTAINER_START_TIMEOUT_SECONDS = Number(
   process.env.LOOPARR_CONTAINER_START_TIMEOUT_SECONDS || '60'
 );
 const HEALTHY_STATUS_PATTERN = /(?:\((?:health:\s*)?healthy\)|(?:\s|^)healthy(?:\s|$))/i;
+
+// Compose deadline must stay below the restart-lock timeout (default 900) so a
+// hung compose phase times out, releases the lock, and leaves a terminal status.
+const COMPOSE_TIMEOUT_SECONDS = Number(
+  process.env.LOOPARR_COMPOSE_TIMEOUT_SECONDS || '600'
+);
+const LOCK_TIMEOUT_SECONDS = Number(
+  process.env.LOOPARR_RESTART_LOCK_TIMEOUT || '900'
+);
+
+const PROMOTION_STATUS_FILE =
+  process.env.LOOPARR_PROMOTION_STATUS_FILE ||
+  path.join(REPO_ROOT, '.looparr', 'promotion-status.json');
+const PROMOTION_LOG_FILE =
+  process.env.LOOPARR_PROMOTION_LOG_FILE ||
+  path.join(REPO_ROOT, '.looparr', 'logs', 'promotion-latest.log');
+
+const SOURCE_MANIFEST_DIRS = ['src', 'public', 'scripts'];
+const SOURCE_MANIFEST_FILES = [
+  'package.json',
+  'docker-compose.yml',
+  'Dockerfile',
+  '.dockerignore'
+];
+// Files the Docker build copies into /app; everything else in the manifest is
+// build-context-only and cannot be compared against the container filesystem.
+const CONTAINER_COMPARABLE_PATTERN = /^(?:src|public|scripts)\//;
+const SERVED_ASSETS = [
+  ['/', 'public/index.html'],
+  ['/app.js', 'public/app.js'],
+  ['/styles.css', 'public/styles.css'],
+  ['/favicon.svg', 'public/favicon.svg']
+];
+const DIAGNOSTICS_MAX_CHARS = 16000;
 
 function reportEvent(event, fields = {}) {
   console.log(JSON.stringify({ event, ...fields }));
@@ -60,58 +99,276 @@ async function getState() {
   return res.json();
 }
 
-function writeRestartContinueMarker() {
-  fs.mkdirSync(path.dirname(RESTART_CONTINUE_FILE), { recursive: true });
-  fs.writeFileSync(
-    RESTART_CONTINUE_FILE,
-    `${JSON.stringify({ message: RESTART_CONTINUE_MESSAGE, writtenAt: new Date().toISOString() }, null, 2)}\n`,
-    'utf8'
+// ---------------------------------------------------------------------------
+// Promotion status artifact
+// ---------------------------------------------------------------------------
+
+let promotionStatus = null;
+
+function defaultPromotionStatus(runId, startedAt) {
+  return {
+    runId,
+    startedAt,
+    finishedAt: null,
+    phase: 'start',
+    result: 'running',
+    executor: null,
+    unit: null,
+    invocationId: null,
+    imageId: null,
+    containerId: null,
+    sourceHashSummary: null,
+    servedHashSummary: null,
+    apiStateOk: null,
+    watchdogOk: null,
+    skipReason: null,
+    error: null,
+    logPath: PROMOTION_LOG_FILE,
+    recovery: [],
+    diagnostics: null
+  };
+}
+
+function writePromotionStatus(status = promotionStatus, statusFile = PROMOTION_STATUS_FILE) {
+  if (!status) return null;
+  const dir = path.dirname(statusFile);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = path.join(dir, `.promotion-status.${process.pid}.tmp`);
+  fs.writeFileSync(tmp, `${JSON.stringify(status, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(tmp, statusFile);
+  return status;
+}
+
+function updatePromotionStatus(patch, statusFile = PROMOTION_STATUS_FILE) {
+  if (!promotionStatus) return;
+  Object.assign(promotionStatus, patch);
+  writePromotionStatus(promotionStatus, statusFile);
+}
+
+function teeConsoleToLog(logFile = PROMOTION_LOG_FILE) {
+  fs.mkdirSync(path.dirname(logFile), { recursive: true });
+  const tee = (original) => (...args) => {
+    try {
+      const line = args
+        .map((a) => (typeof a === 'string' ? a : JSON.stringify(a)))
+        .join(' ');
+      fs.appendFileSync(logFile, `${line}\n`);
+    } catch { /* logging must never break the run */ }
+    original(...args);
+  };
+  console.log = tee(console.log);
+  console.error = tee(console.error);
+}
+
+function startPromotionRun(statusFile = PROMOTION_STATUS_FILE, logFile = PROMOTION_LOG_FILE) {
+  promotionStatus = defaultPromotionStatus(crypto.randomUUID(), new Date().toISOString());
+  teeConsoleToLog(logFile);
+  writePromotionStatus(promotionStatus, statusFile);
+
+  const writeSignalStatus = (signal, code) => {
+    updatePromotionStatus(
+      {
+        result: 'failed',
+        error: `terminated by signal ${signal}`,
+        finishedAt: new Date().toISOString()
+      },
+      statusFile
+    );
+    process.exit(code);
+  };
+  process.once('SIGINT', () => writeSignalStatus('SIGINT', 130));
+  process.once('SIGTERM', () => writeSignalStatus('SIGTERM', 143));
+  return promotionStatus;
+}
+
+function finishPromotionRun(statusFile = PROMOTION_STATUS_FILE) {
+  if (!promotionStatus || promotionStatus.result !== 'running') return;
+  updatePromotionStatus(
+    {
+      result: process.exitCode ? 'failed' : 'success',
+      finishedAt: new Date().toISOString()
+    },
+    statusFile
   );
 }
 
-function removeRestartContinueMarker() {
-  try { fs.unlinkSync(RESTART_CONTINUE_FILE); } catch { /* no marker */ }
+// ---------------------------------------------------------------------------
+// Source manifest and evidence check
+// ---------------------------------------------------------------------------
+
+function sha256Buffer(buf) {
+  return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
-function planNextTask(project) {
-  const plan = planLib.readPlan(project.path);
-  return plan.ok && plan.next ? plan.next.text : null;
+function collectManifestFiles(repoRoot) {
+  const entries = [];
+  const walk = (dir) => {
+    let files = [];
+    try { files = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of files) {
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(abs);
+      else if (entry.isFile()) entries.push(abs);
+    }
+  };
+  for (const rel of SOURCE_MANIFEST_DIRS) {
+    const abs = path.join(repoRoot, rel);
+    if (fs.existsSync(abs)) walk(abs);
+  }
+  for (const rel of SOURCE_MANIFEST_FILES) {
+    const abs = path.join(repoRoot, rel);
+    if (fs.existsSync(abs)) entries.push(abs);
+  }
+  return entries;
 }
 
-function collectStaleIntents(projects) {
-  const stale = [];
-  for (const project of Array.isArray(projects) ? projects : []) {
-    if (!project.autoResumePending || !project.id || !project.path) continue;
-    const checked = autoResume.readIntent({ id: project.id, path: project.path });
-    if (!checked.ok) continue;
-    const nextTask = planNextTask(project);
-    if (nextTask && checked.intent.currentTask !== nextTask) {
-      stale.push({ project, intent: checked.intent, nextTask });
+function computeSourceManifest(repoRoot = REPO_ROOT) {
+  const absFiles = collectManifestFiles(repoRoot);
+  const relFiles = absFiles
+    .map((abs) => ({
+      rel: path.relative(repoRoot, abs).split(path.sep).join('/'),
+      abs
+    }))
+    .sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+  const files = {};
+  const combined = crypto.createHash('sha256');
+  for (const { rel, abs } of relFiles) {
+    const hash = sha256Buffer(fs.readFileSync(abs));
+    files[rel] = hash;
+    combined.update(`${rel} ${hash}\n`);
+  }
+  return { fileCount: relFiles.length, combinedHash: combined.digest('hex'), files };
+}
+
+function isContainerComparablePath(rel) {
+  return CONTAINER_COMPARABLE_PATTERN.test(rel) || rel === 'package.json';
+}
+
+// Root-owned scripts in the container need `-u 0` to be readable; one exec
+// hashes every manifest path so the evidence check stays bounded.
+function readContainerHashes(relPaths) {
+  const paths = (relPaths || []).filter((rel) => isContainerComparablePath(rel));
+  if (paths.length === 0) return { ok: true, hashes: {} };
+  const script = `cd /app && sha256sum ${paths.map((p) => `'${p}'`).join(' ')} 2>/dev/null`;
+  const result = spawnSync(
+    'docker',
+    ['exec', '-u', '0', 'looparr', 'sh', '-c', script],
+    { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30000 }
+  );
+  if (result.error) {
+    return { ok: false, hashes: {}, error: result.error.message };
+  }
+  const hashes = {};
+  for (const line of String(result.stdout || '').split('\n')) {
+    const m = line.match(/^([0-9a-f]{64})\s+\*?(.+)$/);
+    if (m) hashes[m[2]] = m[1];
+  }
+  // sha256sum exits nonzero when any listed file is missing but still hashes
+  // the rest; only an empty result means the container filesystem is unreadable.
+  if (result.status !== 0 && Object.keys(hashes).length === 0) {
+    return { ok: false, hashes: {}, error: `exit ${result.status}` };
+  }
+  return { ok: true, hashes };
+}
+
+async function readServedHashes(baseUrl = BASE_URL, fetchImpl = fetch, repoRoot = REPO_ROOT) {
+  const hashes = {};
+  for (const [urlPath, localRel] of SERVED_ASSETS) {
+    const localFile = path.join(repoRoot, localRel);
+    if (!fs.existsSync(localFile)) continue;
+    try {
+      const res = await fetchImpl(`${baseUrl}${urlPath}`);
+      if (!res.ok) return { ok: false, hashes, failedPath: urlPath };
+      hashes[urlPath] = { localRel, hash: sha256Buffer(Buffer.from(await res.arrayBuffer())) };
+    } catch (error) {
+      return { ok: false, hashes, failedPath: urlPath, error: error.message };
     }
   }
-  return stale;
+  return { ok: true, hashes };
 }
 
-function clearStaleIntents(stale) {
-  if (stale.length === 0) return false;
-  for (const item of stale) {
-    console.log(`[looparr] Stale resume intent for ${item.project.id}; clearing it.`);
-    autoResume.clearIntent(item.project);
-  }
-  return true;
+function inspectLooparrDetails() {
+  const result = spawnSync(
+    'docker',
+    ['inspect', 'looparr', '--format', '{{.Id}}\t{{.Image}}\t{{.State.Status}}\t{{.State.Health.Status}}'],
+    { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000 }
+  );
+  if (result.error || result.status !== 0) return null;
+  const [containerId, imageId, state, health] = String(result.stdout || '').trim().split('\t');
+  if (!containerId || !state) return null;
+  return { containerId, imageId: imageId || null, state, health: health || null };
 }
 
-function dockerStatus() {
-  try {
-    return execSync('docker compose ps looparr', {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore']
-    });
-  } catch {
-    return '';
+function evaluatePromotionEvidence(evidence) {
+  const failures = [];
+  if (!evidence) return { ok: false, failures: ['evidence-missing'] };
+  const container = evidence.container;
+  if (!container || container.state !== 'running' || container.health !== 'healthy') {
+    failures.push('container-not-running-healthy');
   }
+  const apiState = evidence.apiState;
+  if (
+    !apiState ||
+    typeof apiState !== 'object' ||
+    !('projects' in apiState) ||
+    !('settings' in apiState)
+  ) {
+    failures.push('api-state-invalid');
+  }
+  if (!evidence.containerHashReadOk) {
+    failures.push('container-hashes-unreadable');
+  } else {
+    for (const [rel, hash] of Object.entries(evidence.manifest?.files || {})) {
+      if (!isContainerComparablePath(rel)) continue;
+      const containerHash = evidence.containerHashes?.[rel];
+      if (containerHash === undefined) failures.push(`container-missing:${rel}`);
+      else if (containerHash !== hash) failures.push(`container-hash-mismatch:${rel}`);
+    }
+  }
+  const served = evidence.served;
+  if (!served || !served.ok) failures.push('served-assets-unavailable');
+  else {
+    for (const [urlPath, info] of Object.entries(served.hashes || {})) {
+      const localHash = evidence.manifest?.files?.[info.localRel];
+      if (!localHash || localHash !== info.hash) failures.push(`served-hash-mismatch:${urlPath}`);
+    }
+  }
+  return { ok: failures.length === 0, failures };
 }
+
+async function gatherPromotionEvidence(manifest, deps = {}) {
+  const getStateFn = deps.getState || getState;
+  const fetchImpl = deps.fetchImpl || fetch;
+  const baseUrl = deps.baseUrl || BASE_URL;
+  const container = deps.inspect ? deps.inspect() : inspectLooparrDetails();
+  let apiState = null;
+  try { apiState = await getStateFn(); } catch { apiState = null; }
+  const containerHashes = deps.readContainerHashes
+    ? deps.readContainerHashes(Object.keys(manifest.files))
+    : readContainerHashes(Object.keys(manifest.files));
+  const served = await readServedHashes(baseUrl, fetchImpl, deps.repoRoot || REPO_ROOT);
+  return {
+    manifest,
+    container,
+    containerHashes: containerHashes.hashes,
+    containerHashReadOk: containerHashes.ok,
+    served,
+    apiState
+  };
+}
+
+function servedHashSummary(evidence) {
+  if (!evidence?.served?.ok) return null;
+  const entries = Object.entries(evidence.served.hashes || {});
+  if (entries.length === 0) return null;
+  const combined = crypto.createHash('sha256');
+  for (const [urlPath, info] of entries) combined.update(`${urlPath} ${info.hash}\n`);
+  return { fileCount: entries.length, combinedHash: combined.digest('hex') };
+}
+
+// ---------------------------------------------------------------------------
+// Compose execution (bounded), diagnostics, recovery
+// ---------------------------------------------------------------------------
 
 const SYSTEMD_UNIT = 'looparr-promote';
 const SYSTEMD_PROBE_UNIT = 'looparr-promote-probe';
@@ -172,6 +429,23 @@ function logPromotionExecutionPath(executor) {
   console.log(`[looparr] Promotion execution path: ${executor}`);
 }
 
+function stopPromoteUnit() {
+  // Best effort: the transient unit must not keep composing after a timeout.
+  spawnSync('systemctl', ['--user', 'stop', `${SYSTEMD_UNIT}.service`], {
+    cwd: REPO_ROOT,
+    stdio: 'ignore'
+  });
+}
+
+function killDetachedComposeChildren() {
+  // The detached wrapper ignores TERM and may be SIGKILLed by the timeout;
+  // make sure no orphaned compose process keeps rebuilding looparr.
+  spawnSync('pkill', ['-KILL', '-f', 'docker compose (build|up)( -d)? looparr'], {
+    cwd: REPO_ROOT,
+    stdio: 'ignore'
+  });
+}
+
 // Run the compose rebuild/recreate outside the requesting agent cgroup when a
 // user systemd manager is available. The transient unit survives agent-session
 // SIGKILL/cgroup cleanup between container creation and start. When systemd-run
@@ -180,17 +454,38 @@ function logPromotionExecutionPath(executor) {
 function runDetachedDockerCommand() {
   const executor = systemdRunAvailable() ? 'systemd-run' : 'detached-spawn';
   logPromotionExecutionPath(executor);
+  updatePromotionStatus({
+    executor,
+    unit: executor === 'systemd-run' ? SYSTEMD_UNIT : null
+  });
 
+  const composeTimeoutMs = Math.max(1, COMPOSE_TIMEOUT_SECONDS) * 1000;
   const result = executor === 'systemd-run'
     ? spawnSync('systemd-run', buildSystemdRunArgs(), {
       cwd: REPO_ROOT,
-      stdio: 'inherit'
+      stdio: 'inherit',
+      timeout: composeTimeoutMs,
+      killSignal: 'SIGKILL'
     })
     : spawnSync('bash', ['-c', DETACHED_WRAPPER], {
       cwd: REPO_ROOT,
       stdio: 'inherit',
-      detached: true
+      detached: true,
+      timeout: composeTimeoutMs,
+      killSignal: 'SIGKILL'
     });
+
+  const timedOut = result.error?.code === 'ETIMEDOUT' || (!result.error && result.status === null && result.signal === 'SIGKILL');
+  if (timedOut) {
+    if (executor === 'systemd-run') stopPromoteUnit();
+    else killDetachedComposeChildren();
+    const wrapped = new Error(
+      `Docker rebuild/recreate timed out after ${COMPOSE_TIMEOUT_SECONDS}s (executor: ${executor}).`
+    );
+    wrapped.timedOut = true;
+    wrapped.status = null;
+    throw wrapped;
+  }
 
   if (result.error) {
     const wrapped = new Error(`Docker command failed (${executor}): ${result.error.message}`);
@@ -202,6 +497,54 @@ function runDetachedDockerCommand() {
     wrapped.status = result.status ?? null;
     throw wrapped;
   }
+}
+
+function dockerStatus() {
+  try {
+    return execSync('docker compose ps looparr', {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+  } catch {
+    return '';
+  }
+}
+
+function runDockerInspectFull() {
+  const result = spawnSync('docker', ['inspect', 'looparr'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: 15000
+  });
+  const out = String(result.stdout || '');
+  return out.slice(0, DIAGNOSTICS_MAX_CHARS) || `exit ${result.status ?? 'unknown'}`;
+}
+
+function runDockerJournal(sinceIso) {
+  const result = spawnSync(
+    'journalctl',
+    ['-u', 'docker.service', '--since', sinceIso, '--no-pager', '-n', '200'],
+    { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 20000 }
+  );
+  const out = String(result.stdout || '');
+  return out.slice(0, DIAGNOSTICS_MAX_CHARS) || `exit ${result.status ?? 'unknown'}`;
+}
+
+// Bounded failure evidence for the promotion log/status: compose ps, container
+// inspect, and the docker daemon journal since the run started.
+function collectFailureDiagnostics(phase, options = {}) {
+  const startedAt = options.startedAt || promotionStatus?.startedAt || new Date().toISOString();
+  const composePs = options.dockerPs ? options.dockerPs() : dockerStatus();
+  const inspect = options.inspect ? options.inspect() : runDockerInspectFull();
+  const journal = options.journal ? options.journal(startedAt) : runDockerJournal(startedAt);
+  const diagnostics = { phase, composePs, inspect, journal };
+  console.error(`[looparr] Failure diagnostics (phase: ${phase}):`);
+  console.error(`[looparr] docker compose ps looparr:\n${composePs || '(unavailable)'}`);
+  console.error(`[looparr] docker inspect looparr (bounded):\n${inspect}`);
+  console.error(`[looparr] journalctl -u docker.service excerpt (bounded):\n${journal}`);
+  return diagnostics;
 }
 
 function isRunningHealthy(status) {
@@ -290,6 +633,118 @@ async function recoverCreatedContainer(phase) {
   return false;
 }
 
+function runWatchdogCheck() {
+  // Read-only check: exit 0 when a looparr container is running. Never mutates
+  // and never takes the restart lock.
+  const result = spawnSync('bash', [WATCHDOG_SCRIPT, 'check'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 60000
+  });
+  const ok = !result.error && result.status === 0;
+  if (!ok) {
+    console.error(`[looparr] Watchdog check reported down (exit ${result.status ?? 'unknown'}).`);
+  } else {
+    console.log('[looparr] Watchdog check: looparr container is running.');
+  }
+  return { ok, status: result.status ?? null };
+}
+
+// One-shot recovery: existing created/exited/dead recovery first; if the
+// container is still not healthy, one pass of the watchdog fix. The restart
+// lock is already held here, and the watchdog honours LOOPARR_RESTART_LOCK_HELD.
+async function runWatchdogFixRecovery(phase) {
+  console.log(`[looparr] ${phase}: running one-shot watchdog recovery.`);
+  const fix = spawnSync('bash', [WATCHDOG_SCRIPT, 'fix'], {
+    cwd: REPO_ROOT,
+    stdio: 'inherit',
+    timeout: 300000,
+    env: { ...process.env, LOOPARR_RESTART_LOCK_HELD: '1' }
+  });
+  const fixOk = !fix.error && fix.status === 0;
+  const attempts = [{
+    attempt: 'watchdog-fix',
+    phase,
+    ok: fixOk,
+    status: fix.error ? null : fix.status ?? 0,
+    error: fix.error ? fix.error.message : null
+  }];
+  let healthy = false;
+  let apiStateOk = false;
+  if (fixOk) {
+    healthy = await recoverCreatedContainer(`${phase}-watchdog`);
+    attempts.push({ attempt: 'recoverCreatedContainer', phase: `${phase}-watchdog`, ok: healthy });
+    try {
+      await getState();
+      apiStateOk = true;
+    } catch { apiStateOk = false; }
+  }
+  return { healthy, apiStateOk, attempts };
+}
+
+async function runPostComposeRecovery(phase) {
+  const attempts = [];
+  const healthy = await recoverCreatedContainer(phase);
+  attempts.push({ attempt: 'recoverCreatedContainer', phase, ok: healthy });
+  let apiStateOk = false;
+  try {
+    await getState();
+    apiStateOk = true;
+  } catch { apiStateOk = false; }
+  if (!healthy || !apiStateOk) {
+    const fix = await runWatchdogFixRecovery(phase);
+    attempts.push(...fix.attempts);
+    return { healthy: fix.healthy, apiStateOk: fix.apiStateOk, attempts };
+  }
+  return { healthy, apiStateOk, attempts };
+}
+
+// ---------------------------------------------------------------------------
+// Main flow
+// ---------------------------------------------------------------------------
+
+function writeRestartContinueMarker() {
+  fs.mkdirSync(path.dirname(RESTART_CONTINUE_FILE), { recursive: true });
+  fs.writeFileSync(
+    RESTART_CONTINUE_FILE,
+    `${JSON.stringify({ message: RESTART_CONTINUE_MESSAGE, writtenAt: new Date().toISOString() }, null, 2)}\n`,
+    'utf8'
+  );
+}
+
+function removeRestartContinueMarker() {
+  try { fs.unlinkSync(RESTART_CONTINUE_FILE); } catch { /* no marker */ }
+}
+
+function planNextTask(project) {
+  const plan = planLib.readPlan(project.path);
+  return plan.ok && plan.next ? plan.next.text : null;
+}
+
+function collectStaleIntents(projects) {
+  const stale = [];
+  for (const project of Array.isArray(projects) ? projects : []) {
+    if (!project.autoResumePending || !project.id || !project.path) continue;
+    const checked = autoResume.readIntent({ id: project.id, path: project.path });
+    if (!checked.ok) continue;
+    const nextTask = planNextTask(project);
+    if (nextTask && checked.intent.currentTask !== nextTask) {
+      stale.push({ project, intent: checked.intent, nextTask });
+    }
+  }
+  return stale;
+}
+
+function clearStaleIntents(stale) {
+  if (stale.length === 0) return false;
+  for (const item of stale) {
+    console.log(`[looparr] Stale resume intent for ${item.project.id}; clearing it.`);
+    autoResume.clearIntent(item.project);
+  }
+  return true;
+}
+
 async function main() {
   console.log('[looparr] Checking current Looparr instance');
   await recoverCreatedContainer('preflight');
@@ -311,6 +766,12 @@ async function main() {
     console.error(`[looparr] Preflight failed: ${message}`);
     console.error('[looparr] No rebuild started. Start Looparr and retry.');
     reportError('PREFLIGHT_FAILED', message);
+    updatePromotionStatus({
+      phase: 'preflight',
+      result: 'failed',
+      error: message,
+      finishedAt: new Date().toISOString()
+    });
     process.exitCode = 1;
     return;
   }
@@ -324,35 +785,128 @@ async function main() {
     console.error(`[looparr] Stale intent check failed: ${error.message}`);
     console.error('[looparr] No rebuild started.');
     reportError('STALE_INTENT_CHECK_FAILED', error.message);
+    updatePromotionStatus({
+      phase: 'stale-intent-check',
+      result: 'failed',
+      error: error.message,
+      finishedAt: new Date().toISOString()
+    });
     process.exitCode = 1;
+    return;
+  }
+
+  // Pre-promote evidence check: skip the rebuild when the running container
+  // already serves the current source. Never fails the dry-run path.
+  updatePromotionStatus({ phase: 'evidence-check' });
+  const manifest = computeSourceManifest();
+  let evidence = null;
+  let evidenceError = null;
+  try {
+    evidence = await gatherPromotionEvidence(manifest);
+  } catch (error) {
+    evidenceError = error;
+  }
+  const verdict = evaluatePromotionEvidence(evidence);
+  updatePromotionStatus({
+    phase: 'evidence-check',
+    sourceHashSummary: { fileCount: manifest.fileCount, combinedHash: manifest.combinedHash },
+    servedHashSummary: servedHashSummary(evidence),
+    apiStateOk: Boolean(evidence?.apiState),
+    imageId: evidence?.container?.imageId ?? null,
+    containerId: evidence?.container?.containerId ?? null
+  });
+  if (evidenceError) {
+    console.error(`[looparr] Evidence check failed: ${evidenceError.message}`);
+    reportEvent('promotion-evidence', { ok: false, error: evidenceError.message });
+  } else {
+    reportEvent('promotion-evidence', { ok: verdict.ok, failures: verdict.failures });
+    console.log(
+      verdict.ok
+        ? '[looparr] Evidence check: current source is already deployed and healthy.'
+        : `[looparr] Evidence check: rebuild needed (${verdict.failures.slice(0, 5).join(', ')}).`
+    );
+  }
+
+  if (!DRY_RUN && verdict.ok && !FORCE) {
+    console.log('[looparr] Skipping rebuild: current source already deployed (use --force to rebuild).');
+    updatePromotionStatus({
+      phase: 'skip-evidence',
+      result: 'skipped',
+      skipReason: 'skipped-already-deployed',
+      finishedAt: new Date().toISOString()
+    });
     return;
   }
 
   console.log(`[looparr] Docker command: ${DOCKER_COMMAND}`);
   if (DRY_RUN) {
     console.log('[looparr] Dry run: Docker was not called.');
+    updatePromotionStatus({
+      phase: 'dry-run',
+      finishedAt: new Date().toISOString()
+    });
     return;
   }
 
   writeRestartContinueMarker();
   console.log('[looparr] Rebuilding and recreating looparr');
+  updatePromotionStatus({ phase: 'compose' });
   try {
     runDetachedDockerCommand();
   } catch (error) {
     removeRestartContinueMarker();
-    console.error(`[looparr] Docker command failed (${error.status ?? 'unknown'}).`);
-    reportError('DOCKER_RESTART_FAILED', 'docker rebuild failed', {
-      status: error.status ?? null
+    const timedOut = Boolean(error.timedOut);
+    console.error(`[looparr] Docker command failed (${error.status ?? 'unknown'}): ${error.message}`);
+    if (timedOut) stopPromoteUnit();
+    const diagnostics = collectFailureDiagnostics('compose');
+    const recovery = await runPostComposeRecovery('post-compose');
+    updatePromotionStatus({
+      phase: 'compose',
+      result: 'failed',
+      error: error.message,
+      diagnostics,
+      recovery: recovery.attempts,
+      finishedAt: new Date().toISOString()
     });
+    reportError(
+      timedOut ? 'DOCKER_RESTART_TIMEOUT' : 'DOCKER_RESTART_FAILED',
+      'docker rebuild failed',
+      { status: error.status ?? null, phase: 'compose' }
+    );
     process.exitCode = 1;
     return;
   }
 
-  if (!(await recoverCreatedContainer('post-compose'))) {
+  const postComposeAttempts = [];
+  const postComposeHealthy = await recoverCreatedContainer('post-compose');
+  postComposeAttempts.push({
+    attempt: 'recoverCreatedContainer',
+    phase: 'post-compose',
+    ok: postComposeHealthy
+  });
+  let postComposeApiOk = false;
+  try {
+    await getState();
+    postComposeApiOk = true;
+  } catch { postComposeApiOk = false; }
+  let recovered = { healthy: postComposeHealthy, apiStateOk: postComposeApiOk };
+  if (!postComposeHealthy || !postComposeApiOk) {
+    recovered = await runWatchdogFixRecovery('post-compose');
+    postComposeAttempts.push(...recovered.attempts);
+  }
+  updatePromotionStatus({ recovery: postComposeAttempts });
+  if (!recovered.healthy || !recovered.apiStateOk) {
     removeRestartContinueMarker();
+    collectFailureDiagnostics('post-compose');
     console.error('[looparr] Container recovery failed after rebuild.');
     reportError('CONTAINER_RECOVERY_FAILED', 'could not start looparr after compose', {
       phase: 'post-compose'
+    });
+    updatePromotionStatus({
+      phase: 'post-compose',
+      result: 'failed',
+      error: 'container recovery failed after compose',
+      finishedAt: new Date().toISOString()
     });
     process.exitCode = 1;
     return;
@@ -363,12 +917,36 @@ async function main() {
     ready = await waitForRestart('post-restart recovery');
   }
   if (!ready) {
+    const fix = await runWatchdogFixRecovery('post-restart');
+    updatePromotionStatus({ recovery: fix.attempts });
+    if (fix.healthy && fix.apiStateOk) {
+      ready = await waitForRestart('post-restart watchdog');
+    }
+  }
+  if (!ready) {
+    removeRestartContinueMarker();
+    const diagnostics = collectFailureDiagnostics('post-restart');
     console.error('[looparr] Restart check timed out. Check the container manually.');
     reportError('RESTART_TIMEOUT', 'restart check timed out', { phase: 'post-restart' });
+    updatePromotionStatus({
+      phase: 'post-restart',
+      result: 'failed',
+      error: 'restart check timed out',
+      diagnostics,
+      finishedAt: new Date().toISOString()
+    });
     process.exitCode = 1;
     return;
   }
   console.log('[looparr] API and container health check passed.');
+
+  const details = inspectLooparrDetails();
+  if (details) {
+    updatePromotionStatus({ imageId: details.imageId, containerId: details.containerId });
+  }
+
+  const watchdog = runWatchdogCheck();
+  updatePromotionStatus({ watchdogOk: watchdog.ok });
 
   try {
     const executorUrl = process.env.LOOPARR_EXECUTOR_URL || 'http://127.0.0.1:4187';
@@ -407,6 +985,12 @@ async function main() {
   } catch (error) {
     console.error(`[looparr] Post-restart intent check failed: ${error.message}`);
     reportError('POST_RESTART_INTENT_CHECK_FAILED', error.message);
+    updatePromotionStatus({
+      phase: 'post-restart-intent-check',
+      result: 'failed',
+      error: error.message,
+      finishedAt: new Date().toISOString()
+    });
     process.exitCode = 1;
     return;
   }
@@ -416,28 +1000,54 @@ async function main() {
     reportEvent('stale-intent-cleared', { count: staleAfterRestart.length, phase: 'post-restart' });
   }
 
-  console.log('[looparr] Complete the served-asset and container-content checks from plan.md.');
+  updatePromotionStatus({ phase: 'done', finishedAt: new Date().toISOString() });
 }
 
 if (require.main === module) {
   if (!runLockWrapper()) {
-    main().catch((error) => {
-      console.error(`[looparr] ${error.message}`);
-      reportError('UNEXPECTED_ERROR', error.message);
-      process.exitCode = 1;
-    });
+    startPromotionRun();
+    main()
+      .then(() => finishPromotionRun())
+      .catch((error) => {
+        console.error(`[looparr] ${error.message}`);
+        reportError('UNEXPECTED_ERROR', error.message);
+        updatePromotionStatus({
+          result: 'failed',
+          error: error.message,
+          finishedAt: new Date().toISOString()
+        });
+        process.exitCode = 1;
+      });
   }
 }
 
 module.exports = {
+  COMPOSE_TIMEOUT_SECONDS,
   CONTAINER_START_TIMEOUT_SECONDS,
   DOCKER_COMMAND,
+  LOCK_TIMEOUT_SECONDS,
+  PROMOTION_LOG_FILE,
+  PROMOTION_STATUS_FILE,
+  SERVED_ASSETS,
   SYSTEMD_UNIT,
   buildSystemdRunArgs,
+  collectFailureDiagnostics,
+  computeSourceManifest,
+  evaluatePromotionEvidence,
+  finishPromotionRun,
+  gatherPromotionEvidence,
+  inspectLooparrDetails,
   isRunningHealthy,
   logPromotionExecutionPath,
+  readContainerHashes,
+  readServedHashes,
   recoverCreatedContainer,
   resetSystemdRunProbeCache,
   runDetachedDockerCommand,
-  systemdRunAvailable
+  runWatchdogCheck,
+  servedHashSummary,
+  startPromotionRun,
+  systemdRunAvailable,
+  updatePromotionStatus,
+  writePromotionStatus
 };

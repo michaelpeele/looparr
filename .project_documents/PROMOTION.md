@@ -117,3 +117,119 @@ onto `master` by hand. Both paths require the verified sequence above.
   `/app.js`, `/favicon.svg` matched local `public/`, `/api/state` returned
   `projects` and `settings`, `npm run watchdog:check` clean. Nonfatal: the
   active-run postcheck fetch failed and did not fail the restart.
+- 2026-11-26 — Permission-directive fix and forced image recreate. Added the
+  `Permissions:` rule to `AGENTS.md`; normalized build-context modes to `0644`
+  for sources and `0755` for shebang scripts; changed
+  `scripts/test-selfheal-status.js` executor port from `4197` to `5497` to avoid
+  the standby OpenCode range `4190-4199`. `npm test` green
+  (`/tmp/opencode/looparr-npm-test-final.log`), `git diff --check` clean,
+  dry-run clean. `npm run restart:looparr` promoted through `systemd-run --user
+  --unit=looparr-promote --wait --collect`; its rebuild did not recreate the
+  container, so a forced recreate used the same transient unit
+  (`looparr-promote.service`, invocation `50736d3be76c498abf6eaa2ad684aaf4`,
+  success, 5.337s). Container `9ac09bb3ab7a` healthy, restarts `0`, on image
+  `sha256:be047f635d8c`; `/app/src/paseo-transport.js` is `0644 root` and
+  readable by UID `1000`. All 84 tracked `src`/`public`/`scripts` hashes matched
+  local (`bad=0`); served `/`, `/styles.css`, `/app.js`, `/favicon.svg` matched
+  local `public/` (`bad=0`); `/api/state` returned `projects`, `settings`, and
+  default models; `npm run watchdog:check` clean. Nonfatal: the first helper
+  restart's active-run postcheck fetch failed, matching documented precedent.
+- 2026-11-26 — Promotion with healer merge, reseed-test correction, opt-in
+  paseo transport, and restart-hang incident. Committed `33e474d`, merged
+  `d00268e` via `04aeacc`, committed `f7c147e`. `npm test` green twice;
+  `git diff --check` clean; dry-run clean. Two `npm run restart:looparr`
+  attempts hung in `docker compose up -d looparr` (`futex_wait_queue`, 0% CPU,
+  15m14s then 8m+); both units stopped via
+  `systemctl --user stop looparr-promote.service`; no raw docker commands run
+  by agent. `npm run watchdog:fix -- fix` required explicit arg; after one
+  container-removal race, container `2087ee86b7f8` running. Final `/api/state`
+  valid; served `/app.js` and `/styles.css` hashes matched local;
+  `npm run watchdog:check` steady. Container source hash check skipped under
+  no-raw-docker constraint. Mitigation plan:
+  `.project_documents/PLAN-restart-hang-mitigation.md`, referenced in `plan.md`.
+- 2026-11-26 — Promotion with standby plan-watch guard. Standby host engine no
+  longer reconciles external plan edits and clears the primary handoff; focused
+  regression test added. `npm test` green, `git diff --check` clean, dry-run
+  clean. `npm run restart:looparr` used `systemd-run` unit
+  `looparr-promote.service` (invocation `b6864d974761467b98a5d99198452057`)
+  and exited 0; API/container health passed. Active-run postcheck fetch failed
+  (documented nonfatal). Container `5cdc8d7f6d9e` healthy on image
+  `looparr:latest`, image id
+  `sha256:ea4af36a05d8353439c14e23b3c8e920204ddbfa27f1df54d79c794c4755b81b`.
+  Normalized container source hash diff clean; served hashes matched local for
+  `/`, `/styles.css`, `/app.js`, and `/favicon.svg`. `/api/state` valid;
+  `npm run watchdog:check` steady.
+- 2026-11-26 — PLAN-02 verify-and-close promotion. Focused
+  `node scripts/test-paseo-transport.js`, `npm test`, `node --check`, and
+  `git diff --check` clean. Dry-run clean. `npm run restart:looparr` used
+  `systemd-run` unit `looparr-promote.service` (invocation
+  `1ed8d4ddef034416bdebf20b4f414ee4`, success, 18.163s); API/container health
+  passed and active-run postcheck returned `1`. Container `607bbffcd7a3`
+  healthy on image `looparr:latest`, image id
+  `sha256:4bca31e985e0f7d7e519b34d0a05da10cc1a8fadfbdf0d8d596aeee586ce4a9b`.
+  All 87 `src`/`public`/`scripts` hashes matched local; served `/`,
+  `/styles.css`, `/app.js`, and `/favicon.svg` matched local `public/`;
+  served `/app.js` contained 7 `paseoTransport` references. `/api/state` valid;
+  `npm run watchdog:check` steady. Self-heal daemon `active`, unit
+  `active`/`enabled`, host executor health OK, no preview container, one
+  worktree.
+## Idempotent, observable promotion (promotion-status.json)
+
+`npm run restart:looparr` is idempotent. Every run writes
+`.looparr/promotion-status.json` (atomic temp+rename, mode `0600`) and tees all
+parent console output to `.looparr/logs/promotion-latest.log` (recorded as
+`logPath`). Status starts as `result: "running"` and always ends terminal:
+`success`, `skipped`, or `failed` — including timeouts and signals. Key fields:
+`runId`, `startedAt`/`finishedAt`, `phase`, `result`, `executor`,
+`unit`/`invocationId`, `imageId`, `containerId`, `sourceHashSummary`,
+`servedHashSummary`, `apiStateOk`, `watchdogOk`, `skipReason`, `error`,
+`recovery` (attempt log), `diagnostics` (failure evidence).
+
+### Pre-promote evidence check (skip-on-evidence)
+
+Before any dry-run/build, the launcher computes a deterministic sha256 manifest
+over `src/`, `public/`, `scripts/`, `package.json`, `docker-compose.yml`,
+`Dockerfile`, `.dockerignore` (sorted paths, per-file hash, combined hash). It
+then checks the running container:
+
+1. `docker inspect looparr`: state `running` and health `healthy`.
+2. `/api/state` returns JSON with `projects` and `settings`.
+3. Container file hashes under `/app/<relpath>` match local for every
+   comparable manifest file (`src/`, `public/`, `scripts/`, `package.json`;
+   read root-owned scripts with `docker exec -u 0`). Build-context-only files
+   (`Dockerfile`, `.dockerignore`, `docker-compose.yml`) are not in the image
+   and are not container-compared.
+4. Served `/`, `/app.js`, `/styles.css`, `/favicon.svg` hashes match local
+   `public/` files.
+
+When every gate passes, the run skips rebuild/recreate, records
+`result: "skipped"`, `skipReason: "skipped-already-deployed"`, and exits 0.
+Deliberate rebuilds bypass the skip with `npm run restart:looparr -- --force`
+or `LOOPARR_FORCE_PROMOTION=1`. A failed/incomplete evidence check never fails
+`--dry-run`; it logs the reason and continues to the dry-run exit-0 path.
+
+### Bounded compose phase and failure evidence
+
+Compose runs under the existing `looparr-promote` systemd path and restart
+lock, bounded by `LOOPARR_COMPOSE_TIMEOUT_SECONDS` (default `600`, shorter
+than the lock default `900`). On timeout the launcher stops the transient unit
+(`systemctl --user stop looparr-promote.service`, or kills the detached
+fallback's compose children) before recovery. On failure or timeout it
+captures into the status/log: `phase`, `logPath`,
+`docker compose ps looparr`, full `docker inspect looparr` (bounded), and a
+bounded `journalctl -u docker.service --since <start> --no-pager -n 200`
+excerpt. The restart lock is released by the existing EXIT/INT/TERM traps on
+timeout, signal, and failure.
+
+### Watchdog-aware recovery
+
+On up failure/timeout the launcher runs the existing
+created/exited/dead recovery (`recoverCreatedContainer`) once; if the container
+is still unhealthy it runs one one-shot `bash scripts/restart-watchdog.sh fix`
+(the restart lock is already held, so the fix does not re-lock), then rechecks
+container health and `/api/state`. Every attempt and result is recorded in
+`status.recovery`. `npm run watchdog:check` stays read-only and its result is
+recorded as `watchdogOk` at closeout.
+
+Focused tests: `npm run test:restart-looparr`
+(`scripts/test-restart-looparr.js`); also wired into `npm test`.
