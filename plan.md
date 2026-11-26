@@ -248,7 +248,7 @@ Why: Scriptable on iOS uses native image decoding. It cannot decode SVG (`image/
 - [x] Rasterize SVG and other supported source formats to PNG in the server; pass through or re-encode PNG without changing the source.
 - [x] Reuse the existing project/icon path containment checks before reading or rendering any icon.
 - [x] Update README and tests, then verify local and production per lines 3-11 before marking complete.
-- [ ] Fill the space of the selected runners/models on the project page bottom card so it is same width as project card and fills the area.
+- [x] Fill the space of the selected runners/models on the project page bottom card so it is same width as project card and fills the area.
 - [ ] Make watchdog recovery immediate: run `npm run watchdog:fix` after promotions or in the helper completion path, and shorten `looparr-watchdog.timer` so a `Created` container is started quickly. Keep `watchdog:check` read-only.
 - [ ] Verify, in case this is already done. Future session — healer fix prod visibility: make a reviewed healer fix visibly accounted for on prod. Current state: master `4f5e761`, manual cherry-pick of healer `2705d24`. Branch icon hidden because no fresh `data/selfheal/` status exists; read `.project_documents/PROMOTION.md` healer section, `src/selfheal-status.js`, `public/app.js`, `src/engine.js`. Implement a safe, human-gated record/command without hand-editing status files or pushing. Do not fake `healed`. Sandbox-first workflow; compact output; covering tests; `git diff --check`; commit current branch only; never push; stop after one round.
 - [ ] Make the project detail page project card look the same as main page. Move the terminal icon down detail page to project card

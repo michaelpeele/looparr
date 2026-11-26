@@ -641,8 +641,8 @@ input[type="number"] { max-width: 130px; }
 }
 
 .card-model { font-size: 11px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.card-model-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.card-model-row .card-model { flex: 1 1 auto; }
+.card-model-row { display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; }
+.card-model-row .card-model { flex: 1 1 auto; min-width: 0; white-space: normal; overflow-wrap: anywhere; overflow: visible; text-overflow: clip; }
 .drawer-model-row { margin-bottom: 8px; }
 .drawer-model-row .policy-summary { flex: 1 1 auto; min-width: 0; }
 .terminal-button { flex: 0 0 auto; width: 44px; height: 44px; min-width: 44px; min-height: 44px; padding: 0; }
