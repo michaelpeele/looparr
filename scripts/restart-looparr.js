@@ -20,7 +20,22 @@ const BASE_URL = (
   `http://127.0.0.1:${process.env.LOOPARR_LOCAL_PORT || '4188'}`
 ).replace(/\/$/, '');
 
-const DOCKER_COMMAND = 'docker compose build looparr && docker compose up -d looparr';
+// Compose runs as two distinct phases inside the same restart lock and
+// looparr-promote unit: a build phase bounded by COMPOSE_TIMEOUT_SECONDS, then
+// an up phase bounded by the shorter UP_TIMEOUT_SECONDS deadline. Splitting the
+// phases lets a hung `docker compose up -d looparr` fail fast (well under the
+// 900s lock window) instead of holding the lock for the full build timeout.
+const BUILD_COMMAND = 'docker compose build looparr';
+const UP_KILL_AFTER_SECONDS = 30;
+const UP_TIMEOUT_SECONDS = Number(
+  process.env.LOOPARR_UP_TIMEOUT_SECONDS || '300'
+);
+// Per-invocation compose logs live under .looparr/logs so a failed phase leaves
+// a durable, bounded tail on disk even when the transient unit's journal is
+// empty (the observed 2026-11-26 incident).
+const COMPOSE_LOG_DIR =
+  process.env.LOOPARR_COMPOSE_LOG_DIR ||
+  path.join(REPO_ROOT, '.looparr', 'logs');
 const RESTART_CONTINUE_FILE = (
   process.env.LOOPARR_RESTART_CONTINUE_FILE ||
   path.join(REPO_ROOT, '.looparr', 'restart-continue.json')
@@ -31,14 +46,27 @@ const CONTAINER_START_TIMEOUT_SECONDS = Number(
 );
 const HEALTHY_STATUS_PATTERN = /(?:\((?:health:\s*)?healthy\)|(?:\s|^)healthy(?:\s|$))/i;
 
-// Compose deadline must stay below the restart-lock timeout (default 900) so a
-// hung compose phase times out, releases the lock, and leaves a terminal status.
+// Build deadline must stay below the restart-lock timeout (default 900) so a
+// hung build phase times out, releases the lock, and leaves a terminal status.
 const COMPOSE_TIMEOUT_SECONDS = Number(
   process.env.LOOPARR_COMPOSE_TIMEOUT_SECONDS || '600'
 );
 const LOCK_TIMEOUT_SECONDS = Number(
   process.env.LOOPARR_RESTART_LOCK_TIMEOUT || '900'
 );
+
+// The up-only deadline wraps just `docker compose up -d looparr` in
+// `timeout --signal=TERM --kill-after=30s <deadline>s`. It must stay below
+// LOCK_TIMEOUT_SECONDS so a hung recreate cannot hold the lock for the full
+// window. The outer spawnSync cap for the up phase is the deadline plus the
+// kill-after grace and a small margin, so the inner `timeout` always fires
+// first and the outer cap is only a backstop.
+function upCommand(deadlineSeconds = UP_TIMEOUT_SECONDS) {
+  return `timeout --signal=TERM --kill-after=${UP_KILL_AFTER_SECONDS}s ${deadlineSeconds}s docker compose up -d looparr`;
+}
+function upPhaseTimeoutSeconds() {
+  return Math.max(1, UP_TIMEOUT_SECONDS) + UP_KILL_AFTER_SECONDS + 30;
+}
 
 const PROMOTION_STATUS_FILE =
   process.env.LOOPARR_PROMOTION_STATUS_FILE ||
@@ -124,6 +152,7 @@ function defaultPromotionStatus(runId, startedAt) {
     skipReason: null,
     error: null,
     logPath: PROMOTION_LOG_FILE,
+    upStartedAt: null,
     recovery: [],
     diagnostics: null
   };
@@ -372,8 +401,22 @@ function servedHashSummary(evidence) {
 
 const SYSTEMD_UNIT = 'looparr-promote';
 const SYSTEMD_PROBE_UNIT = 'looparr-promote-probe';
-const DETACHED_WRAPPER = `trap '' HUP INT TERM QUIT\n${DOCKER_COMMAND}`;
 let cachedSystemdRunAvailable;
+
+// The detached fallback ignores HUP/INT/TERM/QUIT around a single phase command
+// so the compose child survives a group-wide signal even if detachment is not
+// honoured on some platform. Each phase gets its own wrapper instance.
+function detachedWrapper(command) {
+  return `trap '' HUP INT TERM QUIT\n${command}`;
+}
+
+// Wrap a phase's compose command so its stdout+stderr are captured to a
+// per-invocation log under .looparr/logs and the phase exit code is preserved
+// through the pipe. `timeout` (used only for the up phase) returns 124/137 when
+// its deadline fires, which the parent treats as an up timeout.
+function buildPhaseCommand(innerCommand, logPath) {
+  return 'set -o pipefail; ' + innerCommand + ' 2>&1 | tee ' + JSON.stringify(logPath);
+}
 
 function systemdRunPath() {
   for (const dir of String(process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
@@ -407,7 +450,7 @@ function resetSystemdRunProbeCache() {
   cachedSystemdRunAvailable = undefined;
 }
 
-function buildSystemdRunArgs() {
+function buildSystemdRunArgs(command) {
   const args = [
     '--user',
     `--unit=${SYSTEMD_UNIT}`,
@@ -420,7 +463,7 @@ function buildSystemdRunArgs() {
     const value = process.env[key];
     if (value) args.push(`--setenv=${key}=${value}`);
   }
-  args.push('--', 'bash', '-c', DOCKER_COMMAND);
+  args.push('--', 'bash', '-c', command);
   return args;
 }
 
@@ -446,12 +489,73 @@ function killDetachedComposeChildren() {
   });
 }
 
-// Run the compose rebuild/recreate outside the requesting agent cgroup when a
-// user systemd manager is available. The transient unit survives agent-session
+// Run one compose phase (build or up) outside the requesting agent cgroup when
+// a user systemd manager is available. The transient unit survives agent-session
 // SIGKILL/cgroup cleanup between container creation and start. When systemd-run
-// is unavailable, fall back to the detached signal-ignoring bash wrapper.
-// The parent still waits on the child and runs the normal post-restart checks.
-function runDetachedDockerCommand() {
+// is unavailable, fall back to the detached signal-ignoring bash wrapper. The
+// parent still waits on the child and runs the normal post-restart checks.
+// Returns a structured result; never throws. The caller decides recovery.
+function runComposePhase({ executor, phase, innerCommand, timeoutSeconds, logPath }) {
+  const command = buildPhaseCommand(innerCommand, logPath);
+  const timeoutMs = Math.max(1, timeoutSeconds) * 1000;
+  console.log(`[looparr] compose ${phase}: deadline ${timeoutSeconds}s, log ${logPath}`);
+  const result = executor === 'systemd-run'
+    ? spawnSync('systemd-run', buildSystemdRunArgs(command), {
+      cwd: REPO_ROOT,
+      stdio: 'inherit',
+      timeout: timeoutMs,
+      killSignal: 'SIGKILL'
+    })
+    : spawnSync('bash', ['-c', detachedWrapper(command)], {
+      cwd: REPO_ROOT,
+      stdio: 'inherit',
+      detached: true,
+      timeout: timeoutMs,
+      killSignal: 'SIGKILL'
+    });
+
+  const spawnTimedOut = result.error?.code === 'ETIMEDOUT'
+    || (!result.error && result.status === null && result.signal === 'SIGKILL');
+  const exitStatus = result.error ? null : result.status ?? null;
+  // `timeout` exits 124 (TERM) or 137 (KILL) when the up deadline fires.
+  const innerTimedOut = exitStatus === 124 || exitStatus === 137;
+  const timedOut = spawnTimedOut || innerTimedOut;
+  if (timedOut) {
+    if (executor === 'systemd-run') stopPromoteUnit();
+    else killDetachedComposeChildren();
+  }
+  return {
+    ok: !result.error && result.status === 0,
+    timedOut,
+    status: exitStatus,
+    executor,
+    phase,
+    logPath,
+    command,
+    error: result.error ? result.error.message : null
+  };
+}
+
+function phaseError(result) {
+  const base = result.timedOut
+    ? `Docker ${result.phase} timed out after ${result.status === 124 || result.status === 137 ? UP_TIMEOUT_SECONDS : COMPOSE_TIMEOUT_SECONDS}s (executor: ${result.executor}).`
+    : `Docker ${result.phase} exited ${result.status ?? 'unknown'} (executor: ${result.executor}).`;
+  const wrapped = new Error(result.error ? `${base} ${result.error}` : base);
+  wrapped.phase = result.phase;
+  wrapped.status = result.status;
+  wrapped.timedOut = result.timedOut;
+  wrapped.executor = result.executor;
+  wrapped.startedAt = result.startedAt;
+  wrapped.logPath = result.logPath;
+  wrapped.command = result.command;
+  return wrapped;
+}
+
+// Run the compose rebuild (build phase) then recreate (up phase) as two
+// distinct, separately-bounded phases inside the same restart lock and
+// looparr-promote unit. Throws a phase-tagged error on the first failed phase
+// so the caller can run phase-specific recovery without losing the source phase.
+function runDetachedDockerCommand(options = {}) {
   const executor = systemdRunAvailable() ? 'systemd-run' : 'detached-spawn';
   logPromotionExecutionPath(executor);
   updatePromotionStatus({
@@ -459,44 +563,35 @@ function runDetachedDockerCommand() {
     unit: executor === 'systemd-run' ? SYSTEMD_UNIT : null
   });
 
-  const composeTimeoutMs = Math.max(1, COMPOSE_TIMEOUT_SECONDS) * 1000;
-  const result = executor === 'systemd-run'
-    ? spawnSync('systemd-run', buildSystemdRunArgs(), {
-      cwd: REPO_ROOT,
-      stdio: 'inherit',
-      timeout: composeTimeoutMs,
-      killSignal: 'SIGKILL'
-    })
-    : spawnSync('bash', ['-c', DETACHED_WRAPPER], {
-      cwd: REPO_ROOT,
-      stdio: 'inherit',
-      detached: true,
-      timeout: composeTimeoutMs,
-      killSignal: 'SIGKILL'
-    });
+  const runId = options.runId || promotionStatus?.runId || 'run';
+  const logsDir = options.logsDir || COMPOSE_LOG_DIR;
+  fs.mkdirSync(logsDir, { recursive: true });
+  const buildLog = path.join(logsDir, `compose-build-${runId}.log`);
+  const upLog = path.join(logsDir, `compose-up-${runId}.log`);
 
-  const timedOut = result.error?.code === 'ETIMEDOUT' || (!result.error && result.status === null && result.signal === 'SIGKILL');
-  if (timedOut) {
-    if (executor === 'systemd-run') stopPromoteUnit();
-    else killDetachedComposeChildren();
-    const wrapped = new Error(
-      `Docker rebuild/recreate timed out after ${COMPOSE_TIMEOUT_SECONDS}s (executor: ${executor}).`
-    );
-    wrapped.timedOut = true;
-    wrapped.status = null;
-    throw wrapped;
-  }
+  const build = runComposePhase({
+    executor,
+    phase: 'build',
+    innerCommand: BUILD_COMMAND,
+    timeoutSeconds: COMPOSE_TIMEOUT_SECONDS,
+    logPath: buildLog
+  });
+  if (!build.ok) throw phaseError(build);
 
-  if (result.error) {
-    const wrapped = new Error(`Docker command failed (${executor}): ${result.error.message}`);
-    wrapped.status = result.status ?? null;
-    throw wrapped;
+  const upStartedAt = new Date().toISOString();
+  updatePromotionStatus({ upStartedAt });
+  const up = runComposePhase({
+    executor,
+    phase: 'up',
+    innerCommand: upCommand(),
+    timeoutSeconds: upPhaseTimeoutSeconds(),
+    logPath: upLog
+  });
+  if (!up.ok) {
+    up.startedAt = upStartedAt;
+    throw phaseError(up);
   }
-  if (result.status !== 0) {
-    const wrapped = new Error(`Docker rebuild/recreate exited ${result.status ?? 'unknown'}.`);
-    wrapped.status = result.status ?? null;
-    throw wrapped;
-  }
+  return { build, up };
 }
 
 function dockerStatus() {
@@ -532,17 +627,35 @@ function runDockerJournal(sinceIso) {
   return out.slice(0, DIAGNOSTICS_MAX_CHARS) || `exit ${result.status ?? 'unknown'}`;
 }
 
+// Bounded tail of a per-invocation compose log. The log lives on disk so it
+// survives even when the transient unit's journal is empty.
+function readLogTail(logPath, maxLines = 40) {
+  if (!logPath) return '';
+  try {
+    const lines = fs.readFileSync(logPath, 'utf8').split('\n').filter((line) => line.length > 0);
+    return lines.slice(-maxLines).join('\n');
+  } catch {
+    return '';
+  }
+}
+
 // Bounded failure evidence for the promotion log/status: compose ps, container
-// inspect, and the docker daemon journal since the run started.
+// inspect, the docker daemon journal since the phase started, and the failed
+// phase's compose log tail (with its path).
 function collectFailureDiagnostics(phase, options = {}) {
   const startedAt = options.startedAt || promotionStatus?.startedAt || new Date().toISOString();
   const composePs = options.dockerPs ? options.dockerPs() : dockerStatus();
   const inspect = options.inspect ? options.inspect() : runDockerInspectFull();
   const journal = options.journal ? options.journal(startedAt) : runDockerJournal(startedAt);
-  const diagnostics = { phase, composePs, inspect, journal };
+  const logPath = options.logPath || null;
+  const logTail = options.logTail !== undefined ? options.logTail : readLogTail(logPath);
+  const diagnostics = { phase, composePs, inspect, journal, logPath, logTail };
   console.error(`[looparr] Failure diagnostics (phase: ${phase}):`);
   console.error(`[looparr] docker compose ps looparr:\n${composePs || '(unavailable)'}`);
   console.error(`[looparr] docker inspect looparr (bounded):\n${inspect}`);
+  if (logPath) {
+    console.error(`[looparr] compose ${phase} log (${logPath}):\n${logTail || '(empty)'}`);
+  }
   console.error(`[looparr] journalctl -u docker.service excerpt (bounded):\n${journal}`);
   return diagnostics;
 }
@@ -838,7 +951,8 @@ async function main() {
     return;
   }
 
-  console.log(`[looparr] Docker command: ${DOCKER_COMMAND}`);
+  console.log(`[looparr] Docker build: ${BUILD_COMMAND}`);
+  console.log(`[looparr] Docker up: ${upCommand()}`);
   if (DRY_RUN) {
     console.log('[looparr] Dry run: Docker was not called.');
     updatePromotionStatus({
@@ -852,27 +966,35 @@ async function main() {
   console.log('[looparr] Rebuilding and recreating looparr');
   updatePromotionStatus({ phase: 'compose' });
   try {
-    runDetachedDockerCommand();
+    runDetachedDockerCommand({ runId: promotionStatus.runId });
   } catch (error) {
     removeRestartContinueMarker();
     const timedOut = Boolean(error.timedOut);
-    console.error(`[looparr] Docker command failed (${error.status ?? 'unknown'}): ${error.message}`);
-    if (timedOut) stopPromoteUnit();
-    const diagnostics = collectFailureDiagnostics('compose');
-    const recovery = await runPostComposeRecovery('post-compose');
+    const phase = error.phase || 'compose';
+    const recoveryPhase = phase === 'up' ? 'up' : 'post-compose';
+    console.error(`[looparr] Docker ${phase} failed (${error.status ?? 'unknown'}): ${error.message}`);
+    if (timedOut && error.executor !== 'detached-spawn') stopPromoteUnit();
+    const diagnostics = collectFailureDiagnostics(phase, {
+      startedAt: error.startedAt,
+      logPath: error.logPath
+    });
+    const recovery = await runPostComposeRecovery(recoveryPhase);
     updatePromotionStatus({
-      phase: 'compose',
+      phase,
       result: 'failed',
       error: error.message,
       diagnostics,
       recovery: recovery.attempts,
       finishedAt: new Date().toISOString()
     });
-    reportError(
-      timedOut ? 'DOCKER_RESTART_TIMEOUT' : 'DOCKER_RESTART_FAILED',
-      'docker rebuild failed',
-      { status: error.status ?? null, phase: 'compose' }
-    );
+    reportError('DOCKER_RESTART_FAILED', `docker ${phase} failed`, {
+      status: error.status ?? null,
+      phase,
+      timedOut,
+      containerState: inspectLooparrState(),
+      logPath: error.logPath,
+      journal: diagnostics.journal
+    });
     process.exitCode = 1;
     return;
   }
@@ -1029,14 +1151,17 @@ if (require.main === module) {
 }
 
 module.exports = {
+  BUILD_COMMAND,
+  COMPOSE_LOG_DIR,
   COMPOSE_TIMEOUT_SECONDS,
   CONTAINER_START_TIMEOUT_SECONDS,
-  DOCKER_COMMAND,
   LOCK_TIMEOUT_SECONDS,
   PROMOTION_LOG_FILE,
   PROMOTION_STATUS_FILE,
   SERVED_ASSETS,
   SYSTEMD_UNIT,
+  UP_TIMEOUT_SECONDS,
+  buildPhaseCommand,
   buildSystemdRunArgs,
   collectFailureDiagnostics,
   computeSourceManifest,
@@ -1047,14 +1172,18 @@ module.exports = {
   isRunningHealthy,
   logPromotionExecutionPath,
   readContainerHashes,
+  readLogTail,
   readServedHashes,
   recoverCreatedContainer,
   resetSystemdRunProbeCache,
+  runComposePhase,
   runDetachedDockerCommand,
   runWatchdogCheck,
   servedHashSummary,
   startPromotionRun,
   systemdRunAvailable,
   updatePromotionStatus,
+  upCommand,
+  upPhaseTimeoutSeconds,
   writePromotionStatus
 };

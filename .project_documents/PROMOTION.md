@@ -48,9 +48,17 @@ Run in order. Any failure blocks promotion.
 
 `scripts/restart-looparr.js` is the compose launcher. `scripts/promote.sh` and host-executor restart requests delegate to it; agents request promotions, they do not run `docker compose` directly.
 
-- **Preferred:** `systemd-run --user --unit=looparr-promote --wait --collect -p WorkingDirectory=<REPO_ROOT> --setenv=... -- bash -c 'docker compose build looparr && docker compose up -d looparr'`. The unit is managed by the user systemd manager, so agent-session SIGKILL/cgroup cleanup cannot kill compose between container creation and start. `--wait` propagates the compose exit code; `--collect` removes the finished transient unit before the next run. Overlap is prevented by the existing restart lock.
+- **Preferred:** two distinct phases inside the same `looparr-promote` unit and
+  restart lock: `docker compose build looparr`, then
+  `timeout --signal=TERM --kill-after=30s ${LOOPARR_UP_TIMEOUT_SECONDS}s docker compose up -d looparr`.
+  The unit is managed by the user systemd manager, so agent-session
+  SIGKILL/cgroup cleanup cannot kill compose between container creation and
+  start. `--wait` propagates each phase's exit code; `--collect` removes the
+  finished transient unit before the next run. Overlap is prevented by the
+  existing restart lock. Raw `docker compose build`/`up` is never a substitute
+  for this helper.
 - **Availability probe:** before first use, launcher checks `systemd-run` is in PATH and runs a cheap `--user` probe. Result cached in module constant for the process.
-- **Fallback:** when probe fails/unavailable, launcher uses the existing detached bash wrapper with `trap '' HUP INT TERM QUIT` and the same compose command. This preserves prior behavior.
+- **Fallback:** when probe fails/unavailable, launcher uses the existing detached bash wrapper with `trap '' HUP INT TERM QUIT` for the same two bounded phases. This preserves prior behavior outside systemd hosts.
 - **Logging:** launcher emits `reportEvent('promotion-execution-path', { executor: 'systemd-run' | 'detached-spawn' })` and a `[looparr]` console line before execution.
 - **After compose:** preflight recovery, post-compose recovery, and health wait still run in the parent process after the unit/child exits.
 
@@ -229,18 +237,29 @@ Deliberate rebuilds bypass the skip with `npm run restart:looparr -- --force`
 or `LOOPARR_FORCE_PROMOTION=1`. A failed/incomplete evidence check never fails
 `--dry-run`; it logs the reason and continues to the dry-run exit-0 path.
 
-### Bounded compose phase and failure evidence
+### Bounded compose phases and failure evidence
 
-Compose runs under the existing `looparr-promote` systemd path and restart
-lock, bounded by `LOOPARR_COMPOSE_TIMEOUT_SECONDS` (default `600`, shorter
-than the lock default `900`). On timeout the launcher stops the transient unit
-(`systemctl --user stop looparr-promote.service`, or kills the detached
-fallback's compose children) before recovery. On failure or timeout it
-captures into the status/log: `phase`, `logPath`,
-`docker compose ps looparr`, full `docker inspect looparr` (bounded), and a
-bounded `journalctl -u docker.service --since <start> --no-pager -n 200`
-excerpt. The restart lock is released by the existing EXIT/INT/TERM traps on
-timeout, signal, and failure.
+Build and up run as separate phases under the existing `looparr-promote`
+systemd path and restart lock. Build is bounded by
+`LOOPARR_COMPOSE_TIMEOUT_SECONDS` (default `600`). Up is wrapped with
+`timeout --signal=TERM --kill-after=30s <deadline>s docker compose up -d looparr`
+and `LOOPARR_UP_TIMEOUT_SECONDS` (default `300`), below the `900`-second lock
+timeout. The up deadline stays below the lock timeout after adding kill-after
+and backstop time. Each invocation tees stdout and stderr to
+`.looparr/logs/compose-build-<run>.log` or
+`.looparr/logs/compose-up-<run>.log`. Up start is recorded as
+`status.upStartedAt`. On any failed phase the launcher prints the relevant log
+tail and records `logPath` and `logTail` in `.looparr/promotion-status.json`
+and `.looparr/logs/promotion-latest.log`.
+
+On timeout the launcher stops the transient unit
+(`systemctl --user stop looparr-promote.service`) or kills the detached
+fallback's compose children before recovery. `DOCKER_RESTART_FAILED` carries
+`phase`, `status`, container state from
+`docker inspect looparr --format '{{.State.Status}}'`, compose `logPath`, and
+a bounded `journalctl -u docker.service --since <up-start> --no-pager -n 200`
+excerpt, plus `docker compose ps looparr`. The restart lock is released by the
+existing EXIT/INT/TERM traps on timeout, signal, and failure.
 
 ### Watchdog-aware recovery
 
@@ -248,9 +267,23 @@ On up failure/timeout the launcher runs the existing
 created/exited/dead recovery (`recoverCreatedContainer`) once; if the container
 is still unhealthy it runs one one-shot `bash scripts/restart-watchdog.sh fix`
 (the restart lock is already held, so the fix does not re-lock), then rechecks
-container health and `/api/state`. Every attempt and result is recorded in
-`status.recovery`. `npm run watchdog:check` stays read-only and its result is
-recorded as `watchdogOk` at closeout.
+container health and `/api/state`. The npm equivalent is
+`npm run watchdog:fix -- fix`. Watchdog `fix` probes `/api/state` even when the
+container is running: an answering API is steady and exits 0; otherwise it
+re-converges with `docker compose up -d looparr` and polls `/api/state`.
+`npm run watchdog:check` stays read-only. Every attempt and result is recorded
+in `status.recovery`; watchdog check result is recorded as `watchdogOk` at
+closeout.
+
+### Stalled promotion runbook
+
+If a promotion stalls during `docker compose up -d looparr`, stop the transient
+unit with `systemctl --user stop looparr-promote.service`, then retry with
+`npm run restart:looparr`. Inspect `.looparr/promotion-status.json`,
+`.looparr/logs/promotion-latest.log`, the phase compose log, and the journal
+excerpt before retrying. Raw `docker compose build`/`up` is never a substitute:
+the host-executor cgroup can kill raw compose between container create and
+start, leaving a created-not-started container and production down.
 
 Focused tests: `npm run test:restart-looparr`
 (`scripts/test-restart-looparr.js`); also wired into `npm test`.

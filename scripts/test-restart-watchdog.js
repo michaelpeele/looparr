@@ -67,7 +67,7 @@ assert.ok(
 //    honoured on some platform.
 assert.match(
   restartScript,
-  /DETACHED_WRAPPER\s*=\s*`trap '' HUP INT TERM QUIT\\n\$\{DOCKER_COMMAND\}`|const wrapper = `trap '' HUP INT TERM QUIT\\n\$\{DOCKER_COMMAND\}`;/,
+  /function detachedWrapper\(command\)\s*\{\s*return `trap '' HUP INT TERM QUIT\\n\$\{command\}`;/,
   'restart-looparr.js must define the signal-ignore wrapper source'
 );
 assert.match(
@@ -75,6 +75,11 @@ assert.match(
   /trap '' HUP INT TERM QUIT/,
   'wrapper must ignore HUP/INT/TERM/QUIT around the compose command'
 );
+// The compose chain is split into distinct build and up phases, and only the up
+// phase is wrapped in a bounded `timeout` deadline.
+assert.match(restartScript, /const BUILD_COMMAND = 'docker compose build looparr'/, 'build phase command must be defined');
+assert.match(restartScript, /timeout --signal=TERM --kill-after=\$\{UP_KILL_AFTER_SECONDS\}s \$\{deadlineSeconds\}s docker compose up -d looparr/, 'up phase must be wrapped in a bounded timeout');
+assert.match(restartScript, /LOOPARR_UP_TIMEOUT_SECONDS \|\| '300'/, 'up timeout must default to 300s');
 // execSync must only be used for the read-only `docker compose ps` status call.
 for (const match of restartScript.matchAll(/execSync\(([^,)]+)/g)) {
   assert.match(
@@ -155,6 +160,23 @@ assert.match(watchdogScript, /restart-lock\.sh.*restart-watchdog\.sh/, 'watchdog
 assert.match(watchdogScript, /docker compose up -d looparr/, 'watchdog must re-converge the service with compose');
 assert.match(watchdogScript, /filter label=com\.docker\.compose\.service=looparr/, 'watchdog must target only the looparr compose service');
 assert.match(watchdogScript, /LOOPARR_LOCAL_PORT:-4188/, 'watchdog must health-check the local API port');
+
+// 3a. fix mode must probe /api/state even when a compose container is running,
+//     and only re-converge when the API does not answer (API-only outage repair).
+assert.match(watchdogScript, /curl -fsS -m 3 "http:\/\/127\.0\.0\.1:\$\{LOCAL_PORT\}\/api\/state"/, 'fix must probe /api/state on a running container');
+assert.match(watchdogScript, /running but API on port \$\{LOCAL_PORT\} is not answering/, 'fix must re-converge when a running container has no API');
+assert.match(watchdogScript, /converge_and_wait\(\) \{/, 'fix must define converge_and_wait for re-convergence');
+assert.match(watchdogScript, /converge_and_wait "container \$\{running_id\} is running but API/, 'fix must call converge_and_wait for the API-only outage');
+
+// 3b. check mode stays read-only: it reports steady/down from the running
+//     container alone and never probes /api/state or mutates.
+const checkBody = watchdogScript.slice(watchdogScript.indexOf('if [[ "$MODE" == "check" ]]; then'), watchdogScript.indexOf('# converge_and_wait re-converges'));
+assert.ok(checkBody.length > 0, 'check mode branch must exist');
+assert.doesNotMatch(checkBody, /api\/state/, 'check mode must not probe /api/state');
+assert.doesNotMatch(checkBody, /docker compose up/, 'check mode must not mutate');
+assert.match(checkBody, /exit 0/, 'check mode must exit 0 when running');
+assert.match(checkBody, /exit 1/, 'check mode must exit 1 when down');
+
 execFileSync('bash', ['-n', watchdogPath], { stdio: 'inherit' });
 
 console.log('test-restart-watchdog: OK');

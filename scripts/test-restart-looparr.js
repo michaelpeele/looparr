@@ -68,27 +68,68 @@ const STATUS_FIELDS = [
   assert.match(
     restartSource,
     /LOOPARR_COMPOSE_TIMEOUT_SECONDS \|\| '600'/,
-    'compose timeout must default to 600s'
+    'build timeout must default to 600s'
   );
   assert.ok(
     restart.COMPOSE_TIMEOUT_SECONDS < restart.LOCK_TIMEOUT_SECONDS,
-    `compose timeout (${restart.COMPOSE_TIMEOUT_SECONDS}) must be shorter than lock timeout (${restart.LOCK_TIMEOUT_SECONDS})`
+    `build timeout (${restart.COMPOSE_TIMEOUT_SECONDS}) must be shorter than lock timeout (${restart.LOCK_TIMEOUT_SECONDS})`
+  );
+  // Split build/up phases with an up-only deadline below the lock timeout.
+  assert.match(
+    restartSource,
+    /const BUILD_COMMAND = 'docker compose build looparr'/,
+    'build phase must be a distinct command'
   );
   assert.match(
     restartSource,
-    /spawnSync\('systemd-run', buildSystemdRunArgs\(\), \{[\s\S]*?timeout: composeTimeoutMs/,
-    'systemd-run compose execution must be bounded by the compose timeout'
+    /LOOPARR_UP_TIMEOUT_SECONDS \|\| '300'/,
+    'up timeout must default to 300s'
+  );
+  assert.ok(
+    restart.UP_TIMEOUT_SECONDS < restart.LOCK_TIMEOUT_SECONDS,
+    `up timeout (${restart.UP_TIMEOUT_SECONDS}) must be shorter than lock timeout (${restart.LOCK_TIMEOUT_SECONDS})`
   );
   assert.match(
     restartSource,
-    /spawnSync\('bash', \['-c', DETACHED_WRAPPER\], \{[\s\S]*?timeout: composeTimeoutMs/,
-    'detached fallback compose execution must be bounded by the compose timeout'
+    /timeout --signal=TERM --kill-after=\$\{UP_KILL_AFTER_SECONDS\}s \$\{deadlineSeconds\}s docker compose up -d looparr/,
+    'up phase must be wrapped in timeout --signal=TERM --kill-after=30s <deadline>s'
+  );
+  // Per-invocation compose logs and tail capture.
+  assert.match(restartSource, /compose-build-\$\{runId\}\.log/, 'build log path must be per-invocation');
+  assert.match(restartSource, /compose-up-\$\{runId\}\.log/, 'up log path must be per-invocation');
+  assert.match(restartSource, /2>&1 \| tee /, 'each compose phase must tee stdout+stderr to its log');
+  assert.match(restartSource, /set -o pipefail;/, 'phase wrapper must preserve pipeline exit status');
+  assert.doesNotMatch(
+    restartSource,
+    /PIPESTATUS/,
+    'phase wrapper must not rely on PIPESTATUS under systemd-run'
+  );
+  assert.match(restartSource, /function readLogTail\(/, 'failed phase must capture a bounded log tail');
+  assert.match(
+    restartSource,
+    /spawnSync\('systemd-run', buildSystemdRunArgs\(command\), \{[\s\S]*?timeout: timeoutMs/,
+    'systemd-run phase execution must be bounded by the phase timeout'
+  );
+  assert.match(
+    restartSource,
+    /spawnSync\('bash', \['-c', detachedWrapper\(command\)\], \{[\s\S]*?timeout: timeoutMs/,
+    'detached fallback phase execution must be bounded by the phase timeout'
   );
   assert.match(
     restartSource,
     /systemctl', \['--user', 'stop', `\$\{SYSTEMD_UNIT\}\.service`/,
-    'compose timeout must stop the looparr-promote transient unit'
+    'phase timeout must stop the looparr-promote transient unit'
   );
+  // Failure output must carry phase, status, container state, log path, journal.
+  assert.match(restartSource, /reportError\('DOCKER_RESTART_FAILED'/, 'up failure must emit DOCKER_RESTART_FAILED');
+  const failureReport = restartSource.slice(
+    restartSource.indexOf("reportError('DOCKER_RESTART_FAILED'"),
+    restartSource.indexOf('process.exitCode = 1;', restartSource.indexOf("reportError('DOCKER_RESTART_FAILED'"))
+  );
+  for (const needle of ['status:', 'phase,', 'containerState:', 'logPath:', 'journal:']) {
+    assert.ok(failureReport.includes(needle), `failure output must include ${needle}`);
+  }
+  assert.match(restartSource, /logPath, logTail \}/, 'diagnostics must record logPath and logTail');
   for (const needle of [
     "execSync('docker compose ps looparr'",
     "'docker', ['inspect', 'looparr']",
@@ -297,6 +338,7 @@ const E2E_DIR = makeTemp('e2e');
 const BIN_DIR = path.join(E2E_DIR, 'bin');
 const FAKE_CONTAINER_ROOT = path.join(E2E_DIR, 'container-root');
 const DOCKER_CALLS = path.join(E2E_DIR, 'docker-calls.log');
+const DOCKER_START_CALLS = path.join(E2E_DIR, 'docker-start-calls.log');
 const STATE_FILE = path.join(E2E_DIR, 'container-state');
 const PS_FILE = path.join(E2E_DIR, 'docker-ps');
 const STATUS_FILE = path.join(E2E_DIR, 'promotion-status.json');
@@ -319,17 +361,23 @@ function writeDockerStub({ composeMode = 'ok' } = {}) {
     '    script="$7"',
     '    cd "$LOOPARR_FAKE_CONTAINER_ROOT" && eval "${script#cd /app && }"',
     '    ;;',
-    '  compose)',
-    '    case "$2" in',
-    '      ps) cat "$DOCKER_PS_FILE" ;;',
-    '      start) printf \'running\\n\' > "$DOCKER_STATE_FILE" ;;',
-    '      build|up)',
-    '        if [ "$LOOPARR_STUB_COMPOSE_MODE" = "hang" ]; then',
-    '          exec sleep 300 >/dev/null 2>&1',
-    '        fi',
-    '        ;;',
-    '    esac',
-    '    ;;',
+  '  compose)',
+  '    case "$2" in',
+  '      ps) cat "$DOCKER_PS_FILE" ;;',
+  '      start) printf \'%s\\n\' "$*" >> "$DOCKER_START_CALLS"; printf \'running\\n\' > "$DOCKER_STATE_FILE" ;;',
+  '      build)',
+  '        if [ "$LOOPARR_STUB_COMPOSE_MODE" = "build-fail" ]; then',
+  '          exit 2',
+  '        fi',
+  '        ;;',
+  '      up)',
+  '        case "$LOOPARR_STUB_COMPOSE_MODE" in',
+  '          hang) exec sleep 300 >/dev/null 2>&1 ;;',
+  '          up-fail) exit 3 ;;',
+  '        esac',
+  '        ;;',
+  '    esac',
+  '    ;;',
     '  ps) printf \'cid-e2e\\n\' ;;',
     '  logs) echo "container log line" ;;',
     'esac',
@@ -398,11 +446,13 @@ function e2eEnv(server, extra = {}) {
     PATH: `${BIN_DIR}${path.delimiter}${ORIGINAL_PATH}`,
     LOOPARR_RESTART_LOCK_HELD: '1',
     LOOPARR_BASE_URL: `http://127.0.0.1:${server.port}`,
+    LOOPARR_LOCAL_PORT: String(server.port),
     LOOPARR_PROMOTION_STATUS_FILE: STATUS_FILE,
     LOOPARR_PROMOTION_LOG_FILE: LOG_FILE,
     LOOPARR_RESTART_CONTINUE_FILE: path.join(E2E_DIR, 'restart-continue.json'),
     LOOPARR_EXECUTOR_URL: 'http://127.0.0.1:1',
     DOCKER_CALLS,
+    DOCKER_START_CALLS,
     DOCKER_STATE_FILE: STATE_FILE,
     DOCKER_PS_FILE: PS_FILE,
     LOOPARR_FAKE_CONTAINER_ROOT: FAKE_CONTAINER_ROOT,
@@ -505,7 +555,7 @@ async function runTimeoutLockRelease(server) {
     LOOPARR_RESTART_LOCK_PATH: lockPath,
     LOOPARR_PROMOTIONS_LOG: lockLog,
     LOOPARR_RESTART_LOCK_TIMEOUT: '60',
-    LOOPARR_COMPOSE_TIMEOUT_SECONDS: '2',
+    LOOPARR_UP_TIMEOUT_SECONDS: '2',
     LOOPARR_STUB_COMPOSE_MODE: 'hang',
     // Break container-hash evidence so the run proceeds to the compose phase.
     LOOPARR_FAKE_CONTAINER_ROOT: path.join(E2E_DIR, 'empty-container')
@@ -522,7 +572,14 @@ async function runTimeoutLockRelease(server) {
   assert.ok(status.recovery.some((a) => a.attempt === 'recoverCreatedContainer'), 'recovery must be attempted');
   assert.ok(status.diagnostics, 'failure diagnostics must be recorded');
   assert.ok('composePs' in status.diagnostics && 'inspect' in status.diagnostics && 'journal' in status.diagnostics);
+  assert.ok('logPath' in status.diagnostics && 'logTail' in status.diagnostics, 'diagnostics must carry the up log path and tail');
+  assert.match(status.diagnostics.logPath, /compose-up-/, 'failure diagnostics must reference the up log');
   assert.ok(fs.existsSync(logFile), 'timed-out promotion must leave a log file');
+  // Failure output must name the up phase and container state.
+  assert.match(result.stderr, /"phase":"up"/, 'failure output must carry phase up');
+  assert.match(result.stderr, /"containerState"/, 'failure output must carry container state');
+  assert.match(result.stderr, /"logPath"/, 'failure output must carry the compose log path');
+  assert.match(result.stderr, /"journal"/, 'failure output must carry the bounded journal excerpt');
 
   // Lock release: a follow-up command must acquire the same lock quickly.
   const marker = path.join(E2E_DIR, 'lock-release-marker');
@@ -547,6 +604,118 @@ async function runTimeoutLockRelease(server) {
   console.log('timeout-lock-release: ok');
 }
 
+async function assertLockReleased(lockPath, lockLog) {
+  const marker = path.join(E2E_DIR, `lock-release-${crypto.randomUUID()}`);
+  const followUp = spawnSync('bash', [
+    LOCK_WRAPPER,
+    process.execPath,
+    '-e',
+    `require('node:fs').writeFileSync(${JSON.stringify(marker)}, '1')`
+  ], {
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      LOOPARR_RESTART_LOCK_PATH: lockPath,
+      LOOPARR_PROMOTIONS_LOG: lockLog,
+      LOOPARR_RESTART_LOCK_TIMEOUT: '5'
+    },
+    encoding: 'utf8',
+    timeout: 30000
+  });
+  assert.equal(followUp.status, 0, `lock must be released: ${followUp.stderr || followUp.stdout}`);
+  assert.ok(fs.existsSync(marker), 'follow-up command must have run after lock release');
+}
+
+// Up nonzero exit with a created container: the one-shot created recovery must
+// start it exactly once, no watchdog fix should run, and the promotion must fail
+// with phase/status/state/log/journal evidence and a released lock.
+async function runUpNonzeroCreatedRecovery(server) {
+  const statusFile = path.join(E2E_DIR, 'up-created-status.json');
+  const logFile = path.join(E2E_DIR, 'up-created-promotion.log');
+  const lockPath = path.join(E2E_DIR, 'up-created.lock');
+  const lockLog = path.join(E2E_DIR, 'up-created-lock.log');
+  fs.writeFileSync(STATE_FILE, 'created\n', 'utf8');
+  fs.writeFileSync(PS_FILE, 'NAME  SERVICE  STATUS\nlooparr  looparr  Up 2 minutes (healthy)\n', 'utf8');
+  fs.writeFileSync(DOCKER_START_CALLS, '', 'utf8');
+  fs.mkdirSync(path.join(E2E_DIR, 'empty-container'), { recursive: true });
+  const env = e2eEnv(server, {
+    LOOPARR_RESTART_LOCK_HELD: '',
+    LOOPARR_PROMOTION_STATUS_FILE: statusFile,
+    LOOPARR_PROMOTION_LOG_FILE: logFile,
+    LOOPARR_RESTART_LOCK_PATH: lockPath,
+    LOOPARR_PROMOTIONS_LOG: lockLog,
+    LOOPARR_RESTART_LOCK_TIMEOUT: '60',
+    LOOPARR_STUB_COMPOSE_MODE: 'up-fail',
+    LOOPARR_FAKE_CONTAINER_ROOT: path.join(E2E_DIR, 'empty-container')
+  });
+  const result = await runPromotion([], env, 120000);
+  assert.equal(result.status, 1, `up-fail promotion must exit 1: ${result.stderr || result.stdout}`);
+  const status = JSON.parse(fs.readFileSync(statusFile, 'utf8'));
+  assert.equal(status.result, 'failed', 'up failure must produce failed status');
+  assert.equal(status.phase, 'up', 'status phase must be up');
+  assert.match(status.error, /exited 3/, 'status error must name the up exit code');
+  const startCalls = fs.readFileSync(DOCKER_START_CALLS, 'utf8').split('\n').filter(Boolean);
+  assert.deepEqual(startCalls, ['compose start looparr'], 'created recovery must start exactly once');
+  assert.ok(
+    status.recovery.some((a) => a.attempt === 'recoverCreatedContainer' && a.phase === 'up' && a.ok),
+    'created recovery must succeed once'
+  );
+  assert.ok(
+    !status.recovery.some((a) => a.attempt === 'watchdog-fix'),
+    'watchdog fix must not run when created recovery restores the container'
+  );
+  assert.match(result.stderr, /"phase":"up"/, 'failure output must carry phase up');
+  assert.match(result.stderr, /"status":3/, 'failure output must carry the up exit status');
+  assert.match(result.stderr, /"containerState"/, 'failure output must carry container state');
+  assert.match(result.stderr, /"logPath"/, 'failure output must carry the compose log path');
+  assert.match(result.stderr, /"journal"/, 'failure output must carry the bounded journal excerpt');
+  await assertLockReleased(lockPath, lockLog);
+  console.log('up-nonzero-created-recovery: ok');
+}
+
+// Up nonzero exit with an unrecoverable container: created/exited/dead recovery
+// cannot start it, so the bounded watchdog fix runs once, the promotion still
+// fails with full evidence, and the lock is released.
+async function runUpNonzeroRecoveryFailure(server) {
+  const statusFile = path.join(E2E_DIR, 'up-fail-status.json');
+  const logFile = path.join(E2E_DIR, 'up-fail-promotion.log');
+  const lockPath = path.join(E2E_DIR, 'up-fail.lock');
+  const lockLog = path.join(E2E_DIR, 'up-fail-lock.log');
+  fs.writeFileSync(STATE_FILE, 'paused\n', 'utf8');
+  fs.writeFileSync(PS_FILE, 'NAME  SERVICE  STATUS\nlooparr  looparr  Exited (0) 1 minute ago\n', 'utf8');
+  fs.writeFileSync(DOCKER_START_CALLS, '', 'utf8');
+  fs.mkdirSync(path.join(E2E_DIR, 'empty-container'), { recursive: true });
+  const env = e2eEnv(server, {
+    LOOPARR_RESTART_LOCK_HELD: '',
+    LOOPARR_PROMOTION_STATUS_FILE: statusFile,
+    LOOPARR_PROMOTION_LOG_FILE: logFile,
+    LOOPARR_RESTART_LOCK_PATH: lockPath,
+    LOOPARR_PROMOTIONS_LOG: lockLog,
+    LOOPARR_RESTART_LOCK_TIMEOUT: '60',
+    LOOPARR_STUB_COMPOSE_MODE: 'up-fail',
+    LOOPARR_FAKE_CONTAINER_ROOT: path.join(E2E_DIR, 'empty-container')
+  });
+  const result = await runPromotion([], env, 120000);
+  assert.equal(result.status, 1, `unrecoverable up-fail must exit 1: ${result.stderr || result.stdout}`);
+  const status = JSON.parse(fs.readFileSync(statusFile, 'utf8'));
+  assert.equal(status.result, 'failed', 'unrecoverable up failure must produce failed status');
+  assert.equal(status.phase, 'up', 'status phase must be up');
+  assert.ok(
+    status.recovery.some((a) => a.attempt === 'watchdog-fix'),
+    'watchdog fix must run when created recovery cannot restore the container'
+  );
+  assert.ok(
+    status.recovery.some((a) => a.attempt === 'recoverCreatedContainer' && a.phase === 'up' && !a.ok),
+    'created recovery must be recorded as failed'
+  );
+  assert.match(result.stderr, /"phase":"up"/, 'failure output must carry phase up');
+  assert.match(result.stderr, /"containerState"/, 'failure output must carry container state');
+  assert.match(result.stderr, /"logPath"/, 'failure output must carry the compose log path');
+  assert.match(result.stderr, /"journal"/, 'failure output must carry the bounded journal excerpt');
+  await assertLockReleased(lockPath, lockLog);
+  console.log('up-nonzero-recovery-failure: ok');
+}
+
 async function main() {
   fs.mkdirSync(BIN_DIR, { recursive: true });
   writeDockerStub();
@@ -557,6 +726,8 @@ async function main() {
     await runForceRebuild(server);
     await runForceEnvOverride(server);
     await runTimeoutLockRelease(server);
+    await runUpNonzeroCreatedRecovery(server);
+    await runUpNonzeroRecoveryFailure(server);
   } finally {
     server.child.kill();
     delete process.env.LOOPARR_STUB_COMPOSE_MODE;

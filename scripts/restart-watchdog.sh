@@ -103,37 +103,56 @@ fi
 
 running_id="$(docker ps -q --filter label=com.docker.compose.service=looparr | head -n1)"
 
+# check mode is strictly read-only: a running container is steady, otherwise the
+# service is down. It never probes /api/state and never mutates.
+if [[ "$MODE" == "check" ]]; then
+  if [[ -n "$running_id" ]]; then
+    log "steady: looparr container ${running_id} is running"
+    exit 0
+  fi
+  orphan_ids="$(docker ps -a -q --filter label=com.docker.compose.service=looparr | head -n5)"
+  orphan_count="$(printf '%s' "$orphan_ids" | grep -c . || true)"
+  log "check: looparr service is DOWN (orphan/non-running compose containers: ${orphan_count})"
+  exit 1
+fi
+
+# converge_and_wait re-converges the service with `docker compose up -d looparr`
+# and polls /api/state. Used by fix mode both when no container runs and when a
+# container runs but the API is not answering (an API-only outage).
+converge_and_wait() {
+  local reason="$1"
+  log "fix: ${reason}; re-converging via compose up -d"
+  if ! docker compose up -d looparr; then
+    log "FAILED: docker compose up -d looparr returned an error (exit $?)"
+    exit 1
+  fi
+  local attempt
+  for attempt in $(seq 1 60); do
+    if curl -fsS -m 3 "http://127.0.0.1:${LOCAL_PORT}/api/state" >/dev/null 2>&1; then
+      log "fix: looparr API is answering on port ${LOCAL_PORT}; recovery complete"
+      exit 0
+    fi
+    sleep 2
+  done
+  log "FAILED: looparr container started but the API on port ${LOCAL_PORT} never answered"
+  exit 1
+}
+
 if [[ -n "$running_id" ]]; then
-  log "steady: looparr container ${running_id} is running"
-  exit 0
+  # A running compose container does not prove the API answers. Probe /api/state
+  # first; only re-converge when it fails, so an API-only outage is repaired.
+  if curl -fsS -m 3 "http://127.0.0.1:${LOCAL_PORT}/api/state" >/dev/null 2>&1; then
+    log "steady: looparr container ${running_id} is running and API answers on port ${LOCAL_PORT}"
+    exit 0
+  fi
+  converge_and_wait "container ${running_id} is running but API on port ${LOCAL_PORT} is not answering"
 fi
 
 orphan_ids="$(docker ps -a -q --filter label=com.docker.compose.service=looparr | head -n5)"
 orphan_count="$(printf '%s' "$orphan_ids" | grep -c . || true)"
 
-if [[ "$MODE" == "check" ]]; then
-  log "check: looparr service is DOWN (orphan/non-running compose containers: ${orphan_count})"
-  exit 1
-fi
-
 if [[ "$orphan_count" == "0" ]]; then
-  log "fix: looparr service is down with no existing compose container; starting a new one"
+  converge_and_wait "looparr service is down with no existing compose container; starting a new one"
 else
-  log "fix: detected ${orphan_count} non-running looparr compose container(s); re-converging via compose up -d"
+  converge_and_wait "detected ${orphan_count} non-running looparr compose container(s)"
 fi
-
-if ! docker compose up -d looparr; then
-  log "FAILED: docker compose up -d looparr returned an error (exit $?)"
-  exit 1
-fi
-
-for _ in $(seq 1 60); do
-  if curl -fsS -m 3 "http://127.0.0.1:${LOCAL_PORT}/api/state" >/dev/null 2>&1; then
-    log "fix: looparr API is answering on port ${LOCAL_PORT}; recovery complete"
-    exit 0
-  fi
-  sleep 2
-done
-
-log "FAILED: looparr container started but the API on port ${LOCAL_PORT} never answered"
-exit 1
