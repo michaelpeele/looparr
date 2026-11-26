@@ -1,6 +1,6 @@
 # Plan: Durable resume snapshot
 
-Status: open
+Status: done 2026-11-26 — implemented and verified on prod image `sha256:8565265b…` (container `769c0f9d38bf`, healthy).
 Source: `.project_documents/PLAN-durable-resume-snapshot.md`
 Scope: verify and close the existing snapshot path, then add the missing one-retry bound and behavioral prior-step context. No code changes are made by this PLAN WRITE step.
 

@@ -109,3 +109,11 @@ onto `master` by hand. Both paths require the verified sequence above.
   Nonfatal note: active-run postcheck fetch to `LOOPARR_EXECUTOR_URL` failed;
   launcher caught it and did not fail the restart. No healer status record was
   written, so the branch icon stayed hidden by design.
+- 2026-11-26 — Durable resume snapshot plus systemd-only promotion prompts.
+  `npm test` green, `git diff --check` clean, dry-run clean, sandbox smoke
+  passed, prod restart through `systemd-run --user` (`looparr-promote`).
+  Container `769c0f9d38bf` healthy on image `sha256:8565265b…`; all 81 tracked
+  `src`/`public`/`scripts` files matched local, served `/`, `/styles.css`,
+  `/app.js`, `/favicon.svg` matched local `public/`, `/api/state` returned
+  `projects` and `settings`, `npm run watchdog:check` clean. Nonfatal: the
+  active-run postcheck fetch failed and did not fail the restart.
