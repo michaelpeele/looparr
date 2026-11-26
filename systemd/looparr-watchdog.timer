@@ -1,0 +1,13 @@
+[Unit]
+Description=Looparr watchdog timer (5-minute recovery sweep)
+Documentation=file:///home/michaelpeele/ai-projects/looparr/.project_documents/PLAN-watchdog-timer.md
+# Triggers looparr-watchdog.service, which runs scripts/restart-watchdog.sh timer.
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=looparr-watchdog.service
+
+[Install]
+WantedBy=timers.target

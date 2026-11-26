@@ -1,0 +1,16 @@
+[Unit]
+Description=Looparr watchdog (re-converge an interrupted restart)
+# Runs scripts/restart-watchdog.sh in timer mode: fix under the restart lock,
+# quiet on a held lock (exit 75), read-only review every 5th cycle.
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# __LOOPARR_REPO__ is rewritten to the absolute repo path at install time by
+# scripts/install-watchdog-timer.sh (sed substitution into the user unit copy).
+WorkingDirectory=__LOOPARR_REPO__
+ExecStart=/bin/bash __LOOPARR_REPO__/scripts/restart-watchdog.sh timer
+# Belt-and-braces: the script already normalizes exit 75 to 0, so 75 should
+# never escape, but accept it here too so a held lock is never a failed unit.
+SuccessExitStatus=0 75

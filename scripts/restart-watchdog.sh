@@ -18,18 +18,24 @@ set -Eeuo pipefail
 #   check  Startless check only: exit 0 when a looparr container is running,
 #          exit 1 when the service is down (regardless of orphans). Never
 #          changes anything and never takes the restart lock.
+#   timer  systemd-timer cycle: run the fix body under the restart lock, keep a
+#          cycle counter, treat a held lock (exit 75) as a quiet `busy:` skip,
+#          and every 5th cycle run the read-only check body as a `review:` pass.
+#          Never bypasses scripts/restart-lock.sh and never reports a held lock
+#          as a failure.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 MODE="fix"
 case "${1:-}" in
-  fix|check) MODE="$1" ;;
-  -h|--help) printf 'Usage: scripts/restart-watchdog.sh [fix|check]\n'; exit 0 ;;
-  *) printf 'Usage: scripts/restart-watchdog.sh [fix|check]\n' >&2; exit 2 ;;
+  fix|check|timer) MODE="$1" ;;
+  -h|--help) printf 'Usage: scripts/restart-watchdog.sh [fix|check|timer]\n'; exit 0 ;;
+  *) printf 'Usage: scripts/restart-watchdog.sh [fix|check|timer]\n' >&2; exit 2 ;;
 esac
 
 LOG_FILE="${LOOPARR_WATCHDOG_LOG:-$ROOT/logs/watchdog.log}"
+CYCLE_FILE="${LOOPARR_WATCHDOG_CYCLE_FILE:-$ROOT/logs/watchdog-cycle-count}"
 LOCAL_PORT="${LOOPARR_LOCAL_PORT:-4188}"
 
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -37,6 +43,56 @@ mkdir -p "$(dirname "$LOG_FILE")"
 log() {
   printf '[%s] [looparr-watchdog] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG_FILE"
 }
+
+# timer mode owns cycle counting, exit-75 normalization, and the every-5th
+# review. It delegates the mutate pass to `restart-watchdog.sh fix` under the
+# restart lock (never bypassing restart-lock.sh) and the review pass to the
+# read-only `restart-watchdog.sh check` body.
+run_timer_mode() {
+  local count=0
+  if [[ -f "$CYCLE_FILE" ]]; then
+    read -r count <"$CYCLE_FILE" 2>/dev/null || count=0
+  fi
+  if ! [[ "$count" =~ ^[0-9]+$ ]]; then
+    count=0
+  fi
+  count=$((count + 1))
+  printf '%s\n' "$count" >"$CYCLE_FILE"
+
+  local fix_status=0
+  set +e
+  bash "$ROOT/scripts/restart-lock.sh" bash "$ROOT/scripts/restart-watchdog.sh" fix
+  fix_status=$?
+  set -e
+
+  if [[ "$fix_status" -eq 75 ]]; then
+    log "busy: restarting/promotion lock held; skipping this cycle"
+    exit 0
+  fi
+  if [[ "$fix_status" -ne 0 ]]; then
+    exit 1
+  fi
+
+  if (( count % 5 == 0 )); then
+    local check_status=0
+    set +e
+    bash "$ROOT/scripts/restart-watchdog.sh" check
+    check_status=$?
+    set -e
+    if [[ "$check_status" -eq 0 ]]; then
+      log "review: looparr service is up (cycle ${count})"
+    else
+      log "FAILED: review check reports the service down (cycle ${count})"
+      exit 1
+    fi
+  fi
+
+  exit 0
+}
+
+if [[ "$MODE" == "timer" ]]; then
+  run_timer_mode
+fi
 
 # fix mode must not race an ongoing promotion or restart; rejections bubble out
 # of restart-lock.sh (exit 75) with their own log entry. check mode never

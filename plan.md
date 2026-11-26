@@ -12,12 +12,12 @@ Stale production assets have shipped three times. For every batch that changes s
 
 ## Hosted deployment baseline
 
-- [ ] Watchdog timer mapped plan — see [PLAN-watchdog-timer.md](.project_documents/PLAN-watchdog-timer.md). Tasks:
-  - [ ] Add `timer` mode to `scripts/restart-watchdog.sh`: cycle counter file in `logs/`, exit-75 `busy:` log-only branch, failure `FAILED:` lines, every-5th-cycle read-only `review:` check (required for acceptance: an off stack must be recovered by the fix pass earlier in the same cycle)
-  - [ ] Add `systemd/looparr-watchdog.timer` + `systemd/looparr-watchdog.service` (5-min cadence, `Persistent=true`, repo-path placeholder)
-  - [ ] Add executable `scripts/install-watchdog-timer.sh` to install, `daemon-reload`, `enable --now`, and `enable-linger` the units (plus `--uninstall`)
-  - [ ] Add `scripts/test-watchdog-timer.js` static guards (units reference `restart-watchdog.sh`, Persistent, 5-min cadence, timer mode, exit-75 log-only, review check) and keep `npm test` green
-  - [ ] Verify: host drill per plan (recovery within one period, `review:` line, `busy:` quiet on held lock); record in `.project_documents/PROGRESS.md`
+- [x] Watchdog timer mapped plan — see [PLAN-watchdog-timer.md](.project_documents/PLAN-watchdog-timer.md). Tasks:
+  - [x] Add `timer` mode to `scripts/restart-watchdog.sh`: cycle counter file in `logs/`, exit-75 `busy:` log-only branch, failure `FAILED:` lines, every-5th-cycle read-only `review:` check (required for acceptance: an off stack must be recovered by the fix pass earlier in the same cycle)
+  - [x] Add `systemd/looparr-watchdog.timer` + `systemd/looparr-watchdog.service` (5-min cadence, `Persistent=true`, repo-path placeholder)
+  - [x] Add executable `scripts/install-watchdog-timer.sh` to install, `daemon-reload`, `enable --now`, and `enable-linger` the units (plus `--uninstall`)
+  - [x] Add `scripts/test-watchdog-timer.js` static guards (units reference `restart-watchdog.sh`, Persistent, 5-min cadence, timer mode, exit-75 log-only, review check) and keep `npm test` green
+  - [x] Verify: host drill per plan (recovery within one period, `review:` line, `busy:` quiet on held lock); record in `.project_documents/PROGRESS.md`
 - [x] Run promotions outside the agent cgroup with `systemd-run --user --unit=looparr-promote` or a dedicated user service, so rate-limit backoff, SIGKILL, or cgroup cleanup cannot kill compose between container creation and start. Agents may still request promotions.
 - [ ] (plan) Durable resume snapshot — see [PLAN-durable-resume-snapshot.md](.project_documents/PLAN-durable-resume-snapshot.md). Current task: persist a serializable runtime snapshot (phase, status, task, step bookkeeping, rotation cursor, session ids) so a crash or purposeful restart resumes the same resumable state instead of dropping to seed; capture error/idle states; restore with the existing provenance/TTL gates.
 - [ ] (plan) Promotion concurrency lock — see [PLAN-promotion-lock.md](.project_documents/PLAN-promotion-lock.md)
