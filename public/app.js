@@ -2133,6 +2133,19 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     }, []);
   }
 
+  function visibleTaskIndexes(tasks, showCompleted) {
+    return (tasks || [])
+      .filter((task) => showCompleted || !task.checked)
+      .map((task) => task.index);
+  }
+
+  function visibleTaskNeighbor(visibleIndexes, fromTaskIndex, direction) {
+    const position = visibleIndexes.indexOf(fromTaskIndex);
+    if (position < 0) return null;
+    const target = visibleIndexes[position + direction];
+    return target === undefined ? null : target;
+  }
+
   function reorderPlanTask(content, fromTaskIndex, toTaskIndex) {
     const lines = String(content || '').split('\n');
     const taskLines = planTaskLineIndexes(lines.join('\n'));
@@ -2231,9 +2244,11 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       restoreChecklistFocus(focusAction, focusTaskIndex);
       return;
     }
-    const lastIndex = app.planTaskCount - 1;
-    dom.checklist.innerHTML = visible.map(({ task, taskIndex }) => {
+    const visibleIndexes = visible.map(({ taskIndex }) => taskIndex);
+    dom.checklist.innerHTML = visible.map(({ task, taskIndex }, visiblePosition) => {
       const editing = editingTaskIndex === taskIndex;
+      const previousVisibleIndex = visibleIndexes[visiblePosition - 1];
+      const nextVisibleIndex = visibleIndexes[visiblePosition + 1];
       const taskText = editing
         ? `<input class="task-edit-input" data-action="edit-input" data-task-index="${taskIndex}" value="${esc(task.text || '')}">`
         : `<span class="task-text">${esc(task.text || '(empty task)')}</span>`;
@@ -2262,10 +2277,10 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
         <div class="task-controls">
           <button class="move-button drag-handle" type="button" data-action="drag" data-task-index="${taskIndex}" title="Drag to reorder task" aria-label="Drag to reorder task">☰</button>
           <div class="task-move">
-            <button class="move-button" type="button" data-action="move-top" data-task-index="${taskIndex}" ${taskIndex === 0 ? 'disabled' : ''} aria-label="Move task to top">⇈</button>
-            <button class="move-button" type="button" data-action="move-up" data-task-index="${taskIndex}" ${taskIndex === 0 ? 'disabled' : ''} aria-label="Move task up">↑</button>
-            <button class="move-button" type="button" data-action="move-down" data-task-index="${taskIndex}" ${taskIndex === lastIndex ? 'disabled' : ''} aria-label="Move task down">↓</button>
-            <button class="move-button" type="button" data-action="move-bottom" data-task-index="${taskIndex}" ${taskIndex === lastIndex ? 'disabled' : ''} aria-label="Move task to bottom">⇊</button>
+            <button class="move-button" type="button" data-action="move-top" data-task-index="${taskIndex}" ${previousVisibleIndex === undefined ? 'disabled' : ''} aria-label="Move task to top">⇈</button>
+            <button class="move-button" type="button" data-action="move-up" data-task-index="${taskIndex}" ${previousVisibleIndex === undefined ? 'disabled' : ''} aria-label="Move task up">↑</button>
+            <button class="move-button" type="button" data-action="move-down" data-task-index="${taskIndex}" ${nextVisibleIndex === undefined ? 'disabled' : ''} aria-label="Move task down">↓</button>
+            <button class="move-button" type="button" data-action="move-bottom" data-task-index="${taskIndex}" ${nextVisibleIndex === undefined ? 'disabled' : ''} aria-label="Move task to bottom">⇊</button>
           </div>
           <div class="task-actions">
             ${editing
@@ -3884,14 +3899,14 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       void deleteTask(taskIndex);
       return;
     }
-    const lastIndex = app.planTaskCount - 1;
+    const visibleIndexes = visibleTaskIndexes(app.currentPlan?.tasks, app.showCompleted);
     let toTaskIndex;
-    if (action === 'move-top') toTaskIndex = 0;
-    else if (action === 'move-bottom') toTaskIndex = lastIndex;
-    else if (action === 'move-up') toTaskIndex = taskIndex - 1;
-    else if (action === 'move-down') toTaskIndex = taskIndex + 1;
+    if (action === 'move-top') toTaskIndex = visibleIndexes[0];
+    else if (action === 'move-bottom') toTaskIndex = visibleIndexes[visibleIndexes.length - 1];
+    else if (action === 'move-up') toTaskIndex = visibleTaskNeighbor(visibleIndexes, taskIndex, -1);
+    else if (action === 'move-down') toTaskIndex = visibleTaskNeighbor(visibleIndexes, taskIndex, 1);
     else return;
-    if (toTaskIndex < 0 || toTaskIndex >= app.planTaskCount || toTaskIndex === taskIndex) return;
+    if (toTaskIndex == null || toTaskIndex < 0 || toTaskIndex >= app.planTaskCount || toTaskIndex === taskIndex) return;
     await reorderChecklistTask(taskIndex, toTaskIndex);
   });
   dom.toggleCompletedTasks?.addEventListener('click', toggleCompleted);
@@ -3926,8 +3941,9 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     const handle = target?.closest('.drag-handle[data-action="drag"]');
     if (!handle || handle.disabled || !dom.checklist.contains(handle)) return;
     const fromTaskIndex = Number(handle.dataset.taskIndex);
-    const toTaskIndex = fromTaskIndex + (event.key === 'ArrowUp' ? -1 : 1);
-    if (!Number.isInteger(fromTaskIndex) || toTaskIndex < 0 || toTaskIndex >= app.planTaskCount) return;
+    const visibleIndexes = visibleTaskIndexes(app.currentPlan?.tasks, app.showCompleted);
+    const toTaskIndex = visibleTaskNeighbor(visibleIndexes, fromTaskIndex, event.key === 'ArrowUp' ? -1 : 1);
+    if (!Number.isInteger(fromTaskIndex) || toTaskIndex == null || toTaskIndex < 0 || toTaskIndex >= app.planTaskCount) return;
     event.preventDefault();
     void reorderChecklistTask(fromTaskIndex, toTaskIndex);
   });
