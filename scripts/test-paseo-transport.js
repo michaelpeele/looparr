@@ -1,5 +1,9 @@
 'use strict';
 
+// The runner modules capture LOOPARR_EXECUTOR_URL at load time. This host runs
+// the executor, so clear it before requiring them to exercise direct CLI mode.
+delete process.env.LOOPARR_EXECUTOR_URL;
+
 // Focused tests for the Paseo run adapter (PLAN-02/03): run flags and model
 // namespace handling, default-model fallback, unknown-model retry, import/send
 // resume, labels, workspace reuse, attach/wait usage, stop on cancel, robust
@@ -13,6 +17,10 @@ const path = require('path');
 
 const paseoTransport = require('../src/paseo-transport');
 const runners = require('../src/runners');
+const vibeRunner = require('../src/runners/vibe');
+const kiloRunner = require('../src/runners/kilo');
+const { buildVibeArgs } = require('../src/vibe-command');
+const { buildKiloArgs, resolveKiloModel } = require('../src/kilo-command');
 
 const WORKSPACE_CWD = '/tmp/looparr-paseo-project';
 const AGENT_ID = 'agent-12345678';
@@ -396,6 +404,149 @@ async function main() {
       assert.ok(stopped.ok, 'stopAgent resolves ok');
       assert.ok(findCall(readCalls(tmp), 'agent stop manual-id'), 'stopAgent calls paseo agent stop');
     });
+
+    // Fresh Vibe run through Paseo: mistral-vibe provider, namespaced model,
+    // and all four labels including runner=vibe.
+    writeFakePaseo(tmp);
+    await withFakePaseo(tmp, { waitStatus: 'idle' }, async () => {
+      const { done } = runSpawnRun(tmp, { runnerId: 'vibe', model: 'zai-glm-5-3-flash-vibe-free' });
+      await done;
+      const runArgs = runArgsFrom(readCalls(tmp));
+      assert.ok(runArgs.length > 0, 'vibe run call made');
+      assert.equal(runArgs[runArgs.indexOf('--provider') + 1], 'mistral-vibe', 'vibe uses mistral-vibe provider');
+      assert.equal(runArgs[runArgs.indexOf('--model') + 1], 'mistral-vibe/zai-glm-5-3-flash-vibe-free',
+        'vibe model namespaced under mistral-vibe');
+      for (const label of ['looparr=true', 'runner=vibe', 'runKey=run-key-1', 'projectId=proj-1']) {
+        assert.ok(runArgs.includes(label), `vibe run carries label ${label}`);
+      }
+    });
+
+    // Fresh Kilo run through Paseo: kilo provider, `kilo/` namespace stripped then
+    // re-prefixed, and all four labels including runner=kilo.
+    writeFakePaseo(tmp);
+    await withFakePaseo(tmp, { waitStatus: 'idle' }, async () => {
+      const { done } = runSpawnRun(tmp, { runnerId: 'kilo', model: 'kilo/baidu/ernie-5.5-flash-preview:free' });
+      await done;
+      const runArgs = runArgsFrom(readCalls(tmp));
+      assert.ok(runArgs.length > 0, 'kilo run call made');
+      assert.equal(runArgs[runArgs.indexOf('--provider') + 1], 'kilo', 'kilo uses kilo provider');
+      assert.equal(runArgs[runArgs.indexOf('--model') + 1], 'kilo/baidu/ernie-5.5-flash-preview:free',
+        'kilo model drops then re-adds the kilo namespace');
+      for (const label of ['looparr=true', 'runner=kilo', 'runKey=run-key-1', 'projectId=proj-1']) {
+        assert.ok(runArgs.includes(label), `kilo run carries label ${label}`);
+      }
+    });
+
+    // Empty model on both new runners omits --model entirely (provider default).
+    writeFakePaseo(tmp);
+    for (const [runnerId, provider] of [['vibe', 'mistral-vibe'], ['kilo', 'kilo']]) {
+      await withFakePaseo(tmp, { waitStatus: 'idle' }, async () => {
+        const { done } = runSpawnRun(tmp, { runnerId, model: '' });
+        await done;
+        const runArgs = runArgsFrom(readCalls(tmp));
+        assert.equal(runArgs.indexOf('--model'), -1, `${runnerId} empty model omits --model`);
+        assert.equal(runArgs[runArgs.indexOf('--provider') + 1], provider, `${runnerId} provider still set`);
+      });
+    }
+
+    // Unknown-model retry works for vibe and kilo: first run with --model is
+    // rejected, the retry drops it and completes on the provider default.
+    writeFakePaseo(tmp);
+    for (const [runnerId, model] of [
+      ['vibe', 'zai-glm-5-3-flash-vibe-free'],
+      ['kilo', 'kilo/baidu/ernie-5.5-flash-preview:free']
+    ]) {
+      await withFakePaseo(tmp, { waitStatus: 'idle', runErrorUnknownModel: true }, async () => {
+        const { handle, logs, done } = runSpawnRun(tmp, { runnerId, model }, { runErrorUnknownModel: true });
+        const code = await done;
+        assert.equal(code, 0, `${runnerId} unknown-model retry exits 0`);
+        assert.equal(handle.paseoAgentId, AGENT_ID, `${runnerId} agent recorded after retry`);
+        const runs = readCalls(tmp).filter((call) => Array.isArray(call) && call[0] === 'run');
+        assert.equal(runs.length, 2, `${runnerId} two run calls: rejected then default`);
+        assert.ok(runs[0].includes('--model'), `${runnerId} first run requested the model`);
+        assert.ok(!runs[1].includes('--model'), `${runnerId} retry omitted the model`);
+        const system = logs.filter(([stream]) => stream === 'system').map(([, text]) => text).join('|');
+        assert.ok(/retrying with the default model/.test(system), `${runnerId} retry is logged`);
+      });
+    }
+
+    // Kilo import guard: resume never runs `paseo import`, logs the ACP
+    // session.list warning, and closes with a failure code.
+    writeFakePaseo(tmp);
+    await withFakePaseo(tmp, { waitStatus: 'idle' }, async () => {
+      const { logs, done } = runResume(tmp, { runnerId: 'kilo' });
+      const code = await done;
+      assert.equal(code, 1, 'kilo resume closes with a failure code');
+      const calls = readCalls(tmp);
+      assert.ok(!calls.some((call) => Array.isArray(call) && call[0] === 'import'),
+        'kilo resume never invokes paseo import');
+      const system = logs.filter(([stream]) => stream === 'system').map(([, text]) => text).join('|');
+      assert.ok(/Kilo exposes no ACP session\.list capability/.test(system),
+        'kilo import guard logs the unsupported-capability warning');
+    });
+
+    // Vibe conflict guard: the known conflicting session is never imported; a
+    // fresh run starts instead and the warning is logged.
+    writeFakePaseo(tmp);
+    await withFakePaseo(tmp, { waitStatus: 'idle' }, async () => {
+      const { logs, done } = runResume(tmp, {
+        runnerId: 'vibe',
+        sessionId: '59bfc71c-7943-3403-60f4-57ac3aeedfa0'
+      });
+      const code = await done;
+      assert.equal(code, 0, 'vibe conflict falls back to a fresh run and exits 0');
+      const calls = readCalls(tmp);
+      assert.ok(!calls.some((call) => Array.isArray(call) && call[0] === 'import'),
+        'vibe conflict never invokes paseo import');
+      const runCall = calls.find((call) => Array.isArray(call) && call[0] === 'run');
+      assert.ok(runCall, 'vibe conflict starts a fresh run');
+      assert.ok(runCall.includes('mistral-vibe'), 'fresh vibe fallback uses the mistral-vibe provider');
+      const system = logs.filter(([stream]) => stream === 'system').map(([, text]) => text).join('|');
+      assert.ok(/known resume conflict/.test(system), 'vibe conflict logs the warning');
+    });
+
+    // Runner metadata: buildPaseoMetadata and buildCommand expose provider/model.
+    assert.deepEqual(
+      vibeRunner.buildPaseoMetadata({ model: 'zai-glm-5-3-flash-vibe-free' }),
+      { provider: 'mistral-vibe', model: 'mistral-vibe/zai-glm-5-3-flash-vibe-free' },
+      'vibe metadata namespaced under mistral-vibe'
+    );
+    assert.deepEqual(
+      vibeRunner.buildPaseoMetadata({ model: 'zai-glm-5-3-flash' }),
+      { provider: 'mistral-vibe', model: 'mistral-vibe/zai-glm-5-3-flash' },
+      'vibe alias passes through unchanged'
+    );
+    assert.equal(vibeRunner.buildPaseoMetadata({ model: '' }).model, '', 'vibe empty model metadata is empty');
+    assert.deepEqual(
+      kiloRunner.buildPaseoMetadata({ model: 'kilo/baidu/ernie-5.5-flash-preview:free' }),
+      { provider: 'kilo', model: 'kilo/baidu/ernie-5.5-flash-preview:free' },
+      'kilo metadata strips then re-adds the kilo namespace'
+    );
+    assert.equal(kiloRunner.buildPaseoMetadata({ model: '' }).model, '', 'kilo empty model metadata is empty');
+
+    const vibeBuilt = vibeRunner.buildCommand({ prompt: 'meta check', cwd: WORKSPACE_CWD, model: 'zai-glm-5-3-flash-vibe-free' });
+    assert.equal(vibeBuilt.paseo.provider, 'mistral-vibe', 'vibe buildCommand paseo provider');
+    assert.equal(vibeBuilt.paseo.model, 'mistral-vibe/zai-glm-5-3-flash-vibe-free', 'vibe buildCommand paseo model');
+    assert.equal(vibeRunner.buildCommand({ prompt: 'meta check', cwd: WORKSPACE_CWD, model: '' }).paseo.model, '',
+      'vibe buildCommand empty model paseo model empty');
+    const kiloBuilt = kiloRunner.buildCommand({ prompt: 'meta check', cwd: WORKSPACE_CWD, model: 'kilo/baidu/ernie-5.5-flash-preview:free' });
+    assert.equal(kiloBuilt.paseo.provider, 'kilo', 'kilo buildCommand paseo provider');
+    assert.equal(kiloBuilt.paseo.model, 'kilo/baidu/ernie-5.5-flash-preview:free', 'kilo buildCommand paseo model');
+    assert.equal(kiloRunner.buildCommand({ prompt: 'meta check', cwd: WORKSPACE_CWD, model: '' }).paseo.model, '',
+      'kilo buildCommand empty model paseo model empty');
+
+    // Direct-mode regression: with the executor unset, vibe/kilo buildCommand keep
+    // the direct CLI command and args, only adding the paseo metadata field.
+    const vibeDirect = vibeRunner.buildCommand({ prompt: 'direct vibe', cwd: WORKSPACE_CWD, files: ['a.md'], model: 'zai-glm-5-3-flash' });
+    assert.equal(vibeDirect.command, 'vibe', 'vibe direct command unchanged');
+    assert.deepEqual(vibeDirect.args, buildVibeArgs({ prompt: 'direct vibe', files: ['a.md'], model: 'zai-glm-5-3-flash' }),
+      'vibe direct args unchanged');
+    assert.ok(vibeDirect.paseo && typeof vibeDirect.paseo === 'object', 'vibe direct adds paseo metadata');
+    const kiloDirect = kiloRunner.buildCommand({ prompt: 'direct kilo', cwd: WORKSPACE_CWD, files: ['b.md'], model: 'kilo/reflection/beam-free' });
+    assert.equal(kiloDirect.command, 'kilo', 'kilo direct command unchanged');
+    assert.deepEqual(kiloDirect.args, buildKiloArgs({ prompt: 'direct kilo', files: ['b.md'], model: resolveKiloModel('kilo/reflection/beam-free') }),
+      'kilo direct args unchanged');
+    assert.ok(kiloDirect.paseo && typeof kiloDirect.paseo === 'object', 'kilo direct adds paseo metadata');
 
     console.log('ALL TESTS PASSED');
   } finally {

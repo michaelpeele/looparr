@@ -26,9 +26,23 @@ const MODELS = [
   'kilo/liquid/lfm-3-1.7b:free'
 ];
 
+// Structured Paseo metadata for the Kilo runner: Paseo's `kilo` provider with
+// the sanitized `provider/model` id (empty means the Paseo default model). Kilo
+// model ids carry a leading `kilo/` namespace that is dropped before becoming
+// the model suffix, so `kilo/baidu/ernie-5.5-flash-preview:free` maps to
+// provider `kilo`, model `kilo/baidu/ernie-5.5-flash-preview:free`.
+function buildPaseoMetadata({ model = '' } = {}) {
+  const id = opencode.sanitizePaseoModelId(model, 'kilo');
+  return {
+    provider: 'kilo',
+    model: id ? `kilo/${id}` : ''
+  };
+}
+
 function buildCommand({ prompt, cwd, files = [], model = '', runKey, projectId, phase, task }) {
   const resolvedModel = resolveKiloModel(model);
   const args = buildKiloArgs({ prompt, files, model: resolvedModel });
+  const paseo = buildPaseoMetadata({ model });
   if (EXECUTOR_URL) {
     if (typeof runKey !== 'string' || !runKey.trim()) {
       throw new Error('runKey is required in bridge mode');
@@ -55,13 +69,15 @@ function buildCommand({ prompt, cwd, files = [], model = '', runKey, projectId, 
           })
         },
         shell: false
-      }
+      },
+      paseo
     };
   }
   return {
     command: KILO_BIN,
     args,
-    options: { cwd, env: process.env, shell: false }
+    options: { cwd, env: process.env, shell: false },
+    paseo
   };
 }
 
@@ -73,6 +89,7 @@ module.exports = {
     : 'Local Kilo CLI; fresh kilo run per step.',
   models: MODELS,
   buildCommand,
+  buildPaseoMetadata,
   isRateLimit: opencode.isRateLimit,
   cancelStaleRuns: opencode.cancelStaleRuns,
   listActiveRuns: opencode.listActiveRuns

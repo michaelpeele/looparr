@@ -23,8 +23,22 @@ const MODELS = [
   'zai-glm-5-3-flash'
 ];
 
+// Structured Paseo metadata for the Vibe runner: Paseo's `mistral-vibe` provider
+// with the sanitized `provider/model` id (empty means the Paseo default model).
+// The bare free-lane aliases (`zai-glm-5-3-flash-vibe-free`, `zai-glm-5-3-flash`)
+// and any custom slash-free id pass through unchanged; only a foreign
+// `namespace/...` id falls back to the provider default.
+function buildPaseoMetadata({ model = '' } = {}) {
+  const id = opencode.sanitizePaseoModelId(model, 'mistral-vibe');
+  return {
+    provider: 'mistral-vibe',
+    model: id ? `mistral-vibe/${id}` : ''
+  };
+}
+
 function buildCommand({ prompt, cwd, files = [], model = '', runKey, projectId, phase, task }) {
   const args = buildVibeArgs({ prompt, files, model });
+  const paseo = buildPaseoMetadata({ model });
   if (EXECUTOR_URL) {
     if (typeof runKey !== 'string' || !runKey.trim()) {
       throw new Error('runKey is required in bridge mode');
@@ -51,13 +65,15 @@ function buildCommand({ prompt, cwd, files = [], model = '', runKey, projectId, 
           })
         },
         shell: false
-      }
+      },
+      paseo
     };
   }
   return {
     command: VIBE_BIN,
     args,
-    options: { cwd, env: process.env, shell: false }
+    options: { cwd, env: process.env, shell: false },
+    paseo
   };
 }
 
@@ -85,6 +101,7 @@ module.exports = {
     : 'Local Mistral Vibe; fresh vibe run per step, capped at $0.',
   models: MODELS,
   buildCommand,
+  buildPaseoMetadata,
   isRateLimit,
   cancelStaleRuns: opencode.cancelStaleRuns,
   listActiveRuns: opencode.listActiveRuns

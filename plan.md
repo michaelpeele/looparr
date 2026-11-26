@@ -10,6 +10,10 @@ Stale production assets have shipped three times. For every batch that changes s
 - Confirm container files match local source timestamps or content.
 - Only then mark the plan item complete and write the handoff.
 
+## Promotion automation batch
+
+- [ ] Make promotion idempotent and observable — see [PLAN-idempotent-promotion.md](.project_documents/PLAN-idempotent-promotion.md). Automatable scope: known promotion log/status artifact, pre-promote evidence check (skip rebuild when current source hashes already deployed + container healthy + `/api/state` OK), bounded compose phase logging/journal capture, lock release on timeout/failure, watchdog-aware recovery hook, and focused tests. No manual UI gates.
+
 ## Hosted deployment baseline
 
 - [x] Test with a task at item 1 with 8 items complete and then task 10. If I hit single up arrow it should move 10 to position 1, it is moving it to position 9 so I have to click many times. Same behavior in the opposite direction
@@ -219,7 +223,7 @@ Opt-in Paseo transport so spawned agent CLI sessions (mobile session visibility 
 
 - [x] (plan 02) Paseo run adapter — see [PLAN-02-paseo-run-adapter.md](.project_documents/PLAN-02-paseo-run-adapter.md): new `src/paseo-transport.js` adapter (spawn Paseo agent, stream output, wait, stop on cancel) integrated into the engine and self-heal spawn paths.
 - [x] (plan 03) OpenCode through Paseo — see [PLAN-03-opencode-paseo-wiring.md](.project_documents/PLAN-03-opencode-paseo-wiring.md): map the `opencode` runner to Paseo's built-in provider, strip Looparr model-id namespace, fall back to Paseo default model.
-- [ ] (plan 04) Vibe and Kilo through Paseo — see [PLAN-04-vibe-kilo-paseo-wiring.md](.project_documents/PLAN-04-vibe-kilo-paseo-wiring.md): map `vibe` → `mistral-vibe` and `kilo` Paseo providers; fresh-agent scope first.
+- [x] (plan 04) Vibe and Kilo through Paseo — see [PLAN-04-vibe-kilo-paseo-wiring.md](.project_documents/PLAN-04-vibe-kilo-paseo-wiring.md): map `vibe` → `mistral-vibe` and `kilo` Paseo providers; fresh-agent scope first. Done 2026-11-26: vibe/kilo `buildPaseoMetadata` + additive `paseo` field in both modes; paseo transport guards (kilo no-import, vibe conflicting-session fallback to fresh spawn), model normalization/unknown-model retry covered; targeted paseo tests + `npm test` green; prod evidence showed healthy container `c347c9c65a2f` on image `sha256:b3344488...` with matching plan 04 file hashes, served assets matched local, `/api/state` OK, `npm run watchdog:check` steady. Promotion observability gap recorded; top task added for idempotent/observable promotion.
 - [ ] (plan 05) Verification, rollback, rollout — see [PLAN-05-verification-and-rollout.md](.project_documents/PLAN-05-verification-and-rollout.md): focused tests from 01-04, direct mode regression with `paseoTransport=false`, Paseo mode with `true`, production deploy verification per lines 3-11, rollback path.
 - [ ] I don't need to know the access route (card on project table). Make this a setting on the settings tab to show the card, and then turn it off
 - [ ] I don't need to know all settings are done in a card, if there are settings that need to be done put a badge in the upper right of the gear icon for settings with a count of how many items need to be completed instead.

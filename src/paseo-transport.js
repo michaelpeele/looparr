@@ -13,6 +13,10 @@ const { paseoProviderForRunner } = require('./runners');
 const { sanitizePaseoModelId } = require('./runners/opencode');
 const { normalizeOpenCodeSessionId } = require('./runners/opencode-session');
 
+// Vibe has a known resume conflict on this provider session id: importing it
+// wedges the agent. Never import it; fall back to a fresh agent for the step.
+const VIBE_CONFLICTING_SESSION_ID = '59bfc71c-7943-3403-60f4-57ac3aeedfa0';
+
 function underHostExecutor() {
   return Boolean(process.env.LOOPARR_EXECUTOR_URL);
 }
@@ -445,6 +449,28 @@ function resumeRun(opts) {
     runnerId = '',
     onLog = () => {}
   } = opts;
+  const normalizedRunnerId = String(runnerId || '').trim().toLowerCase();
+
+  // Kilo exposes no ACP `session.list` capability, so existing Kilo sessions
+  // cannot be imported yet. Defense in depth: the engine already routes
+  // non-opencode runners to fresh runs, but never attempt a Kilo import if one
+  // reaches here.
+  if (normalizedRunnerId === 'kilo') {
+    const kiloHandle = createHandle(cwd, onLog);
+    onLog('system', '⚠ Kilo exposes no ACP session.list capability; existing Kilo sessions cannot be imported yet. Use a fresh run.');
+    // Emit close asynchronously so the caller can attach its 'close' listener
+    // first (the same contract the spawn/import paths keep).
+    process.nextTick(() => kiloHandle._finishOnce(1));
+    return kiloHandle;
+  }
+
+  // Vibe has a known resume conflict on this session id; never import it. Fall
+  // back to a fresh agent for the same step, reusing the spawn wiring.
+  if (normalizedRunnerId === 'vibe' && String(sessionId || '') === VIBE_CONFLICTING_SESSION_ID) {
+    onLog('system', `⚠ Vibe session ${VIBE_CONFLICTING_SESSION_ID} has a known resume conflict; starting a fresh agent instead.`);
+    return spawnRun({ ...opts, runnerId: 'vibe' });
+  }
+
   const handle = createHandle(cwd, onLog);
   const provider = paseoProviderForRunner(runnerId);
   const importArgs = [
