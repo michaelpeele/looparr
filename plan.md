@@ -218,7 +218,7 @@ Opt-in Paseo transport so spawned agent CLI sessions (mobile session visibility 
 ## Desktop layout and drawer batch
 
 - [x] (plan 02) Paseo run adapter — see [PLAN-02-paseo-run-adapter.md](.project_documents/PLAN-02-paseo-run-adapter.md): new `src/paseo-transport.js` adapter (spawn Paseo agent, stream output, wait, stop on cancel) integrated into the engine and self-heal spawn paths.
-- [ ] (plan 03) OpenCode through Paseo — see [PLAN-03-opencode-paseo-wiring.md](.project_documents/PLAN-03-opencode-paseo-wiring.md): map the `opencode` runner to Paseo's built-in provider, strip Looparr model-id namespace, fall back to Paseo default model.
+- [x] (plan 03) OpenCode through Paseo — see [PLAN-03-opencode-paseo-wiring.md](.project_documents/PLAN-03-opencode-paseo-wiring.md): map the `opencode` runner to Paseo's built-in provider, strip Looparr model-id namespace, fall back to Paseo default model.
 - [ ] (plan 04) Vibe and Kilo through Paseo — see [PLAN-04-vibe-kilo-paseo-wiring.md](.project_documents/PLAN-04-vibe-kilo-paseo-wiring.md): map `vibe` → `mistral-vibe` and `kilo` Paseo providers; fresh-agent scope first.
 - [ ] (plan 05) Verification, rollback, rollout — see [PLAN-05-verification-and-rollout.md](.project_documents/PLAN-05-verification-and-rollout.md): focused tests from 01-04, direct mode regression with `paseoTransport=false`, Paseo mode with `true`, production deploy verification per lines 3-11, rollback path.
 - [ ] I don't need to know the access route (card on project table). Make this a setting on the settings tab to show the card, and then turn it off

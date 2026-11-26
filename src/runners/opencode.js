@@ -141,12 +141,40 @@ async function ensureServer() {
   return serverPromise;
 }
 
+// Paseo's built-in OpenCode provider needs the model in `provider/model` form.
+// Looparr model ids may be bare (`big-pickle`), already OpenCode-namespaced
+// (`opencode/big-pickle`), or carry a foreign Looparr namespace (`kilo/...`).
+// Only the first two name a real OpenCode model; a foreign namespace falls back
+// to the Paseo default model (empty model id). Never emit `opencode/kilo/...`.
+function sanitizePaseoModelId(model, provider = 'opencode') {
+  const raw = String(model == null ? '' : model).trim();
+  if (!raw) return '';
+  const slash = raw.indexOf('/');
+  if (slash <= 0) return raw;
+  const namespace = raw.slice(0, slash);
+  if (namespace === provider) return raw.slice(slash + 1).trim();
+  return '';
+}
+
+// Structured Paseo metadata for the OpenCode runner: the built-in provider, the
+// sanitized `provider/model` id (empty means the Paseo default model), and the
+// normalized OpenCode session id used for import/send resume.
+function buildPaseoMetadata({ model = '', sessionId = '' } = {}) {
+  const id = sanitizePaseoModelId(model, 'opencode');
+  return {
+    provider: 'opencode',
+    model: id ? `opencode/${id}` : '',
+    sessionId: normalizeOpenCodeSessionId(sessionId)
+  };
+}
+
 function buildCommand({ prompt, cwd, url = SERVER_URL, files = [], model = '', runKey, projectId, phase, task, sessionId = '' }) {
   if (model) validateModelId(model, 'Model');
   const normalizedSessionId = normalizeOpenCodeSessionId(sessionId);
   if (sessionId && !normalizedSessionId) {
     throw new Error('invalid opencode sessionId');
   }
+  const paseo = buildPaseoMetadata({ model, sessionId: normalizedSessionId });
   if (EXECUTOR_URL) {
     if (typeof runKey !== 'string' || !runKey.trim()) {
       throw new Error('runKey is required in bridge mode');
@@ -165,7 +193,8 @@ function buildCommand({ prompt, cwd, url = SERVER_URL, files = [], model = '', r
           LOOPARR_TASK_PAYLOAD: JSON.stringify(payload)
         },
         shell: false
-      }
+      },
+      paseo
     };
   }
   const args = ['run'];
@@ -183,7 +212,8 @@ function buildCommand({ prompt, cwd, url = SERVER_URL, files = [], model = '', r
   return {
     command: 'opencode',
     args,
-    options: { cwd, env: process.env, shell: false }
+    options: { cwd, env: process.env, shell: false },
+    paseo
   };
 }
 
@@ -346,6 +376,8 @@ module.exports = {
   setHelpProviderForTests,
   ensureServer,
   buildCommand,
+  sanitizePaseoModelId,
+  buildPaseoMetadata,
   isRateLimit,
   cancelStaleRuns,
   listActiveRuns,

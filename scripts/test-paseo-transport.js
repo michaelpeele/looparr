@@ -1,15 +1,15 @@
 'use strict';
 
-// Focused tests for the Paseo run adapter (PLAN-02): run flags, labels,
-// workspace reuse, attach/wait usage, stop on cancel, robust JSON parsing,
-// every status mapping, and the stale-run cleanup. Uses a fake `paseo`
-// binary prepended to PATH.
+// Focused tests for the Paseo run adapter (PLAN-02/03): run flags and model
+// namespace handling, default-model fallback, unknown-model retry, import/send
+// resume, labels, workspace reuse, attach/wait usage, stop on cancel, robust
+// JSON parsing, every status mapping, and the stale-run cleanup. Uses a fake
+// `paseo` binary prepended to PATH.
 
 const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawnSync } = require('child_process');
 
 const paseoTransport = require('../src/paseo-transport');
 const runners = require('../src/runners');
@@ -17,7 +17,7 @@ const runners = require('../src/runners');
 const WORKSPACE_CWD = '/tmp/looparr-paseo-project';
 const AGENT_ID = 'agent-12345678';
 
-function writeFakePaseo(binDir, state) {
+function writeFakePaseo(binDir) {
   const scriptPath = path.join(binDir, 'paseo');
   fs.writeFileSync(scriptPath, `#!/usr/bin/env node
 const fs = require('fs');
@@ -33,7 +33,20 @@ if (command === 'workspace' && sub === 'ls') {
   je([{ workspaceId: 'wks_fixed', cwd: '${WORKSPACE_CWD}' }]);
 } else if (command === 'run') {
   if (state.runNoise) process.stdout.write('paseo: starting agent on daemon\\n');
-  je({ agentId: '${AGENT_ID}' });
+  const hasModel = args.includes('--model');
+  if (state.runErrorUnknownModel && hasModel) {
+    je({ error: { code: 'AGENT_CREATE_FAILED', message: 'Unknown model: not available' } });
+  } else {
+    const out = { agentId: '${AGENT_ID}' };
+    if (state.runSessionId) out.sessionId = state.runSessionId;
+    je(out);
+  }
+} else if (command === 'import') {
+  const out = { agentId: '${AGENT_ID}', status: 'created', provider: 'opencode' };
+  if (state.importSessionId) out.sessionId = state.importSessionId;
+  je(out);
+} else if (command === 'send') {
+  je({ agentId: args[1], status: 'sent' });
 } else if (command === 'attach') {
   process.stdout.write('stream line one\\n');
   process.stdout.write('stream line two\\n');
@@ -105,20 +118,47 @@ function runSpawnRun(tmp, overrides = {}, stateOverrides = {}) {
   const handle = paseoTransport.spawnRun({
     cwd: WORKSPACE_CWD,
     prompt: 'do the looparr task',
-    model: 'scope/model-id',
+    model: 'opencode/big-pickle',
     runKey: 'run-key-1',
     projectId: 'proj-1',
     phase: 'implement',
     task: 'the task text',
     title: 'Looparr title',
     runnerId: 'opencode',
-    onLog: (stream, chunk) => logs.push([stream, String(chunk)])
+    onLog: (stream, chunk) => logs.push([stream, String(chunk)]),
+    ...overrides
   });
   return {
     handle,
     logs,
     done: new Promise((resolve) => handle.once('close', resolve))
   };
+}
+
+function runResume(tmp, overrides = {}, stateOverrides = {}) {
+  const logs = [];
+  const state = { waitStatus: 'idle', ...stateOverrides };
+  fs.writeFileSync(fakeStatePath(tmp), JSON.stringify(state));
+  const handle = paseoTransport.resumeRun({
+    cwd: WORKSPACE_CWD,
+    prompt: 'do the resume task',
+    sessionId: 'ses_abc123',
+    runKey: 'run-key-1',
+    projectId: 'proj-1',
+    runnerId: 'opencode',
+    onLog: (stream, chunk) => logs.push([stream, String(chunk)]),
+    ...overrides
+  });
+  return {
+    handle,
+    logs,
+    done: new Promise((resolve) => handle.once('close', resolve))
+  };
+}
+
+function runArgsFrom(calls) {
+  const call = calls.find((entry) => Array.isArray(entry) && entry[0] === 'run');
+  return call || [];
 }
 
 async function main() {
@@ -161,8 +201,9 @@ async function main() {
     assert.deepEqual(paseoTransport.mapPaseoStatus('timeout'), { code: 124, kind: 'timed out' },
       'timeout maps to 124');
 
-    // Full run: flags, labels, workspace argument, attach/wait, streaming, idle close.
-    writeFakePaseo(tmp, {});
+    // Full run: exact flag order, namespaced model, labels, workspace, prompt
+    // last, attach/wait, streaming, idle close.
+    writeFakePaseo(tmp);
     for (const state of [
       { runNoise: false, waitStatus: 'idle' },
       { runNoise: true, waitStatus: 'idle' }
@@ -176,24 +217,21 @@ async function main() {
           assert.ok(handle.paseoAgentId === AGENT_ID, 'agentId recorded from noisy JSON');
         }
         const calls = readCalls(tmp);
-        const runCall = findCallWhere(calls, 'run ') || [];
-        assert.ok(runCall.length > 0, 'a run call was made');
-        const runArgs = runCall;
-        for (const flag of ['run', '--no-wait', '--json']) {
-          assert.ok(runArgs.includes(flag), `run carries ${flag}`);
-        }
-        for (const pair of [
-          ['--provider', 'opencode/scope/model-id'],
-          ['--cwd', WORKSPACE_CWD],
-          ['--title', 'Looparr title'],
-          ['--workspace', 'wks_fixed']
-        ]) {
-          assert.equal(runArgs[runArgs.indexOf(pair[0]) + 1], pair[1], `run carries ${pair[0]} ${pair[1]}`);
-        }
-        for (const label of ['looparr=true', 'runner=opencode', 'runKey=run-key-1', 'projectId=proj-1']) {
-          assert.ok(runArgs.includes(label), `run carries label ${label}`);
-        }
-        assert.ok(runArgs[runArgs.length - 1] === 'do the looparr task', 'run passes the prompt verbatim');
+        const runArgs = runArgsFrom(calls);
+        assert.ok(runArgs.length > 0, 'a run call was made');
+        assert.deepEqual(runArgs, [
+          'run', '--no-wait', '--json',
+          '--provider', 'opencode',
+          '--model', 'opencode/big-pickle',
+          '--cwd', WORKSPACE_CWD,
+          '--title', 'Looparr title',
+          '--label', 'looparr=true',
+          '--label', 'runner=opencode',
+          '--label', 'runKey=run-key-1',
+          '--label', 'projectId=proj-1',
+          '--workspace', 'wks_fixed',
+          'do the looparr task'
+        ], 'run flag order is exact and the prompt is last');
         assert.ok(findCall(calls, `attach ${AGENT_ID}`), 'attach called for the agent');
         assert.ok(findCallWhere(calls, `agent wait ${AGENT_ID} `), 'wait called for the agent');
         assert.equal(closeCode, 0, `idle finishes with exit 0 (got ${closeCode})`);
@@ -201,6 +239,88 @@ async function main() {
         assert.ok(texts.includes('out:stream line one'), 'attach output streams into onLog');
       });
     }
+
+    // Model namespace handling: bare and opencode-namespaced ids pass through;
+    // a foreign Looparr namespace falls back to the Paseo default model.
+    writeFakePaseo(tmp);
+    for (const [model, expectedModel] of [
+      ['big-pickle', 'opencode/big-pickle'],
+      ['opencode/big-pickle', 'opencode/big-pickle'],
+      ['kilo/baidu/ernie-5.5-flash-preview:free', null],
+      ['', null]
+    ]) {
+      await withFakePaseo(tmp, { waitStatus: 'idle' }, async () => {
+        const { done } = runSpawnRun(tmp, { model });
+        await done;
+        const runArgs = runArgsFrom(readCalls(tmp));
+        const modelIndex = runArgs.indexOf('--model');
+        if (expectedModel) {
+          assert.ok(modelIndex >= 0, `model ${model} emits --model`);
+          assert.equal(runArgs[modelIndex + 1], expectedModel, `model ${model} sanitized`);
+        } else {
+          assert.equal(modelIndex, -1, `model ${model} omits --model (default)`);
+        }
+        assert.ok(!runArgs.some((arg) => arg.startsWith('opencode/kilo/')),
+          'never emits a double namespace opencode/kilo/...');
+      });
+    }
+
+    // Unknown-model retry: first run with --model is rejected, second without
+    // the suffix succeeds and the agent is recorded.
+    writeFakePaseo(tmp);
+    await withFakePaseo(tmp, { waitStatus: 'idle', runErrorUnknownModel: true }, async () => {
+      const { handle, logs, done } = runSpawnRun(tmp, { model: 'opencode/big-pickle' }, { runErrorUnknownModel: true });
+      const code = await done;
+      assert.equal(code, 0, 'unknown-model retry finishes with exit 0');
+      assert.equal(handle.paseoAgentId, AGENT_ID, 'agent recorded after retry');
+      const runs = readCalls(tmp).filter((call) => Array.isArray(call) && call[0] === 'run');
+      assert.equal(runs.length, 2, 'two run calls: rejected then default');
+      assert.ok(runs[0].includes('--model'), 'first run requested the model');
+      assert.ok(!runs[1].includes('--model'), 'retry omitted the model');
+      const system = logs.filter(([stream]) => stream === 'system').map(([, text]) => text).join('|');
+      assert.ok(/retrying with the default model/.test(system), 'retry is logged');
+    });
+
+    // JSON provider session id is parsed and emitted.
+    writeFakePaseo(tmp);
+    await withFakePaseo(tmp, { waitStatus: 'idle', runSessionId: 'ses_fromrun' }, async () => {
+      const seen = [];
+      const { handle, done } = runSpawnRun(tmp, {}, { runSessionId: 'ses_fromrun' });
+      handle.on('sessionId', (id) => seen.push(id));
+      await done;
+      assert.equal(handle.paseoSessionId, 'ses_fromrun', 'provider session id recorded from run JSON');
+      assert.deepEqual(seen, ['ses_fromrun'], 'sessionId event emitted');
+    });
+
+    // Import then send resume: exact flag order, prompt last, streaming, close.
+    writeFakePaseo(tmp);
+    await withFakePaseo(tmp, { waitStatus: 'idle' }, async () => {
+      const { handle, logs, done } = runResume(tmp);
+      const code = await done;
+      assert.equal(code, 0, 'resume finishes with exit 0');
+      assert.equal(handle.paseoAgentId, AGENT_ID, 'resume records the imported agent id');
+      const calls = readCalls(tmp);
+      const importCall = calls.find((call) => Array.isArray(call) && call[0] === 'import');
+      assert.ok(importCall, 'an import call was made');
+      assert.deepEqual(importCall, [
+        'import', 'ses_abc123',
+        '--provider', 'opencode',
+        '--cwd', WORKSPACE_CWD,
+        '--label', 'looparr=true',
+        '--label', 'runner=opencode',
+        '--label', 'runKey=run-key-1',
+        '--label', 'projectId=proj-1',
+        '--json'
+      ], 'import flag order is exact');
+      const sendCall = calls.find((call) => Array.isArray(call) && call[0] === 'send');
+      assert.ok(sendCall, 'a send call was made');
+      assert.deepEqual(sendCall, ['send', AGENT_ID, 'do the resume task', '--no-wait', '--json'],
+        'send flag order is exact and the prompt is last');
+      assert.ok(findCall(calls, `attach ${AGENT_ID}`), 'attach called for the imported agent');
+      assert.ok(findCallWhere(calls, `agent wait ${AGENT_ID} `), 'wait called for the imported agent');
+      const texts = logs.map(([stream, text]) => `${stream}:${text}`).join('|');
+      assert.ok(texts.includes('out:stream line one'), 'attach output streams into onLog during resume');
+    });
 
     // Workspace reuse across two starts: the workspace id never changes.
     fs.writeFileSync(fakeStatePath(tmp), JSON.stringify({ waitStatus: 'idle' }));
@@ -210,18 +330,15 @@ async function main() {
       const second = runSpawnRun(tmp);
       await second.done;
       const workspaceFlags = readCalls(tmp)
-        .filter((call) => callText(call).startsWith('run '))
-        .map((call) => {
-          const args = Array.isArray(call) ? call : String(call).split(' ');
-          return args[args.indexOf('--workspace') + 1];
-        });
+        .filter((call) => Array.isArray(call) && call[0] === 'run')
+        .map((call) => call[call.indexOf('--workspace') + 1]);
       assert.equal(workspaceFlags.length, 2, 'two run calls observed');
       assert.equal(workspaceFlags[0], 'wks_fixed', 'first start reuses the stable workspace');
       assert.equal(workspaceFlags[1], 'wks_fixed', 'second start reuses the same workspace');
     });
 
     // Status mappings end to end: exit codes and log notes.
-    writeFakePaseo(tmp, {});
+    writeFakePaseo(tmp);
     for (const [status, expectedCode, expectNote] of [
       ['error', 1, false],
       ['permission', 1, true],
@@ -242,7 +359,7 @@ async function main() {
     }
 
     // Stop on cancel: the fake wait hangs until `agent stop` releases it.
-    writeFakePaseo(tmp, {});
+    writeFakePaseo(tmp);
     await withFakePaseo(tmp, {}, async () => {
       const state = { waitStatus: 'idle', waitHang: true };
       process.env.PASEO_FAKE_RELEASE = path.join(tmp, 'release.marker');
@@ -272,8 +389,8 @@ async function main() {
       const result = await paseoTransport.cleanStaleRuns({ projectId: 'proj-1', keepRunKey: 'run-key-1' });
       assert.ok(result.ok, 'cleanup resolves ok');
       const stops = readCalls(tmp)
-        .filter((call) => callText(call).startsWith('agent stop '))
-        .map((call) => (Array.isArray(call) ? call : String(call).split(' '))[2]);
+        .filter((call) => Array.isArray(call) && callText(call).startsWith('agent stop '))
+        .map((call) => call[2]);
       assert.deepEqual(stops.sort(), ['stale-1'], 'stale agent stopped, current run and foreign project untouched');
       const stopped = await paseoTransport.stopAgent('manual-id');
       assert.ok(stopped.ok, 'stopAgent resolves ok');

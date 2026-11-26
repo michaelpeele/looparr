@@ -319,6 +319,8 @@ function getState() {
         effectiveRunners: joinModelList(effectiveRunnerList(project)),
         activeRunner: rt.activeRunner || '',
         activeModel: rt.activeModel || '',
+        opencodeSessionId: rt.opencodeSessionId || '',
+        paseoAgentId: rt.paseoAgentId || '',
         model: project.model || '',
         seedModel: project.seedModel || '',
         analyzeModel: project.analyzeModel || '',
@@ -703,6 +705,7 @@ function snapshotRuntime(project, rt) {
     snapshot.rotationCursor = rt.rotationCursor;
   }
   if (typeof rt.resumeSessionId === 'string' && rt.resumeSessionId) snapshot.resumeSessionId = rt.resumeSessionId;
+  if (typeof rt.paseoAgentId === 'string' && rt.paseoAgentId) snapshot.paseoAgentId = rt.paseoAgentId;
   if (rt.planPhaseSnapshot && typeof rt.planPhaseSnapshot === 'object' && !Array.isArray(rt.planPhaseSnapshot)) {
     snapshot.planPhaseSnapshot = rt.planPhaseSnapshot;
   }
@@ -762,6 +765,7 @@ function writeCheckpointIntent(project, rt) {
 }
 
 function reconcileExternalPlan(project) {
+  if (selfHealStandbyOnly()) return;
   const rt = ensureRuntime(project);
   const plan = planLib.readPlan(project.path);
   if (!plan.ok) return;
@@ -2040,26 +2044,60 @@ async function spawnRunnerAttempt(project, rt, runner, options) {
   } catch (error) {
     appendLog(project.id, 'system', `Stale run cancellation failed: ${error.message}`);
   }
+  const sessionCapture = runner && runner.id === 'opencode' ? createOpenCodeSessionCapture() : null;
+  let checkpointRewritten = false;
+  const noteSessionId = (value) => {
+    const normalized = normalizeOpenCodeSessionId(value);
+    if (!normalized || normalized === rt.opencodeSessionId) return;
+    rt.opencodeSessionId = normalized;
+    if (!checkpointRewritten) {
+      writeCheckpointIntent(project, rt);
+      checkpointRewritten = true;
+    }
+  };
+  // Paseo resume path: an OpenCode session id means import the provider session
+  // and send the prompt, not a fresh agent. The normalized id is required so a
+  // stale or foreign value falls back to a fresh Paseo run.
+  const normalizedSession = runner && runner.id === 'opencode'
+    ? normalizeOpenCodeSessionId(sessionId)
+    : '';
   let child;
   let paseoHandle = null;
   if (paseoOn) {
+    const onPaseoLog = (stream, chunk) => {
+      if (rt.token !== token) return;
+      if (stream === 'out' && sessionCapture) {
+        sessionCapture.push(chunk);
+        noteSessionId(sessionCapture.sessionId);
+      }
+      rt.stepOutput += String(chunk);
+      appendLog(project.id, stream, chunk);
+    };
     try {
-      paseoHandle = paseoTransport.spawnRun({
-        cwd: project.path,
-        prompt: String(prompt),
-        model,
-        runKey,
-        projectId: project.id,
-        phase,
-        task: taskText,
-        title: `${project.id} ${phase || 'run'}: ${taskText}`.trim(),
-        runnerId: runner.id,
-        onLog: (stream, chunk) => {
-          if (rt.token !== token) return;
-          rt.stepOutput += String(chunk);
-          appendLog(project.id, stream, chunk);
-        }
-      });
+      if (normalizedSession) {
+        paseoHandle = paseoTransport.resumeRun({
+          cwd: project.path,
+          prompt: String(prompt),
+          sessionId: normalizedSession,
+          runKey,
+          projectId: project.id,
+          runnerId: runner.id,
+          onLog: onPaseoLog
+        });
+      } else {
+        paseoHandle = paseoTransport.spawnRun({
+          cwd: project.path,
+          prompt: String(prompt),
+          model,
+          runKey,
+          projectId: project.id,
+          phase,
+          task: taskText,
+          title: `${project.id} ${phase || 'run'}: ${taskText}`.trim(),
+          runnerId: runner.id,
+          onLog: onPaseoLog
+        });
+      }
     } catch (error) {
       rt.child = null;
       rt.status = 'error';
@@ -2090,22 +2128,11 @@ async function spawnRunnerAttempt(project, rt, runner, options) {
   if (paseoHandle) {
     rt.paseoAgentId = paseoHandle.paseoAgentId || '';
     paseoHandle.on('agentId', (id) => { rt.paseoAgentId = id; });
+    paseoHandle.on('sessionId', (id) => noteSessionId(id));
     appendLog(project.id, 'system', shortCommand('paseo', paseoHandle.paseoArgs || []));
   } else {
     appendLog(project.id, 'system', shortCommand(built.command, built.args));
   }
-
-  const sessionCapture = runner && runner.id === 'opencode' ? createOpenCodeSessionCapture() : null;
-  let checkpointRewritten = false;
-  const noteSessionId = (value) => {
-    const normalized = normalizeOpenCodeSessionId(value);
-    if (!normalized || normalized === rt.opencodeSessionId) return;
-    rt.opencodeSessionId = normalized;
-    if (!checkpointRewritten) {
-      writeCheckpointIntent(project, rt);
-      checkpointRewritten = true;
-    }
-  };
 
   if (child.stdout) child.stdout.on('data', (chunk) => {
     if (rt.token !== token) return;
@@ -2135,7 +2162,8 @@ async function spawnRunnerAttempt(project, rt, runner, options) {
   child.on('close', (code) => {
     if (rt.token !== token) return;
     rt.child = null;
-    if (paseoHandle) rt.paseoAgentId = '';
+    // Keep rt.paseoAgentId: an errored step checkpoints it so a restart can
+    // resume the same Paseo agent; stop()/shutdown clear it explicitly.
     if (tryNextCandidate(project, rt, runner, phase, code)) return;
     handleClose(project, rt, code, task, phase, runner);
   });
@@ -3585,6 +3613,8 @@ async function resumeOnStart() {
         if (Number.isFinite(snap.cooloffUntil) && snap.cooloffUntil > 0) rt.cooloffUntil = snap.cooloffUntil;
         if (snap.rotationCursor && typeof snap.rotationCursor === 'object') rt.rotationCursor = snap.rotationCursor;
         if (typeof snap.resumeSessionId === 'string' && snap.resumeSessionId) rt.resumeSessionId = snap.resumeSessionId;
+        // Missing-agent-id snapshots stay backward compatible: only restore when present.
+        if (typeof snap.paseoAgentId === 'string' && snap.paseoAgentId) rt.paseoAgentId = snap.paseoAgentId;
         if (snap.planPhaseSnapshot && typeof snap.planPhaseSnapshot === 'object') rt.planPhaseSnapshot = snap.planPhaseSnapshot;
         if (snap.healer && typeof snap.healer === 'object' && !Array.isArray(snap.healer)) {
           // A round interrupted by the restart can never look live again.

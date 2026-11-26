@@ -149,6 +149,10 @@ function sanitizeSnapshot(input) {
   }
   const resumeSessionId = normalizeOpenCodeSessionId(input.resumeSessionId);
   if (resumeSessionId) out.resumeSessionId = resumeSessionId;
+  // Paseo agent id rides inside the snapshot (no new top-level intent field).
+  if (typeof input.paseoAgentId === 'string' && input.paseoAgentId.trim()) {
+    out.paseoAgentId = input.paseoAgentId.trim().slice(0, 128);
+  }
   if (isPlainObject(input.healer)) {
     const healer = sanitizeHealer(input.healer);
     if (healer) out.healer = healer;

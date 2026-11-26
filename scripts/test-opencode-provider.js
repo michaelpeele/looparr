@@ -127,11 +127,51 @@ function testRepoConfigCurrent() {
   }
 }
 
+function testBuildCommandPaseoMetadata() {
+  // The host-executor bridge changes buildCommand's return shape; test the
+  // direct OpenCode path with the executor URL unset for this process.
+  const savedExecutor = process.env.LOOPARR_EXECUTOR_URL;
+  delete process.env.LOOPARR_EXECUTOR_URL;
+  const opencodeRunner = require('../src/runners/opencode');
+  opencodeRunner.setHelpProviderForTests(() => '');
+  const base = { prompt: 'p', cwd: '/tmp/looparr-opencode-build' };
+
+  const namespaced = opencodeRunner.buildCommand({ ...base, model: 'opencode/big-pickle', sessionId: 'ses_abc123' });
+  assert.equal(namespaced.command, 'opencode', 'direct command stays opencode');
+  assert.deepEqual(namespaced.args, ['run', '--auto', '--format', 'json', '--model', 'opencode/big-pickle', 'p'],
+    'direct argument order unchanged');
+  assert.equal(namespaced.paseo.provider, 'opencode', 'paseo provider is opencode');
+  assert.equal(namespaced.paseo.model, 'opencode/big-pickle', 'namespaced model preserved');
+  assert.equal(namespaced.paseo.sessionId, 'ses_abc123', 'normalized session id exposed');
+
+  const bare = opencodeRunner.buildCommand({ ...base, model: 'big-pickle' });
+  assert.equal(bare.paseo.model, 'opencode/big-pickle', 'bare id namespaced for Paseo');
+  assert.deepEqual(bare.args, ['run', '--auto', '--format', 'json', '--model', 'big-pickle', 'p'],
+    'direct args unchanged for a bare id');
+
+  const foreign = opencodeRunner.buildCommand({ ...base, model: 'kilo/baidu/ernie-5.5-flash-preview:free' });
+  assert.equal(foreign.paseo.model, '', 'foreign namespace falls back to the Paseo default model');
+  assert.deepEqual(foreign.args,
+    ['run', '--auto', '--format', 'json', '--model', 'kilo/baidu/ernie-5.5-flash-preview:free', 'p'],
+    'direct args still pass the configured model through');
+
+  const empty = opencodeRunner.buildCommand({ ...base });
+  assert.equal(empty.paseo.model, '', 'empty model omits the Paseo model suffix');
+  assert.deepEqual(empty.args, ['run', '--auto', '--format', 'json', 'p'], 'direct args unchanged without a model');
+
+  assert.equal(opencodeRunner.sanitizePaseoModelId('opencode/big-pickle'), 'big-pickle', 'strips opencode namespace');
+  assert.equal(opencodeRunner.sanitizePaseoModelId('kilo/foo'), '', 'strips foreign namespace');
+  assert.equal(opencodeRunner.sanitizePaseoModelId('big-pickle'), 'big-pickle', 'keeps bare id');
+  if (savedExecutor === undefined) delete process.env.LOOPARR_EXECUTOR_URL;
+  else process.env.LOOPARR_EXECUTOR_URL = savedExecutor;
+}
+
 testCreatesMissingFile();
 testIdempotent();
 testPreservesOtherConfig();
 testKeepsCustomProviderSettings();
 testRejectsBrokenJson();
 testRepoConfigCurrent();
+testBuildCommandPaseoMetadata();
 
 console.log('opencode provider tests passed');

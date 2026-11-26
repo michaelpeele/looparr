@@ -10,6 +10,8 @@ const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const { EventEmitter } = require('events');
 const { paseoProviderForRunner } = require('./runners');
+const { sanitizePaseoModelId } = require('./runners/opencode');
+const { normalizeOpenCodeSessionId } = require('./runners/opencode-session');
 
 function underHostExecutor() {
   return Boolean(process.env.LOOPARR_EXECUTOR_URL);
@@ -71,6 +73,23 @@ function mapPaseoStatus(status) {
 }
 
 const workspaceCache = new Map(); // resolved cwd -> workspace id
+
+// A `paseo run` that rejects the requested model reports it in the JSON error
+// (unknown/unavailable/invalid model). Such a run never produced an agent, so
+// the caller retries once without the model suffix and lets Paseo pick default.
+function isUnknownModelError(parsed) {
+  if (!parsed || typeof parsed !== 'object') return false;
+  const parts = [];
+  const err = parsed.error;
+  if (typeof err === 'string') parts.push(err);
+  else if (err && typeof err === 'object') {
+    if (err.code) parts.push(String(err.code));
+    if (err.message) parts.push(String(err.message));
+  }
+  if (parsed.message) parts.push(String(parsed.message));
+  const text = parts.join(' ');
+  return /unknown|unavailable|not\s*found|invalid\s+model|no\s+such\s+model|model\s+[^.]*not\s+(found|available|exist)|does\s+not\s+exist/i.test(text);
+}
 
 function paseoOutput(result) {
   return result.status === 0 ? String(result.stdout || '') : '';
@@ -155,60 +174,35 @@ function cleanStaleRuns({ projectId, keepRunKey } = {}) {
     .then((results) => ({ ok: true, cancelled: results.filter((item) => item.ok) }));
 }
 
-// Starts a Paseo agent for one Looparr step and returns a child-like handle
-// (an EventEmitter) the engine can use exactly like a spawned CLI process:
-// 'error' and 'close' events, .kill() mapped to `paseo agent stop`, plus
-// .paseoAgentId once the agent is known. Output streaming is routed through
-// opts.onLog(stream, chunk) so the engine keeps its appendLog/stepOutput path.
-function spawnRun(opts) {
-  const {
-    cwd,
-    prompt,
-    model = '',
-    runKey = '',
-    projectId = '',
-    phase = '',
-    task = '',
-    title = '',
-    runnerId = '',
-    workspaceCwd = '',
-    onLog = () => {}
-  } = opts;
-  const provider = paseoProviderForRunner(runnerId);
-  const providerArg = model ? `${provider}/${model}` : provider;
-  const agentTitle = (title || `Looparr ${projectId || 'run'} ${phase || ''}${task ? `: ${task}` : ''}`)
-    .trim()
-    .slice(0, 120);
-  const args = [
-    'run',
-    '--no-wait',
-    '--json',
-    '--provider', providerArg,
-    '--cwd', String(cwd),
-    '--title', agentTitle,
-    '--label', 'looparr=true',
-    '--label', `runner=${runnerId}`,
-    '--label', `runKey=${runKey}`,
-    '--label', `projectId=${projectId}`
-  ];
-  const workspaceId = resolveWorkspaceId(workspaceCwd || cwd);
-  if (workspaceId) args.push('--workspace', workspaceId);
-  args.push(String(prompt));
-
+// Shared child-like handle used by both the fresh-run and import/send paths.
+// The engine uses it exactly like a spawned CLI process: 'error' and 'close'
+// events, .kill() mapped to `paseo agent stop`, .paseoAgentId once the agent is
+// known, and .paseoSessionId for the provider session. Output streaming is
+// routed through opts.onLog(stream, chunk) so the engine keeps its
+// appendLog/stepOutput path.
+function createHandle(cwd, onLog) {
   const handle = new EventEmitter();
-  handle.paseoArgs = args;
+  handle.paseoArgs = [];
   handle.paseoAgentId = '';
+  handle.paseoSessionId = '';
   handle.exitCode = null;
   handle.killed = false;
-  handle.stdout = null;
-  handle.stderr = null;
 
   let agentId = '';
   let attachChild = null;
   let waitChild = null;
+  let runChild = null;
+  let sendChild = null;
   let attachGraceTimer = null;
   let closeEmitted = false;
   let pendingKill = false;
+
+  const finishOnce = (code) => {
+    if (closeEmitted) return;
+    closeEmitted = true;
+    handle.exitCode = code;
+    handle.emit('close', code);
+  };
 
   const killAttach = () => {
     if (!attachChild) return;
@@ -236,13 +230,6 @@ function spawnRun(opts) {
     });
   };
 
-  const finishOnce = (code) => {
-    if (closeEmitted) return;
-    closeEmitted = true;
-    handle.exitCode = code;
-    handle.emit('close', code);
-  };
-
   const startStreaming = (id) => {
     try {
       attachChild = spawn('paseo', ['attach', id], {
@@ -250,7 +237,7 @@ function spawnRun(opts) {
         env: { ...process.env },
         shell: false
       });
-    } catch { /* attach failure is non-fatal */ }
+    } catch { attachChild = null; }
     if (!attachChild) return;
     attachChild.stdout?.on('data', (chunk) => onLog('out', chunk));
     attachChild.stderr?.on('data', (chunk) => onLog('err', chunk));
@@ -298,41 +285,34 @@ function spawnRun(opts) {
     });
   };
 
-  const runChild = spawn('paseo', args, {
-    cwd: String(cwd),
-    env: { ...process.env },
-    shell: false
-  });
-  let runOutput = '';
-  runChild.stdout?.on('data', (chunk) => {
-    runOutput += String(chunk);
-    onLog('out', chunk);
-  });
-  runChild.stderr?.on('data', (chunk) => onLog('err', chunk));
-  runChild.on('error', (error) => {
-    onLog('system', `✖ Paseo run failed: ${error.message}`);
-    handle.emit('error', error);
-    finishOnce(1);
-  });
-  runChild.on('close', (code) => {
-    const parsed = extractJsonObject(runOutput) || {};
-    agentId = String(parsed.agentId || parsed.id || '').trim();
-    if (!agentId) {
-      if (code !== 0) onLog('system', `✖ Paseo run did not start (exit ${code}).`);
-      else onLog('system', '✖ Paseo run returned no agent id.');
-      return finishOnce(1);
-    }
-    // Record the agent id before any wait/attach: a started agent can never
-    // be orphaned, because stop() always has a handle for it.
+  // Record the agent (and optional provider session) id and emit both events.
+  // A started agent can never be orphaned: stop() always has a handle for it.
+  handle._agentReady = (id, sessionId) => {
+    agentId = String(id || '').trim();
+    if (!agentId) return false;
     handle.paseoAgentId = agentId;
+    const normalized = normalizeOpenCodeSessionId(sessionId);
+    if (normalized) handle.paseoSessionId = normalized;
     handle.emit('agentId', agentId);
+    if (normalized) handle.emit('sessionId', normalized);
+    return true;
+  };
+  handle._afterAgent = () => {
     if (pendingKill) {
       stopAgent(agentId);
       return finishOnce(1);
     }
     startStreaming(agentId);
     runWait(agentId);
-  });
+  };
+  handle._startStreaming = startStreaming;
+  handle._runWait = runWait;
+  handle._finishOnce = finishOnce;
+  handle._setRunChild = (child) => { runChild = child; };
+  handle._clearRunChild = (child) => { if (runChild === child) runChild = null; };
+  handle._setSendChild = (child) => { sendChild = child; };
+  handle._clearSendChild = (child) => { if (sendChild === child) sendChild = null; };
+  handle._pendingKill = () => pendingKill;
 
   handle.kill = (signal) => {
     if (handle.killed) return true;
@@ -344,8 +324,10 @@ function spawnRun(opts) {
     if (attachChild) {
       try { attachChild.kill('SIGKILL'); } catch { /* already gone */ }
     }
-    if (runChild && runChild.exitCode === null && runChild.signalCode === null) {
-      try { runChild.kill(signal || 'SIGTERM'); } catch { /* already gone */ }
+    for (const child of [runChild, sendChild]) {
+      if (child && child.exitCode === null && child.signalCode === null) {
+        try { child.kill(signal || 'SIGTERM'); } catch { /* already gone */ }
+      }
     }
     if (agentId) {
       stopAgent(agentId).then(() => finishOnce(null));
@@ -359,12 +341,197 @@ function spawnRun(opts) {
   return handle;
 }
 
+// Starts a fresh Paseo agent for one Looparr step. The model id is sanitized to
+// the provider's `provider/model` form; a foreign Looparr namespace or an empty
+// id omits --model so Paseo selects its default model. If Paseo rejects the
+// model as unknown/unavailable, the run is retried once without it.
+function spawnRun(opts) {
+  const {
+    cwd,
+    prompt,
+    model = '',
+    runKey = '',
+    projectId = '',
+    phase = '',
+    task = '',
+    title = '',
+    runnerId = '',
+    workspaceCwd = '',
+    onLog = () => {}
+  } = opts;
+  const handle = createHandle(cwd, onLog);
+  const provider = paseoProviderForRunner(runnerId);
+  const modelId = sanitizePaseoModelId(model, provider);
+  const modelArg = modelId ? `${provider}/${modelId}` : '';
+  const agentTitle = (title || `Looparr ${projectId || 'run'} ${phase || ''}${task ? `: ${task}` : ''}`)
+    .trim()
+    .slice(0, 120);
+  const workspaceId = resolveWorkspaceId(workspaceCwd || cwd);
+
+  const buildArgs = (withModel) => {
+    const args = ['run', '--no-wait', '--json', '--provider', provider];
+    if (withModel && modelArg) args.push('--model', modelArg);
+    args.push(
+      '--cwd', String(cwd),
+      '--title', agentTitle,
+      '--label', 'looparr=true',
+      '--label', `runner=${runnerId}`,
+      '--label', `runKey=${runKey}`,
+      '--label', `projectId=${projectId}`
+    );
+    if (workspaceId) args.push('--workspace', workspaceId);
+    args.push(String(prompt)); // prompt is always the final argument
+    return args;
+  };
+
+  let retried = false;
+  const startRun = (args) => {
+    handle.paseoArgs = args;
+    let output = '';
+    let child;
+    try {
+      child = spawn('paseo', args, { cwd: String(cwd), env: { ...process.env }, shell: false });
+    } catch (error) {
+      onLog('system', `✖ Paseo run failed: ${error.message}`);
+      handle.emit('error', error);
+      return handle._finishOnce(1);
+    }
+    handle._setRunChild(child);
+    child.stdout?.on('data', (chunk) => {
+      output += String(chunk);
+      onLog('out', chunk);
+    });
+    child.stderr?.on('data', (chunk) => onLog('err', chunk));
+    child.on('error', (error) => {
+      onLog('system', `✖ Paseo run failed: ${error.message}`);
+      handle.emit('error', error);
+      handle._finishOnce(1);
+    });
+    child.on('close', (code) => {
+      handle._clearRunChild(child);
+      const parsed = extractJsonObject(output) || {};
+      const id = String(parsed.agentId || parsed.id || '').trim();
+      if (!id) {
+        if (!retried && modelArg && isUnknownModelError(parsed)) {
+          retried = true;
+          onLog('system', `… Paseo rejected model ${modelArg}; retrying with the default model.`);
+          return startRun(buildArgs(false));
+        }
+        if (code !== 0) onLog('system', `✖ Paseo run did not start (exit ${code}).`);
+        else onLog('system', '✖ Paseo run returned no agent id.');
+        return handle._finishOnce(1);
+      }
+      if (!handle._agentReady(id, parsed.sessionId || parsed.sessionID || parsed.providerSessionId)) {
+        return handle._finishOnce(1);
+      }
+      handle._afterAgent();
+    });
+  };
+
+  startRun(buildArgs(true));
+  return handle;
+}
+
+// Resumes an existing provider session through Paseo: import the OpenCode
+// session as a Paseo agent, then send the prompt to it. Reuses the same
+// attach/wait/status/kill machinery as spawnRun.
+function resumeRun(opts) {
+  const {
+    cwd,
+    prompt,
+    sessionId,
+    runKey = '',
+    projectId = '',
+    runnerId = '',
+    onLog = () => {}
+  } = opts;
+  const handle = createHandle(cwd, onLog);
+  const provider = paseoProviderForRunner(runnerId);
+  const importArgs = [
+    'import', String(sessionId),
+    '--provider', provider,
+    '--cwd', String(cwd),
+    '--label', 'looparr=true',
+    '--label', `runner=${runnerId}`,
+    '--label', `runKey=${runKey}`,
+    '--label', `projectId=${projectId}`,
+    '--json'
+  ];
+  handle.paseoArgs = importArgs;
+
+  let output = '';
+  let child;
+  try {
+    child = spawn('paseo', importArgs, { cwd: String(cwd), env: { ...process.env }, shell: false });
+  } catch (error) {
+    onLog('system', `✖ Paseo import failed: ${error.message}`);
+    handle.emit('error', error);
+    return handle._finishOnce(1);
+  }
+  handle._setRunChild(child);
+  child.stdout?.on('data', (chunk) => {
+    output += String(chunk);
+    onLog('out', chunk);
+  });
+  child.stderr?.on('data', (chunk) => onLog('err', chunk));
+  child.on('error', (error) => {
+    onLog('system', `✖ Paseo import failed: ${error.message}`);
+    handle.emit('error', error);
+    handle._finishOnce(1);
+  });
+  child.on('close', (code) => {
+    handle._clearRunChild(child);
+    const parsed = extractJsonObject(output) || {};
+    const agentId = String(parsed.agentId || parsed.id || '').trim();
+    if (!agentId) {
+      onLog('system', `✖ Paseo import did not return an agent id (exit ${code}).`);
+      return handle._finishOnce(1);
+    }
+    const providerSessionId = parsed.sessionId || parsed.sessionID
+      || parsed.providerSessionId || parsed.providerHandleId || sessionId;
+    if (!handle._agentReady(agentId, providerSessionId)) return handle._finishOnce(1);
+    if (handle.killed || handle._pendingKill()) {
+      stopAgent(agentId);
+      return handle._finishOnce(1);
+    }
+    // Stream the imported session while the prompt is delivered.
+    handle._startStreaming(agentId);
+    const sendArgs = ['send', agentId, String(prompt), '--no-wait', '--json'];
+    let sendChild;
+    try {
+      sendChild = spawn('paseo', sendArgs, { cwd: String(cwd), env: { ...process.env }, shell: false });
+    } catch (error) {
+      onLog('system', `✖ Paseo send failed: ${error.message}`);
+      return handle._finishOnce(1);
+    }
+    handle._setSendChild(sendChild);
+    sendChild.stdout?.on('data', (chunk) => onLog('out', chunk));
+    sendChild.stderr?.on('data', (chunk) => onLog('err', chunk));
+    sendChild.on('error', (error) => {
+      onLog('system', `✖ Paseo send failed: ${error.message}`);
+      handle._finishOnce(1);
+    });
+    sendChild.on('close', (sendCode) => {
+      handle._clearSendChild(sendChild);
+      if (handle.killed) return;
+      if (sendCode !== 0) {
+        onLog('system', `✖ Paseo send failed (exit ${sendCode}).`);
+        return handle._finishOnce(1);
+      }
+      handle._runWait(agentId);
+    });
+  });
+
+  return handle;
+}
+
 module.exports = {
   isEnabled,
   mapPaseoStatus,
   extractJsonObject,
   resolveWorkspaceId,
   spawnRun,
+  resumeRun,
   stopAgent,
   cleanStaleRuns
 };
