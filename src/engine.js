@@ -1119,6 +1119,27 @@ function selfhealStatusAvailable() {
   return selfhealStatus.listStatus(selfhealRepoRoot()).length > 0;
 }
 
+// Write the status for a project's current runtime, preserving a fresh
+// accounted record instead of clobbering it with idle. A live round (rt.healer)
+// or a parked mergeable healed round still writes exactly as before.
+function writeHealerStatusForRuntime(project, rt) {
+  if (!rt.healer && !isMergeableHealer(rt.lastHealer)) {
+    const existing = selfhealStatus.readStatus(selfhealRepoRoot(), project.id);
+    if (selfhealStatus.isStickyStatus(existing)) {
+      return writeHealerStatus(project, {
+        state: 'accounted',
+        round: existing.round || 0,
+        cycles: existing.cycles || 0,
+        branch: existing.branch || '',
+        phase: existing.phase || 'accounted',
+        errorAt: '',
+        mergedAt: null
+      });
+    }
+  }
+  return writeHealerStatus(project, rt.healer || rt.lastHealer);
+}
+
 // Keep the status fresh on the same tick cadence while a dev engine runs with
 // self-healing enabled. Idle (no active healer) is written too, so prod can show
 // a live idle pill instead of hiding it once a round finishes.
@@ -1129,8 +1150,9 @@ function heartbeatHealerStatus(now) {
   for (const project of config.projects) {
     const rt = ensureRuntime(project);
     // An active round writes live; a finished round stays sticky (healed,
-    // failed or merged) so prod keeps seeing how the last round ended.
-    writeHealerStatus(project, rt.healer || rt.lastHealer);
+    // failed or merged) so prod keeps seeing how the last round ended. A fresh
+    // accounted record is re-stamped so a reviewed fix stays visible.
+    writeHealerStatusForRuntime(project, rt);
   }
 }
 
@@ -3714,7 +3736,7 @@ function init() {
     lastSelfhealHeartbeatAt = Date.now();
     for (const project of config.projects) {
       const rt = ensureRuntime(project);
-      writeHealerStatus(project, rt.healer || rt.lastHealer);
+      writeHealerStatusForRuntime(project, rt);
     }
   }
   tickTimer = setInterval(tick, 1000);

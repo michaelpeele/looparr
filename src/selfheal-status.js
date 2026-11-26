@@ -17,7 +17,11 @@ const BRANCH_RE = /^looparr-selfheal-[0-9]+-[0-9]+$/;
 // Project ids are UUIDs in practice; accept only a conservative, path-safe shape
 // so a status filename can never escape the status directory.
 const PROJECT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const VALID_STATES = new Set(['idle', 'debugging', 'healing', 'healed', 'error']);
+const VALID_STATES = new Set(['idle', 'debugging', 'healing', 'healed', 'error', 'accounted']);
+// Durable states the dev heartbeat re-stamps instead of overwriting with idle.
+// 'accounted' marks a reviewed fix already applied to the current branch; it is
+// never mergeable and must survive heartbeats so prod keeps showing the pill.
+const STICKY_STATES = new Set(['accounted']);
 
 function statusRoot(repoRoot) {
   return path.join(repoRoot, '.looparr', 'selfheal', 'status');
@@ -45,6 +49,12 @@ function isFresh(record, now) {
   const expiresAt = Date.parse(record.expiresAt);
   const effectiveExpiry = Number.isFinite(expiresAt) ? expiresAt : updatedAt + TTL_MS;
   return now <= effectiveExpiry && now - updatedAt <= TTL_MS;
+}
+
+// True when a record is a fresh durable ("sticky") state the heartbeat should
+// re-stamp rather than overwrite with idle. Used for the accounted state.
+function isStickyStatus(record, now = Date.now()) {
+  return !!record && STICKY_STATES.has(record.state) && isFresh(record, now);
 }
 
 // Normalize/validate a parsed status document. Returns null for anything stale,
@@ -184,6 +194,7 @@ module.exports = {
   isValidProjectId,
   normalizeRecord,
   isFresh,
+  isStickyStatus,
   readStatus,
   listStatus,
   toSelfHealer,

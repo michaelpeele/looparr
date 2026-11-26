@@ -72,20 +72,27 @@ Healer branches are local and never pushed. A healed branch reaches prod only
 after a human reviews it and either merges it from the UI or cherry-picks it
 onto `master` by hand. Both paths require the verified sequence above.
 
-- **UI merge path:** A fresh healer status in `data/selfheal/` must report
-  `state: healed`, no `mergedAt`, and a matching branch. The branch icon appears
-  only under those conditions and only inside the 30-minute status TTL.
+- **UI merge path:** A fresh healer status in `.looparr/selfheal/status/` must
+  report `state: healed`, no `mergedAt`, and a matching branch. The branch icon
+  appears only under those conditions and only inside the 30-minute status TTL.
   Clicking it POSTs `/api/projects/<id>/selfheal/merge`; `src/engine.js` runs
   `git merge --no-ff` locally, marks the status merged, writes the status file,
   and starts the restart. The icon then hides. Nothing is pushed.
 - **Manual promotion path:** Cherry-pick the reviewed healer commit onto
   `master`, then run the verified sequence. This puts code on prod but does not
-  write a healer status record and does not show the branch icon. An absent,
-  stale, or merged status keeps the icon hidden.
+  write a healer status record by itself. To account for the fix visibly, run
+  `node scripts/selfheal-account.js --project <projectId> [--branch <branch>]
+  --confirm`. It is human-gated (`--confirm` required), host/dev-side only,
+  TTL-bound (30 minutes, re-stamped by the dev heartbeat), and writes a
+  `state: accounted` record via `writeStatus` only. It refuses unless the
+  branch's fix is already applied to the current checkout (patch-equivalent via
+  `git cherry`, or an ancestor of `HEAD`). Accounted never enables the merge
+  button and never satisfies the merge path. Do not hand-edit status files.
 - **Current case:** `4f5e761` was a manual cherry-pick of healer commit
-  `2705d24`. No fresh healed status exists, so the icon is hidden by design.
-  To make the icon visible later, run a fresh healer round to `healed` and use
-  the UI merge path. Do not hand-edit status files.
+  `2705d24`. Run the accounted command for project
+  `d76e436a-8816-4342-9511-b4706e2320e4`, branch
+  `looparr-selfheal-1795657600462-0`, to show the pill as Accounted. The branch
+  icon stays hidden by design; accounted is not healed and cannot be merged.
 
 ## Promotion log
 

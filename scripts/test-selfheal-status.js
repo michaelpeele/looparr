@@ -235,6 +235,54 @@ function testMergeValidation() {
   }
 }
 
+function testAccountedStatus() {
+  const repo = makeTempRepo();
+  try {
+    const now = Date.now();
+    const branch = 'looparr-selfheal-1795657600462-0';
+    const wrote = selfhealStatus.writeStatus(repo, sampleRecord('project-1', {
+      state: 'accounted', branch, phase: 'accounted', mergedAt: null, round: 3, cycles: 4
+    }), now);
+    assertEqual(wrote, true, 'accounted status writes');
+
+    const read = selfhealStatus.readStatus(repo, 'project-1', now);
+    assertOk(read, 'fresh accounted record reads back');
+    assertEqual(read.state, 'accounted', 'accounted state round-trips');
+    assertEqual(read.branch, branch, 'accounted branch round-trips');
+    assertEqual(read.mergedAt, null, 'accounted keeps mergedAt null');
+
+    // Accounted is durable/sticky for the heartbeat, but never mergeable.
+    assertEqual(selfhealStatus.isStickyStatus(read, now), true, 'fresh accounted is sticky');
+    assertEqual(selfhealStatus.isStickyStatus(read, now + selfhealStatus.TTL_MS + 1), false, 'stale accounted is not sticky');
+    assertEqual(selfhealStatus.isStickyStatus(sampleRecord('project-1', { state: 'healed' }), now), false, 'healed is not sticky');
+
+    const res = selfhealStatus.validateMergeRequest(repo, 'project-1', { branch }, now);
+    assertEqual(res.ok, false, 'fresh accounted refused by merge path');
+    assertEqual(res.status, 409, 'accounted merge is 409');
+
+    // Prod mapping round-trips accounted and keeps the branch hidden (not healed).
+    const healer = selfhealStatus.toSelfHealer(read);
+    assertEqual(healer.state, 'accounted', 'prod maps accounted selfHealer');
+    assertEqual(healer.branch, branch, 'prod sees accounted branch');
+    assertEqual(healer.mergedAt, null, 'accounted selfHealer has no mergedAt');
+
+    // Stale accounted is hidden (readStatus null).
+    assertEqual(selfhealStatus.readStatus(repo, 'project-1', now + selfhealStatus.TTL_MS * 2), null, 'stale accounted is hidden');
+
+    // A merged accounted record is still not mergeable.
+    selfhealStatus.writeStatus(repo, sampleRecord('project-1', {
+      state: 'accounted', branch, mergedAt: '2026-11-26T01:00:00.000Z'
+    }), now);
+    const mergedRes = selfhealStatus.validateMergeRequest(repo, 'project-1', { branch }, now);
+    assertEqual(mergedRes.ok, false, 'merged accounted refused');
+    assertEqual(mergedRes.status, 409, 'merged accounted is 409');
+
+    console.log('selfheal accounted status ok');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+}
+
 function testNoPushGuard() {
   const executor = fs.readFileSync(path.join(REPO_ROOT, 'scripts/host-executor.js'), 'utf8');
   const engine = fs.readFileSync(path.join(REPO_ROOT, 'src/engine.js'), 'utf8');
@@ -313,6 +361,7 @@ testPathContainment();
 testMalformedIgnored();
 testProdMapping();
 testMergeValidation();
+testAccountedStatus();
 testNoPushGuard();
 testExecutorRelay().then(() => {
   console.log('selfheal status tests passed');

@@ -141,9 +141,16 @@ a { color: var(--accent); }
   color: #08130f;
   box-shadow: 0 0 8px var(--green);
 }
+.self-heal-pill[data-state="accounted"] .self-heal-pixel {
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+  color: #06222b;
+  box-shadow: 0 0 8px var(--accent-2);
+}
 .self-heal-pill[data-state="debugging"],
 .self-heal-pill[data-state="healing"],
 .self-heal-pill[data-state="healed"],
+.self-heal-pill[data-state="accounted"],
 .self-heal-pill[data-state="error"] { color: var(--text); }
 .self-heal-pill[data-state="healed"]::after {
   content: "";

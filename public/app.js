@@ -762,6 +762,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     debugging: 'Debugging',
     healing: 'Healing',
     healed: 'Healed',
+    accounted: 'Accounted',
     error: 'Error'
   };
 
