@@ -34,6 +34,7 @@
     paseoTransport: $('paseo-transport'),
     handoffRecovery: $('handoff-recovery-toggle'),
     selfHealing: $('self-healing-toggle'),
+    showCardAccessRoute: $('show-card-access-route'),
     selfHealPill: $('self-heal-pill'),
     selfHealState: $('self-heal-state'),
     selfHealBranch: $('self-heal-branch'),
@@ -1524,7 +1525,10 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     card.setAttribute('aria-label', `Open ${project.name} details`);
 
     card.querySelector('.card-title strong').textContent = project.name;
-    card.querySelector('.card-title span').textContent = project.path;
+    const cardPath = card.querySelector('.card-title span');
+    const showAccessRoute = app.state?.settings?.showCardAccessRoute === true;
+    cardPath.textContent = showAccessRoute ? project.path : '';
+    cardPath.hidden = !showAccessRoute;
 
     const info = statusInfo(project);
     const badge = card.querySelector('.badge');
@@ -3126,6 +3130,9 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     if (dom.selfHealing && document.activeElement !== dom.selfHealing) {
       dom.selfHealing.checked = settings.selfHealing === true;
     }
+    if (dom.showCardAccessRoute && document.activeElement !== dom.showCardAccessRoute) {
+      dom.showCardAccessRoute.checked = settings.showCardAccessRoute === true;
+    }
     renderSelfHealing(state);
     if (dom.taskAddRow && dom.stickyAddTaskRow) {
       dom.taskAddRow.classList.toggle('is-sticky', settings.stickyAddTaskRow === true);
@@ -3193,7 +3200,8 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
           stickyAddTaskRow: dom.stickyAddTaskRow.checked,
           paseoTransport: dom.paseoTransport.checked,
           handoffRecovery: dom.handoffRecovery.checked,
-          selfHealing: dom.selfHealing.checked
+          selfHealing: dom.selfHealing.checked,
+          showCardAccessRoute: dom.showCardAccessRoute.checked
         })
       });
       if (response?.settings) applyState({ ...(app.state || {}), settings: response.settings });

@@ -676,6 +676,12 @@ app.patch('/api/settings', (req, res) => {
     }
     patch.selfHealing = body.selfHealing;
   }
+  if (body.showCardAccessRoute !== undefined) {
+    if (typeof body.showCardAccessRoute !== 'boolean') {
+      return fail(res, 400, 'showCardAccessRoute must be a boolean');
+    }
+    patch.showCardAccessRoute = body.showCardAccessRoute;
+  }
   for (const { field, label, placeholders } of PROMPT_TEMPLATE_FIELDS) {
     if (body[field] === undefined) continue;
     if (typeof body[field] !== 'string') return fail(res, 400, `${label} must be a string`);

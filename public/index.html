@@ -217,6 +217,11 @@
               <span>Self-healing debugging mode (development only)</span>
             </label>
             <small class="field-hint">Runs one worktree-isolated healer round on an error, validates the branch through two live preview cycles, and stops. Requires a dev checkout with LOOPARR_SELFHEAL=1 or a SELFHEAL_ENABLED marker; never runs with NODE_ENV=production, never publishes git, and merges locally only.</small>
+            <label class="auto-resume-row">
+              <input type="checkbox" id="show-card-access-route" />
+              <span>Show access route on project cards</span>
+            </label>
+            <small class="field-hint">When enabled, each project card shows its access route (project path) under the project name. Off by default.</small>
             <details class="prompt-templates" id="prompt-templates-section" data-settings-section="promptTemplates">
               <summary>Prompt templates <small>{{task}}, {{handoff}}, and {{planPath}} placeholders</small></summary>
               <div class="prompt-template-fields">

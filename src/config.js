@@ -345,6 +345,7 @@ const DEFAULT_SETTINGS = {
   paseoTransport: false,
   handoffRecovery: false,
   selfHealing: false,
+  showCardAccessRoute: false,
   seedPromptTemplate: DEFAULT_SEED_PROMPT_TEMPLATE,
   analyzePromptTemplate: DEFAULT_ANALYZE_PROMPT_TEMPLATE,
   implementPromptTemplate: DEFAULT_IMPLEMENT_PROMPT_TEMPLATE,
@@ -516,6 +517,7 @@ function normalizeSettings(settings) {
   normalized.paseoTransport = normalized.paseoTransport === true;
   normalized.handoffRecovery = normalized.handoffRecovery === true;
   normalized.selfHealing = normalized.selfHealing === true;
+  normalized.showCardAccessRoute = normalized.showCardAccessRoute === true;
   normalized.runnerRotation = normalized.runnerRotation === true;
   normalized.globalRunner = normalizedRunner(normalized.globalRunner, DEFAULT_SETTINGS.globalRunner);
   for (const field of MODEL_ROTATION_FIELDS) {
