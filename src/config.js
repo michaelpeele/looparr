@@ -191,6 +191,7 @@ const DEFAULT_IMPLEMENT_PROMPT_TEMPLATE = [
   '{{handoff}}',
   '---',
   '',
+  'When this task requires a Looparr production rebuild, promote with `npm run restart:looparr -- --dry-run` then `npm run restart:looparr`, and do not run raw `docker compose build` or `docker compose up`.',
   'After all implementation and verification steps pass, change the "- [ ]" marker for this task to "- [x]" in plan.md.',
   'The engine clears .looparr/next_prompt.txt when this task completes; do not edit or delete it yourself.',
   '',

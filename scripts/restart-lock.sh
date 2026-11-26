@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCK_PATH="${LOOPARR_RESTART_LOCK_PATH:-${TMPDIR:-/tmp/opencode}/looparr-restart.lock}"
 LOCK_DIR="${LOCK_PATH}.dir"
 PROMOTIONS_LOG="${LOOPARR_PROMOTIONS_LOG:-$ROOT/logs/promotions.log}"
+LOCK_TIMEOUT="${LOOPARR_RESTART_LOCK_TIMEOUT:-900}"
 LOCK_MODE=""
 CHILD_PID=""
 
@@ -13,15 +14,41 @@ if [[ $# -lt 1 ]]; then
   exit 2
 fi
 
+if ! [[ "$LOCK_TIMEOUT" =~ ^[0-9]+$ ]]; then
+  printf '[looparr-promote] invalid LOOPARR_RESTART_LOCK_TIMEOUT: %s\n' "$LOCK_TIMEOUT" >&2
+  exit 2
+fi
+
 mkdir -p "$(dirname "$LOCK_PATH")" "$(dirname "$PROMOTIONS_LOG")"
 
+utc_now() {
+  date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+log_lock_event() {
+  local kind="$1"
+  local message="$2"
+  printf '[looparr-promote] [%s] %s: %s\n' "$(utc_now)" "$kind" "$message" >&2
+  printf '[%s] [looparr-promote] %s: %s\n' "$(utc_now)" "$kind" "$message" >>"$PROMOTIONS_LOG"
+}
+
 reject_locked() {
-  local message="lock-rejected: another promotion or restart is running (lock: ${LOCK_PATH})"
-  local structured='{"event":"error","code":"PROMOTION_LOCK_HELD","message":"another promotion or restart is running"}'
+  local message="lock timed out after ${LOCK_TIMEOUT}s: another promotion or restart is still running (lock: ${LOCK_PATH})"
+  local structured='{"event":"error","code":"PROMOTION_LOCK_HELD","message":"another promotion or restart is still running","timeoutSeconds":'"${LOCK_TIMEOUT}"'}'
   printf '[looparr-promote] %s\n' "$message" >&2
   printf '%s\n' "$structured" >&2
-  printf '[%s] [looparr-promote] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$message" >>"$PROMOTIONS_LOG"
-  printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$structured" >>"$PROMOTIONS_LOG"
+  printf '[%s] [looparr-promote] %s\n' "$(utc_now)" "$message" >>"$PROMOTIONS_LOG"
+  printf '[%s] %s\n' "$(utc_now)" "$structured" >>"$PROMOTIONS_LOG"
+  exit 76
+}
+
+reject_unavailable() {
+  local message="lock unavailable after ${LOCK_TIMEOUT}s (lock: ${LOCK_PATH})"
+  local structured='{"event":"error","code":"PROMOTION_LOCK_UNAVAILABLE","message":"promotion lock unavailable"}'
+  printf '[looparr-promote] %s\n' "$message" >&2
+  printf '%s\n' "$structured" >&2
+  printf '[%s] [looparr-promote] %s\n' "$(utc_now)" "$message" >>"$PROMOTIONS_LOG"
+  printf '[%s] %s\n' "$(utc_now)" "$structured" >>"$PROMOTIONS_LOG"
   exit 75
 }
 
@@ -55,15 +82,21 @@ trap on_exit EXIT
 trap 'on_signal INT 130' INT
 trap 'on_signal TERM 143' TERM
 
+log_lock_event 'lock-wait' "waiting up to ${LOCK_TIMEOUT}s for ${LOCK_PATH}"
+
 if command -v flock >/dev/null 2>&1; then
   : >>"$LOCK_PATH"
   exec 9>>"$LOCK_PATH"
-  if ! flock -n 9; then
+  if ! flock -w "$LOCK_TIMEOUT" 9; then
     reject_locked
   fi
   LOCK_MODE="flock"
 else
-  for _ in 1 2; do
+  deadline=$((SECONDS + LOCK_TIMEOUT))
+  while :; do
+    if ((SECONDS >= deadline)); then
+      reject_unavailable
+    fi
     if mkdir "$LOCK_DIR" 2>/dev/null; then
       printf '%s\n' "$$" >"$LOCK_DIR/pid"
       LOCK_MODE="dir"
@@ -74,16 +107,18 @@ else
     if [[ -f "$LOCK_DIR/pid" ]]; then
       read -r pid <"$LOCK_DIR/pid" 2>/dev/null || pid=""
     fi
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+      rm -rf "$LOCK_DIR"
+      continue
+    fi
+    if ((SECONDS >= deadline)); then
       reject_locked
     fi
-    rm -rf "$LOCK_DIR"
+    sleep 1
   done
-
-  if [[ "$LOCK_MODE" != "dir" ]]; then
-    reject_locked
-  fi
 fi
+
+log_lock_event 'lock-acquired' "acquired ${LOCK_PATH}"
 
 export LOOPARR_RESTART_LOCK_HELD=1
 "$@" &

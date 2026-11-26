@@ -21,6 +21,10 @@ const RESTART_CONTINUE_FILE = (
   path.join(REPO_ROOT, '.looparr', 'restart-continue.json')
 );
 const RESTART_CONTINUE_MESSAGE = 'Restart complete continue.';
+const CONTAINER_START_TIMEOUT_SECONDS = Number(
+  process.env.LOOPARR_CONTAINER_START_TIMEOUT_SECONDS || '60'
+);
+const HEALTHY_STATUS_PATTERN = /(?:\((?:health:\s*)?healthy\)|(?:\s|^)healthy(?:\s|$))/i;
 
 function reportEvent(event, fields = {}) {
   console.log(JSON.stringify({ event, ...fields }));
@@ -204,7 +208,18 @@ function isRunningHealthy(status) {
   const lines = String(status).split('\n').filter(Boolean);
   if (lines.length < 2) return false;
   const row = lines.slice(1).join('\n');
-  return /(^|\s)(running|up)(\s|$)/i.test(row) && /healthy/i.test(row);
+  return /(^|\s)(running|up)(\s|$)/i.test(row)
+    && HEALTHY_STATUS_PATTERN.test(row)
+    && !/\b(unhealthy|starting|unknown)\b/i.test(row);
+}
+
+async function waitForContainerHealthy(phase) {
+  const attempts = Math.max(1, Math.ceil(CONTAINER_START_TIMEOUT_SECONDS * 1000 / 2000));
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (isRunningHealthy(dockerStatus())) return true;
+    await sleep(2000);
+  }
+  return false;
 }
 
 async function waitForRestart(label) {
@@ -243,9 +258,13 @@ function showLooparrLogs(reason) {
   if (result.error) console.error(`[looparr] docker logs failed: ${result.error.message}`);
 }
 
-function recoverCreatedContainer(phase) {
+async function recoverCreatedContainer(phase) {
   const containerState = inspectLooparrState();
-  if (containerState === 'running') return true;
+  if (containerState === 'running') {
+    if (await waitForContainerHealthy(phase)) return true;
+    showLooparrLogs(`container not healthy after ${phase}`);
+    return false;
+  }
   if (!['created', 'exited', 'dead'].includes(containerState)) return false;
 
   console.log(`[looparr] ${phase}: looparr container is ${containerState}; attempting one start.`);
@@ -261,9 +280,11 @@ function recoverCreatedContainer(phase) {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     if (inspectLooparrState() === 'running') {
       console.log(`[looparr] ${phase}: container started.`);
-      return true;
+      if (await waitForContainerHealthy(phase)) return true;
+      showLooparrLogs(`container not healthy after ${phase}`);
+      return false;
     }
-    sleep(2000);
+    await sleep(2000);
   }
   showLooparrLogs(`container did not start after ${phase}`);
   return false;
@@ -327,7 +348,7 @@ async function main() {
     return;
   }
 
-  if (!recoverCreatedContainer('post-compose')) {
+  if (!(await recoverCreatedContainer('post-compose'))) {
     removeRestartContinueMarker();
     console.error('[looparr] Container recovery failed after rebuild.');
     reportError('CONTAINER_RECOVERY_FAILED', 'could not start looparr after compose', {
@@ -338,7 +359,7 @@ async function main() {
   }
 
   let ready = await waitForRestart('post-restart');
-  if (!ready && recoverCreatedContainer('post-restart')) {
+  if (!ready && (await recoverCreatedContainer('post-restart'))) {
     ready = await waitForRestart('post-restart recovery');
   }
   if (!ready) {
@@ -409,10 +430,13 @@ if (require.main === module) {
 }
 
 module.exports = {
+  CONTAINER_START_TIMEOUT_SECONDS,
   DOCKER_COMMAND,
   SYSTEMD_UNIT,
   buildSystemdRunArgs,
+  isRunningHealthy,
   logPromotionExecutionPath,
+  recoverCreatedContainer,
   resetSystemdRunProbeCache,
   runDetachedDockerCommand,
   systemdRunAvailable

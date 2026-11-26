@@ -14,6 +14,7 @@ const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
 const restartScript = fs.readFileSync(path.join(ROOT, 'scripts', 'restart-looparr.js'), 'utf8');
+const lockScript = fs.readFileSync(path.join(ROOT, 'scripts', 'restart-lock.sh'), 'utf8');
 const watchdogPath = path.join(ROOT, 'scripts', 'restart-watchdog.sh');
 
 // 1. restart-looparr.js must prefer a user-systemd transient unit so the compose
@@ -109,6 +110,43 @@ assert.match(
   restartScript,
   /API not ready after container recovery/,
   'preflight must retry API readiness after starting a recovered container'
+);
+
+// 2c. Promotion lock must block with a bounded wait; only timeout is an error.
+assert.doesNotMatch(lockScript, /flock\s+-n/, 'restart-lock.sh must not fail fast on contention');
+assert.match(lockScript, /flock\s+-w\s+"\$LOCK_TIMEOUT"/, 'restart-lock.sh must block with flock -w');
+assert.match(
+  lockScript,
+  /LOCK_TIMEOUT="\$\{LOOPARR_RESTART_LOCK_TIMEOUT:-900\}"/,
+  'restart-lock.sh must bound lock waits with LOOPARR_RESTART_LOCK_TIMEOUT'
+);
+assert.match(lockScript, /lock-wait/, 'restart-lock.sh must log lock waits');
+assert.match(lockScript, /lock-acquired/, 'restart-lock.sh must log lock acquisition');
+assert.match(lockScript, /date -u \+%Y-%m-%dT%H:%M:%SZ/, 'lock logs must use UTC timestamps');
+assert.match(lockScript, /PROMOTION_LOCK_HELD/, 'stuck lock must report PROMOTION_LOCK_HELD');
+assert.match(lockScript, /exit 76/, 'lock timeout must use a distinct exit status');
+assert.match(lockScript, /LOOPARR_RESTART_LOCK_HELD=1/, 'lock wrapper must mark held fd for child');
+assert.match(lockScript, /on_signal INT 130/, 'lock wrapper must relay INT');
+assert.match(lockScript, /on_signal TERM 143/, 'lock wrapper must relay TERM');
+assert.match(lockScript, /mkdir "\$LOCK_DIR"/, 'lock wrapper must keep the mkdir fallback');
+
+// 2d. Container health detection must not accept `unhealthy` as healthy.
+assert.doesNotMatch(restartScript, /\/healthy\/i\.test\(row\)/, 'health gate must not use /healthy/i');
+assert.match(
+  restartScript,
+  /HEALTHY_STATUS_PATTERN/,
+  'health gate must match explicit healthy states'
+);
+assert.match(
+  restartScript,
+  /\(unhealthy\|starting\|unknown\)/,
+  'health gate must reject unhealthy, starting, and unknown states'
+);
+assert.match(restartScript, /async function waitForContainerHealthy\(/, 'recovery must poll health');
+assert.match(
+  restartScript,
+  /await sleep\(2000\)/,
+  'recovery polls must await the delay'
 );
 
 // 3. The watchdog exists, is valid bash, and fixes the exactly-observed state.
