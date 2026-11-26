@@ -44,7 +44,8 @@
     envSettingsStatus: $('env-settings-status'),
     hostRunner: $('host-runner'),
     hostRunnerDetail: $('host-runner-detail'),
-    hostSetup: $('host-setup'),
+    settingsBadge: $('settings-badge'),
+    settingsGear: document.querySelector('button.side-link[data-view="settings"]'),
     addForm: $('add-form'),
     projectPath: $('project-path'),
     projectPathSuggestions: $('project-path-suggestions'),
@@ -1355,7 +1356,16 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       ? `${detail} · ${modelParts.join(' · ')}`
       : detail;
     const setupCount = projects.filter(isPlanSetup).length;
-    if (dom.hostSetup) dom.hostSetup.textContent = setupCount ? `${setupCount} need setup` : 'all configured';
+    if (dom.settingsBadge) {
+      dom.settingsBadge.textContent = String(setupCount);
+      dom.settingsBadge.hidden = setupCount === 0;
+    }
+    if (dom.settingsGear) {
+      dom.settingsGear.setAttribute(
+        'aria-label',
+        setupCount ? `Settings, ${setupCount} item${setupCount === 1 ? '' : 's'} need setup` : 'Settings'
+      );
+    }
   }
 
   /* ---------- cards ---------- */

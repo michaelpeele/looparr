@@ -246,6 +246,7 @@ a { color: var(--accent); }
 .side-link:hover { color: var(--text); background: rgba(34, 211, 238, 0.08); }
 .side-link.active { color: var(--text); background: rgba(34, 211, 238, 0.14); }
 .side-link.side-icon-link {
+  position: relative;
   width: 42px;
   height: 42px;
   margin-top: 0;
@@ -256,6 +257,27 @@ a { color: var(--accent); }
   border-radius: 8px;
 }
 .side-icon-link svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.settings-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #f59e0b;
+  color: #0b1120;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+.settings-badge[hidden] { display: none; }
 .side-emoji { font-size: 18px; line-height: 1; }
 .side-group { display: grid; gap: 2px; padding-top: 12px; margin-top: 12px; border-top: 1px solid var(--border-soft); }
 .side-label { padding: 0 10px 6px; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
