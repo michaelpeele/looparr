@@ -149,7 +149,7 @@ const DEFAULT_SEED_PROMPT_TEMPLATE = [
   'Keep output compact to protect the context budget: never echo file contents, logs, plan text, or diffs; report decisions and results only.'
 ].join('\n');
 
-const DEFAULT_ANALYZE_PROMPT_TEMPLATE = [
+const ANALYZE_PROMPT_BASE_LINES = [
   'Looparr ANALYZE step. Fresh session. Work only inside the current project directory.',
   'Task: "{{task}}"',
   'Execute this analysis prompt:',
@@ -161,13 +161,25 @@ const DEFAULT_ANALYZE_PROMPT_TEMPLATE = [
   'Include exact files to change, concrete steps, tests, acceptance criteria, verification steps, and commit scope.',
   'The text you write to `.looparr/next_prompt.txt` is for the next IMPLEMENT agent.',
   'That prompt must direct the IMPLEMENT agent to make the code and documentation changes required by the task, run relevant checks and tests, and follow all project constraints.',
-  'That prompt must tell the IMPLEMENT agent to change the "- [ ]" marker for this task to "- [x]" in plan.md only after implementation and verification are complete.',
+  'That prompt must tell the IMPLEMENT agent to change the "- [ ]" marker for this task to "- [x]" in plan.md only after implementation and verification are complete.'
+];
+const ANALYZE_PROMOTION_LINE = 'If this task changes the Looparr repository itself (it contains scripts/restart-looparr.js and scripts/promote.sh), the handoff must direct the IMPLEMENT agent to promote with `npm run restart:looparr -- --dry-run` then `npm run restart:looparr`, and must not use raw `docker compose build` or `docker compose up`: raw compose is killed with the agent cgroup between container create and start and leaves production down.';
+const ANALYZE_PROMPT_TAIL_LINES = [
   'Never write meta-instructions into .looparr/next_prompt.txt.',
   'The validator rejects meta-instructions such as "do not implement code yet".',
   'Draft the implementation prompt before writing any handoff file.',
   ...HANDOFF_VALIDATION_STEPS,
   'Do not edit plan.md. Do not implement code.',
   'Keep output compact to protect the context budget: never echo file contents, logs, plan text, or diffs; report decisions and results only.'
+];
+const PREVIOUS_ANALYZE_PROMPT_TEMPLATE = [
+  ...ANALYZE_PROMPT_BASE_LINES,
+  ...ANALYZE_PROMPT_TAIL_LINES
+].join('\n');
+const DEFAULT_ANALYZE_PROMPT_TEMPLATE = [
+  ...ANALYZE_PROMPT_BASE_LINES,
+  ANALYZE_PROMOTION_LINE,
+  ...ANALYZE_PROMPT_TAIL_LINES
 ].join('\n');
 
 const DEFAULT_IMPLEMENT_PROMPT_TEMPLATE = [
@@ -346,7 +358,8 @@ const LEGACY_PROMPT_TEMPLATES = {
   analyzePromptTemplate: [
     LEGACY_ANALYZE_PROMPT_TEMPLATE,
     LEGACY_DEFAULT_ANALYZE_PROMPT_TEMPLATE,
-    LEGACY_STORED_ANALYZE_PROMPT_TEMPLATE
+    LEGACY_STORED_ANALYZE_PROMPT_TEMPLATE,
+    PREVIOUS_ANALYZE_PROMPT_TEMPLATE
   ],
   implementPromptTemplate: [
     LEGACY_IMPLEMENT_PROMPT_TEMPLATE
@@ -478,6 +491,16 @@ function normalizeProject(project) {
   };
 }
 
+// Deployed configs can carry an absolute validator path from an earlier
+// default. Compare legacy templates with the path normalized so those saved
+// defaults still upgrade; the stored value itself is never rewritten.
+function matchesLegacyTemplate(legacyValues, value) {
+  if (typeof value !== 'string') return false;
+  const normalizePath = (text) => text.replace(/"[^"\n]*validate-handoff\.js"/g, HANDOFF_VALIDATOR_PATH);
+  const target = normalizePath(value);
+  return legacyValues.some((legacy) => normalizePath(legacy) === target);
+}
+
 function normalizeSettings(settings) {
   const normalized = { ...(settings || {}) };
   for (const field of MODEL_SETTINGS_FIELDS) {
@@ -497,7 +520,7 @@ function normalizeSettings(settings) {
   }
   normalized.cooloffSeconds = normalizedCooloff(normalized.cooloffSeconds, DEFAULT_SETTINGS.cooloffSeconds);
   for (const [field, legacyValues] of Object.entries(LEGACY_PROMPT_TEMPLATES)) {
-    if (legacyValues.includes(normalized[field])) normalized[field] = CURRENT_PROMPT_TEMPLATES[field];
+    if (matchesLegacyTemplate(legacyValues, normalized[field])) normalized[field] = CURRENT_PROMPT_TEMPLATES[field];
   }
   for (const [field, legacyValues] of Object.entries(LEGACY_PLAN_PROMPT_TEMPLATES)) {
     if (legacyValues.includes(normalized[field])) normalized[field] = CURRENT_PROMPT_TEMPLATES[field];
@@ -578,6 +601,7 @@ module.exports = {
   SPRINT_MODES,
   DEFAULT_SEED_PROMPT_TEMPLATE,
   DEFAULT_ANALYZE_PROMPT_TEMPLATE,
+  PREVIOUS_ANALYZE_PROMPT_TEMPLATE,
   DEFAULT_IMPLEMENT_PROMPT_TEMPLATE,
   PREVIOUS_IMPLEMENT_PROMPT_TEMPLATE,
   OLDER_IMPLEMENT_PROMPT_TEMPLATE,

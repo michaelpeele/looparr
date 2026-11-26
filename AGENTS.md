@@ -1,4 +1,8 @@
 See [workflow.md](../workflow.md) for the mandatory sandbox-first build and promotion workflow.
+See [HEALER_STATE.md](HEALER_STATE.md) for required healer standby state, testing, updates, and final-state checks.
+See [AUTH_FAILURE_UI.md](AUTH_FAILURE_UI.md) for the 401 auth-warning requirement and retry rules.
+
+Promotion: use `npm run restart:looparr` (transient user unit `looparr-promote`). Never run raw `docker compose build`/`up`: raw compose dies with the agent cgroup between create and start and takes production down.
 
 ## Compact output (context budget)
 

@@ -79,6 +79,9 @@ function appendAudit(project, event, fields = {}) {
 }
 
 const SNAPSHOT_MAX_STEP_OUTPUT = 4000;
+// Restored errored snapshots re-run exactly once across restarts. Defined once
+// here; engine.js imports it instead of duplicating the bound.
+const RESUME_RETRY_LIMIT = 1;
 const SNAPSHOT_MAX_ROTATION_ENTRIES = 50;
 const SNAPSHOT_MAX_PLAN_KEYS = 20;
 const SNAPSHOT_MAX_PLAN_STRING = 500;
@@ -118,6 +121,13 @@ function sanitizeSnapshot(input) {
     out.stepOutput = redactText(input.stepOutput, SNAPSHOT_MAX_STEP_OUTPUT);
   }
   if (Number.isInteger(input.modelIndex) && input.modelIndex >= 0) out.modelIndex = input.modelIndex;
+  // Bounded retry counter: only finite integers in [0, RESUME_RETRY_LIMIT]
+  // survive, so a crashed loop cannot widen the bound via the checkpoint.
+  if (Number.isInteger(input.resumeRetryCount)
+    && input.resumeRetryCount >= 0
+    && input.resumeRetryCount <= RESUME_RETRY_LIMIT) {
+    out.resumeRetryCount = input.resumeRetryCount;
+  }
   if (typeof input.modelAttemptRunKey === 'string' && input.modelAttemptRunKey.trim()) {
     out.modelAttemptRunKey = input.modelAttemptRunKey.trim().slice(0, 128);
   }
@@ -334,6 +344,7 @@ module.exports = {
   INTENT_TTL_MS,
   PHASES,
   REASONS,
+  RESUME_RETRY_LIMIT,
   shouldCaptureResumeIntent,
   statePath,
   logPath,

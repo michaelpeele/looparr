@@ -104,6 +104,16 @@ async function main() {
   assert.strictEqual(normalized.analyzePromptTemplate, configStore.DEFAULT_ANALYZE_PROMPT_TEMPLATE);
   assert.strictEqual(normalized.implementPromptTemplate, configStore.DEFAULT_IMPLEMENT_PROMPT_TEMPLATE);
 
+  const deployedAnalyze = configStore.PREVIOUS_ANALYZE_PROMPT_TEMPLATE.replace(
+    JSON.stringify('scripts/validate-handoff.js'),
+    JSON.stringify('/app/scripts/validate-handoff.js')
+  );
+  const deployedNormalized = configStore.normalizeSettings({
+    ...configStore.DEFAULT_SETTINGS,
+    analyzePromptTemplate: deployedAnalyze,
+  });
+  assert.strictEqual(deployedNormalized.analyzePromptTemplate, configStore.DEFAULT_ANALYZE_PROMPT_TEMPLATE);
+
   const custom = '{{task}}\n{{handoff}}\nCustom steps';
   const customNormalized = configStore.normalizeSettings({
     ...configStore.DEFAULT_SETTINGS,

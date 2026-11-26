@@ -4,7 +4,7 @@
 
 Stale production assets have shipped three times. For every batch that changes source files, verify production before marking its plan item complete.
 
-- Rebuild and recreate: `docker compose build looparr && docker compose up -d looparr`.
+- Promote with the restart helper, never raw `docker compose`: `npm run restart:looparr -- --dry-run`, then `npm run restart:looparr`. It runs compose in the user systemd unit `looparr-promote`, outside the agent cgroup; raw compose is killed with the agent session between container create and start and leaves production down.
 - Confirm container healthy and running on the new image.
 - Confirm served HTML, CSS, and JS contain the new change.
 - Confirm container files match local source timestamps or content.
@@ -19,7 +19,17 @@ Stale production assets have shipped three times. For every batch that changes s
   - [x] Add `scripts/test-watchdog-timer.js` static guards (units reference `restart-watchdog.sh`, Persistent, 5-min cadence, timer mode, exit-75 log-only, review check) and keep `npm test` green
   - [x] Verify: host drill per plan (recovery within one period, `review:` line, `busy:` quiet on held lock); record in `.project_documents/PROGRESS.md`
 - [x] Run promotions outside the agent cgroup with `systemd-run --user --unit=looparr-promote` or a dedicated user service, so rate-limit backoff, SIGKILL, or cgroup cleanup cannot kill compose between container creation and start. Agents may still request promotions.
-- [ ] (plan) Durable resume snapshot — see [PLAN-durable-resume-snapshot.md](.project_documents/PLAN-durable-resume-snapshot.md). Current task: persist a serializable runtime snapshot (phase, status, task, step bookkeeping, rotation cursor, session ids) so a crash or purposeful restart resumes the same resumable state instead of dropping to seed; capture error/idle states; restore with the existing provenance/TTL gates.
+- [ ] Durable resume snapshot — mapped plan: [PLAN-durable-resume-snapshot-see-plan-durable-resume-snapshot-md-project-documents-pl.md](.project_documents/PLAN-durable-resume-snapshot-see-plan-durable-resume-snapshot-md-project-documents-pl.md). Tasks:
+  - [ ] Baseline current snapshot capture, sanitize, restore, and degrade paths against 2026-11-24 incident scenario.
+  - [ ] Keep `autoResumeOnStart` gate and schema `version: 1` with optional `snapshot`; define one bounded retry constant.
+  - [ ] Capture error and idle-with-currentTask state with step bookkeeping, rotation cursor, session ids, and redacted prior output.
+  - [ ] Restore only after provenance, TTL, session, handoff, task-next, and plan-phase gates; preserve degrade rules.
+  - [ ] Auto-re-run restored error once; stop after one retry and preserve exhausted error state.
+  - [ ] Feed redacted prior `stepOutput` into the resumed step prompt once; clear it immediately after use.
+  - [ ] Extend `scripts/test-auto-resume.js` for incident drill, retry bound, behavioral context, degrade gates, and gate/schema regression.
+  - [ ] Run `npm test`, `node --check` on touched JS, and `git diff --check`.
+  - [ ] Verify production per mandatory deploy section before marking complete.
+  - [ ] Commit only `src/engine.js`, `src/auto-resume.js`, `src/config.js` if needed, and `scripts/test-auto-resume.js`.
 - [ ] (plan) Promotion concurrency lock — see [PLAN-promotion-lock.md](.project_documents/PLAN-promotion-lock.md)
 - [x] Add a setting global, and per project, pause in seconds, between tasks. Default is 0. Call it "Cooloff"
 - [x] Model rotation toggle on every model dropdown: two curved arrows, lit green square when enabled, gray when disabled, tooltip "Model Rotation". Prompt: [PROMPT-model-rotation-toggle.md](.project_documents/PROMPT-model-rotation-toggle.md)

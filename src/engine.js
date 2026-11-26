@@ -123,6 +123,11 @@ function ensureRuntime(project) {
       rotationLists: {},
       stepTask: null,
       stepOutput: '',
+      // Durable resume: restored errored snapshots re-run once (bounded by
+      // autoResume.RESUME_RETRY_LIMIT); the sanitized previous step output is
+      // consumed once as prior-step prompt context. Both reset per restart.
+      resumeRetryCount: 0,
+      resumePriorStepOutput: '',
       icon: null,
       iconVersion: null,
       activeRunner: '',
@@ -688,6 +693,7 @@ function snapshotRuntime(project, rt) {
   }
   if (typeof rt.stepOutput === 'string' && rt.stepOutput) snapshot.stepOutput = rt.stepOutput;
   if (Number.isInteger(rt.modelIndex) && rt.modelIndex >= 0) snapshot.modelIndex = rt.modelIndex;
+  if (Number.isInteger(rt.resumeRetryCount) && rt.resumeRetryCount >= 0) snapshot.resumeRetryCount = rt.resumeRetryCount;
   if (typeof rt.modelAttemptRunKey === 'string' && rt.modelAttemptRunKey) snapshot.modelAttemptRunKey = rt.modelAttemptRunKey;
   if (typeof rt.rateLimitBackoffKey === 'string' && rt.rateLimitBackoffKey) snapshot.rateLimitBackoffKey = rt.rateLimitBackoffKey;
   if (Number.isFinite(rt.cooloffUntil) && rt.cooloffUntil > 0) snapshot.cooloffUntil = rt.cooloffUntil;
@@ -745,6 +751,7 @@ function writeCheckpointIntent(project, rt) {
     error: rt.error,
     resumeAt: rt.resumeAt,
     runKey,
+    opencodeSessionId: rt.opencodeSessionId,
     pid: process.pid,
     hostname: process.env.HOSTNAME || '',
     snapshot: snapshotRuntime(project, rt)
@@ -1813,6 +1820,35 @@ function promptPreamble(extra = '') {
   return parts.join('\n\n');
 }
 
+// This repository is promoted by its own host-side helper, so agents working
+// on it must never drive compose from their own cgroup. The rule is repeated
+// before and after the handoff: the first copy overrides a handoff that still
+// says raw `docker compose`, and the closing copy sits at the point of action.
+const PROMOTION_RULE_TITLE = 'Promotion execution (this Looparr repository):';
+const PROMOTION_RULE_LINES = [
+  'Do not run `docker compose build` or `docker compose up` for this repository.',
+  'Promote with `npm run restart:looparr -- --dry-run`, then `npm run restart:looparr`.',
+  'Why: this agent runs under a host-executor cgroup. Raw compose is killed with the agent session between container create and start, leaving a created-not-started container and production down (seen as implement exit 137).',
+  'The restart helper runs the compose chain in the transient user unit `looparr-promote` via `systemd-run --user --wait --collect`, outside the agent cgroup; it falls back to a detached signal-ignoring wrapper only when systemd is unavailable.',
+  '`scripts/promote.sh` is the sandbox-first wrapper and delegates the prod step to the same helper.'
+];
+
+function promotionRuleBlock(title = PROMOTION_RULE_TITLE) {
+  return [title, ...PROMOTION_RULE_LINES].join('\n');
+}
+
+function usesLooparrPromotion(projectPath) {
+  if (!projectPath) return false;
+  return fs.existsSync(path.join(projectPath, 'scripts', 'restart-looparr.js'))
+    && fs.existsSync(path.join(projectPath, 'scripts', 'promote.sh'));
+}
+
+function injectPromotionRule(prompt, projectPath) {
+  if (!usesLooparrPromotion(projectPath)) return prompt;
+  const repeatTitle = 'Promotion execution (repeat \u2014 this Looparr repository):';
+  return `${promotionRuleBlock()}\n\n${prompt}\n\n${promotionRuleBlock(repeatTitle)}`;
+}
+
 function shortCommand(command, args) {
   const preview = args.map((arg) => (arg.length > 90 ? `${arg.slice(0, 90)}…` : arg));
   return `$ ${command} ${preview.join(' ')}`;
@@ -2847,6 +2883,7 @@ async function startStep(project) {
             : 'implementPromptTemplate',
         { task: task.text, handoff }
       );
+      if (phase === 'implement') prompt = injectPromotionRule(prompt, project.path);
       if (phase === 'planWrite') {
         // Pin the exact doc path used by verifyPlanWriteOutput. Agents otherwise
         // guess a slug from prose or linked doc names and fail the output guard.
@@ -2865,7 +2902,22 @@ async function startStep(project) {
       if (phase !== 'seed') continuationMessage = consumeRestartContinueMessage();
       rt.restartContinuePending = false;
     }
-    const preamble = promptPreamble(continuationMessage);
+    // One-shot prior-step context from a restored snapshot: sanitize happens in
+    // the auto-resume layer; consume it here exactly once and clear it before
+    // the pre-spawn rt.stepOutput reset can touch anything.
+    const priorStepContext = (rt.resumePriorStepOutput && phase !== 'seed')
+      ? `Prior-step context (sanitized output from the step this session resumes after):\n${rt.resumePriorStepOutput}`
+      : '';
+    rt.resumePriorStepOutput = '';
+    if (priorStepContext) {
+      appendLog(project.id, 'system', `↩ Injecting prior-step context (${priorStepContext.length} chars, redacted).`);
+      autoResume.appendAudit(project, 'resume-prior-context-used', {
+        phase,
+        task: task.text || '',
+        cause: `chars=${priorStepContext.length};source=${phase}-resume`
+      });
+    }
+    const preamble = promptPreamble([continuationMessage, priorStepContext].filter(Boolean).join('\n\n'));
     // Future: append enabled promptSnippets here (see .project_documents/RESEARCH-prompt-snippets.md).
     if (preamble) prompt = `${preamble}\n\n${prompt}`;
 
@@ -3417,6 +3469,16 @@ async function resumeOnStart() {
       if (snap && !isPlanPhaseResume && phase === intent.nextPhase) {
         if (snap.stepTask && Number.isInteger(snap.stepTask.index)) rt.stepTask = snap.stepTask;
         if (typeof snap.stepOutput === 'string') rt.stepOutput = snap.stepOutput;
+        // Behaviorally consume the prior output once: the prompt hook reads this
+        // field, not rt.stepOutput, which the pre-spawn reset clears.
+        if (typeof snap.stepOutput === 'string' && phase !== 'seed') {
+          rt.resumePriorStepOutput = snap.stepOutput;
+        }
+        if (Number.isInteger(snap.resumeRetryCount)
+          && snap.resumeRetryCount >= 0
+          && snap.resumeRetryCount <= autoResume.RESUME_RETRY_LIMIT) {
+          rt.resumeRetryCount = snap.resumeRetryCount;
+        }
         if (Number.isInteger(snap.modelIndex) && snap.modelIndex >= 0) rt.modelIndex = snap.modelIndex;
         if (typeof snap.modelAttemptRunKey === 'string') rt.modelAttemptRunKey = snap.modelAttemptRunKey;
         if (typeof snap.rateLimitBackoffKey === 'string') rt.rateLimitBackoffKey = snap.rateLimitBackoffKey;
@@ -3462,7 +3524,30 @@ async function resumeOnStart() {
         rt.resumeSessionId = '';
         if (sessionId && sessionUsable) sessionCause = 'session-missing';
         emitState();
+      } else if (intent.status === 'error' && rt.resumeRetryCount >= autoResume.RESUME_RETRY_LIMIT) {
+        // Retry bound reached across restarts: never start another runner.
+        // Preserve the error state so the operator sees and resolves it.
+        rt.resumeAt = null;
+        rt.status = 'error';
+        rt.active = false;
+        rt.error = (typeof intent.error === 'string' && intent.error.trim())
+          ? intent.error
+          : 'resumed errored step already retried once';
+        rt.currentTask = taskText;
+        rt.nextPhase = phase;
+        rt.resumeSessionId = '';
+        rt.opencodeSessionId = '';
+        rt.resumePriorStepOutput = '';
+        if (sessionId && sessionUsable) sessionCause = 'retry-exhausted';
+        emitState();
+        appendLog(project.id, 'system', '✖ Errored resume already retried once; manual intervention required.');
       } else {
+        if (intent.status === 'error') {
+          // Bounded auto-retry: increment exactly once per restore; the next
+          // checkpoint persists the count so restarts cannot loop forever.
+          rt.resumeRetryCount += 1;
+          sessionCause = `retry=${rt.resumeRetryCount}${sessionCause ? `;${sessionCause}` : ''}`;
+        }
         rt.resumeAt = null;
         rt.status = 'idle';
         rt.resumeSessionId = sessionUsable ? sessionId : '';
@@ -3558,6 +3643,8 @@ module.exports = {
   writeCheckpointIntent,
   snapshotRuntime,
   promptPreamble,
+  injectPromotionRule,
+  usesLooparrPromotion,
   isMetaPromptHandoff,
   selfHealingEnabled,
   maybeStartHealer,

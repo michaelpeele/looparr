@@ -539,9 +539,11 @@ function testSnapshotFields(engine) {
       rateLimitBackoffKey: 'backoff-key',
       rotationCursor: { 'model-a': 1, 'model-b': 2 },
       resumeSessionId: 'ses_snapshot123',
+      opencodeSessionId: 'ses_opencode123',
       stepTask: { index: 3, text: 'Implement the snapshot' },
-      stepOutput: 'boom https://secret.example/path token=abcd1234',
-      planPhaseSnapshot: { taskText: 'Implement the snapshot', foo: 'bar' }
+      stepOutput: `boom https://secret.example/path token=abcd1234 Bearer live-token-99 ${'y'.repeat(4200)}`,
+      planPhaseSnapshot: { taskText: 'Implement the snapshot', foo: 'bar' },
+      resumeRetryCount: 1
     };
     const written = engine.writeCheckpointIntent(project, rt);
     assert.equal(written, true, 'error checkpoint writes');
@@ -551,12 +553,23 @@ function testSnapshotFields(engine) {
     assert.equal(checked.intent.status, 'error', 'error status persisted');
     assert.equal(checked.intent.nextPhase, 'implement', 'phase persisted');
     assert.ok(checked.intent.snapshot, 'snapshot persisted');
+    assert.equal(autoResume.RESUME_RETRY_LIMIT, 1, 'retry bound defined once in auto-resume');
     assert.equal(checked.intent.snapshot.modelIndex, 2, 'snapshot modelIndex');
     assert.equal(checked.intent.snapshot.resumeSessionId, 'ses_snapshot123', 'snapshot resumeSessionId');
+    assert.equal(checked.intent.opencodeSessionId, 'ses_opencode123', 'snapshot opencodeSessionId');
+    assert.equal(checked.intent.snapshot.resumeRetryCount, 1, 'snapshot retry count');
     assert.equal(checked.intent.snapshot.stepTask.index, 3, 'snapshot stepTask index');
     assert.deepEqual(checked.intent.snapshot.rotationCursor, { 'model-a': 1, 'model-b': 2 }, 'snapshot rotationCursor');
     assert.ok(!checked.intent.snapshot.stepOutput.includes('abcd1234'), 'snapshot stepOutput redacts token');
     assert.ok(!/https?:\/\//.test(checked.intent.snapshot.stepOutput), 'snapshot stepOutput redacts url');
+    assert.ok(checked.intent.snapshot.stepOutput.length <= 4000, 'snapshot stepOutput capped at 4000');
+    assert.equal(engine.writeCheckpointIntent(project, { ...rt, resumeRetryCount: 7 }), true, 'out-of-range retry checkpoint writes');
+    const bounded = autoResume.readIntent(project);
+    assert.ok(bounded.ok, 'out-of-range retry intent readable');
+    assert.ok(!('resumeRetryCount' in bounded.intent.snapshot), 'out-of-range retry count omitted');
+    assert.equal(autoResume.sanitizeSnapshot({ resumeRetryCount: 0.5 }), undefined, 'non-integer retry count omitted');
+    assert.equal(autoResume.sanitizeSnapshot({ resumeRetryCount: -1 }), undefined, 'negative retry count omitted');
+    assert.equal(autoResume.sanitizeSnapshot({ resumeRetryCount: 7 }), undefined, 'over-limit retry count omitted');
 
     const raw = fs.readFileSync(autoResume.statePath(project), 'utf8');
     assertNoSecrets(raw, 'snapshot file');
@@ -1034,19 +1047,27 @@ async function main() {
   // 12. Stale intent and invalid version.
   const staleProject = await createProjectViaApi('stale-resume', true);
   const invalidProject = await createProjectViaApi('invalid-version', true);
+  const futureSkewProject = await createProjectViaApi('future-skew', true);
   writeIntentFor(staleProject.id, {
     capturedAt: new Date(Date.now() - (25 * 60 * 60 * 1000)).toISOString(),
     currentTask: staleProject.task
   });
   writeIntentFor(invalidProject.id, { version: 2, currentTask: invalidProject.task });
+  writeIntentFor(futureSkewProject.id, {
+    capturedAt: new Date(Date.now() + (2 * 60 * 60 * 1000)).toISOString(),
+    currentTask: futureSkewProject.task
+  });
   server = await restartServer(server, true);
   state = await getState();
   assertEqual(findProject(state, staleProject.id).active, false, 'stale project not resumed');
   assertEqual(findProject(state, invalidProject.id).active, false, 'invalid version not resumed');
+  assertEqual(findProject(state, futureSkewProject.id).active, false, 'future-skewed intent not resumed');
   assert.equal(fs.existsSync(stateFile(staleProject.id)), false, 'stale intent cleared');
   assert.equal(fs.existsSync(stateFile(invalidProject.id)), false, 'invalid intent cleared');
+  assert.equal(fs.existsSync(stateFile(futureSkewProject.id)), false, 'future-skewed intent cleared');
   assert.ok(countAudit(staleProject.id, 'stale-intent-ignored') >= 1, 'stale audit present');
   assert.ok(countAudit(invalidProject.id, 'stale-intent-ignored') >= 1, 'invalid version audit present');
+  assert.ok(countAudit(futureSkewProject.id, 'stale-intent-ignored') >= 1, 'future skew audit present');
 
   // 12. Exactly-once consumption across sequential startups.
   const duplicateProject = await createProjectViaApi('duplicate-resume', true);
@@ -1103,6 +1124,147 @@ async function main() {
   assertEqual(resumedPaused.status, 'paused', 'paused status restored');
   await delay(300);
   assert.ok(!findProject(await getState(), pausedProject.id).logs.some((entry) => String(entry.text).startsWith('▶ SEED')), 'paused project starts no step');
+
+  // 13d. Durable resume snapshot drill (2026-11-24 incident): an errored
+  // implement checkpoint with active:false resumes the same task and step in
+  // implement — exactly once — with the prior step output consumed once as
+  // redacted, capped prompt context, and a second errored restart never starts.
+  const drill = await createProjectViaApi('drill-resume', true);
+  const drillHandoffPath = path.join(drill.path, '.looparr', 'next_prompt.txt');
+  const drillProvenancePath = path.join(drill.path, '.looparr', 'handoff_task.txt');
+  const writeDrillHandoff = () => {
+    fs.writeFileSync(drillHandoffPath, `Implement ${drill.task} now.`, 'utf8');
+    fs.writeFileSync(drillProvenancePath, `${drill.task}\n2026-11-24\n`, 'utf8');
+  };
+  const writeDrillErrorIntent = (retryCount) => {
+    writeIntentFor(drill.id, {
+      nextPhase: 'implement',
+      status: 'error',
+      currentTask: drill.task,
+      error: 'implement step exited with code 1',
+      snapshot: {
+        stepTask: { index: 2, text: drill.task },
+        stepOutput: `prior step progress half done token=${'drill-secret-token'} https://secret.example/path ${'z'.repeat(5000)}`,
+        resumeRetryCount: retryCount
+      }
+    });
+  };
+  fs.rmSync(RESTART_CONTINUE_TEST_FILE, { force: true });
+  writeDrillHandoff();
+  writeDrillErrorIntent(0);
+  assertNoSecrets(fs.readFileSync(stateFile(drill.id), 'utf8'), 'drill error intent');
+  server = await restartServer(server, true);
+  const drillResumed = findProject(await getState(), drill.id);
+  assertEqual(drillResumed.active, true, 'drill resumes active');
+  assertEqual(drillResumed.nextPhase, 'implement', 'drill resumes implement instead of seed');
+  assertEqual(drillResumed.currentTask, drill.task, 'drill resumes the same task');
+  assert.ok(
+    !drillResumed.logs.some((entry) => String(entry.text).startsWith('▶ SEED')),
+    'drill never drops to seed'
+  );
+  const drillPrompts = await waitForPrompts(drill, 1);
+  assert.equal(drillPrompts.length, 1, 'drill resumed with exactly one prompt');
+  assert.ok(drillPrompts[0].includes('Prior-step context'), 'resumed prompt carries the prior-step label');
+  assert.ok(drillPrompts[0].includes('prior step progress'), 'resumed prompt carries prior output');
+  assert.ok(!drillPrompts[0].includes('drill-secret-token'), 'prior output redacted in prompt');
+  assert.ok(!/https?:\/\//.test(drillPrompts[0]), 'prior output urls redacted in prompt');
+  assert.equal((drillPrompts[0].match(/z{50,}/g) || []).length, 1, 'prior output appears exactly once in the prompt');
+  assert.equal(countAudit(drill.id, 'resume-prior-context-used'), 1, 'prior-context audit exactly once');
+  let drillCheckpoint = null;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const checked = autoResume.readIntent(projectById(drill.id));
+    if (checked.ok && checked.intent.reason === 'checkpoint') {
+      drillCheckpoint = checked.intent;
+      break;
+    }
+    await delay(50);
+  }
+  assert.ok(drillCheckpoint, 'retry checkpoint re-persisted');
+  assert.equal(drillCheckpoint.snapshot.resumeRetryCount, 1, 'retry count round-trips at one');
+  assert.equal(drillCheckpoint.snapshot.stepTask.index, 2, 'step bookkeeping preserved in retry checkpoint');
+  assertNoSecrets(fs.readFileSync(stateFile(drill.id), 'utf8'), 'drill retry checkpoint');
+
+  const drillPid = await waitForChildPid(projectById(drill.id));
+  await stopAllProjects();
+  await waitForPidGone(drillPid);
+  fs.rmSync(path.join(drill.path, '.looparr', 'fake-child.pid'), { force: true });
+  writeDrillHandoff();
+  writeDrillErrorIntent(autoResume.RESUME_RETRY_LIMIT);
+  server = await restartServer(server, true);
+  const exhausted = findProject(await getState(), drill.id);
+  assert.equal(exhausted.active, false, 'retry-exhausted restart starts no runner');
+  assert.equal(fs.existsSync(path.join(drill.path, '.looparr', 'fake-child.pid')), false, 'no runner child spawned');
+  assert.equal(countAudit(drill.id, 'resume-prior-context-used'), 1, 'prior context was not consumed again');
+  assertEqual(exhausted.status, 'error', 'error state preserved for the operator');
+  assert.ok(
+    (exhausted.error || '').includes('implement step exited with code 1'),
+    'original error message preserved'
+  );
+  assert.equal(readPrompts(drill).length, 1, 'no new prompt on exhausted restart');
+  assert.equal(countAudit(drill.id, 'resume-on-start') >= 2, true, 'one resume-on-start per restart');
+  const exhaustedAudit = readAudit(drill.id).filter((entry) => entry.event === 'resume-on-start').pop();
+  assert.ok((exhaustedAudit.cause || '').includes('retry-exhausted'), 'retry-exhausted cause audited');
+
+  server = await restartServer(server, true);
+  await delay(500);
+  const thirdDrill = findProject(await getState(), drill.id);
+  assert.equal(thirdDrill.active, false, 'third restart still starts no runner');
+  assert.ok(readPrompts(drill).length <= 1, 'third restart wrote no prompt');
+  assert.ok(
+    readAudit(drill.id).every((entry) => entry.event !== 'resume-on-start' || !(entry.cause || '').includes('retry=')),
+    'the retry never runs a second time'
+  );
+
+  // 13e. Snapshot-free degrades and session handling.
+  const planMismatchProject = await createProjectViaApi('plan-write-mismatch', true);
+  fs.writeFileSync(path.join(planMismatchProject.path, '.looparr', 'next_prompt.txt'), 'Write the plan document.', 'utf8');
+  fs.writeFileSync(path.join(planMismatchProject.path, '.looparr', 'handoff_task.txt'), 'Old task\n2026-11-24\n', 'utf8');
+  writeIntentFor(planMismatchProject.id, {
+    nextPhase: 'planWrite',
+    status: 'planWrite',
+    currentTask: planMismatchProject.task
+  });
+  server = await restartServer(server, true);
+  state = await getState();
+  const planDegrade = findProject(state, planMismatchProject.id);
+  assert.equal(
+    readAudit(planMismatchProject.id).some(
+      (entry) => entry.event === 'resume-degraded' && entry.cause === 'handoff-provenance-mismatch'
+    ),
+    true,
+    'plan phase mismatch degraded'
+  );
+  assert.ok(planDegrade.active, 'plan degrade still resumes via planQuestions');
+
+  const invalidSessionProject = await createProjectViaApi('invalid-session-resume', true);
+  fs.writeFileSync(path.join(invalidSessionProject.path, '.looparr', 'next_prompt.txt'), 'non-empty handoff', 'utf8');
+  fs.writeFileSync(path.join(invalidSessionProject.path, '.looparr', 'handoff_task.txt'), `${invalidSessionProject.task}\n2026-11-24\n`, 'utf8');
+  writeIntentFor(invalidSessionProject.id, {
+    nextPhase: 'analyze',
+    status: 'analyze',
+    currentTask: invalidSessionProject.task,
+    opencodeSessionId: 'not a valid session id',
+    snapshot: { resumeSessionId: 'also not valid' }
+  });
+  server = await restartServer(server, true);
+  state = await getState();
+  const invalidSessionResume = findProject(state, invalidSessionProject.id);
+  assert.ok(invalidSessionResume.active, 'invalid session ids do not block the resume');
+  assert.ok(
+    !readAudit(invalidSessionProject.id).some((entry) => entry.event === 'resume-on-start' && (entry.cause || '').includes('retry=')),
+    'invalid session resume is not mistaken for a retry'
+  );
+
+  // 13f. Every-tick errored rewrite stays readable.
+  const rewriteProject = await createProjectViaApi('error-rewrite', true);
+  writeIntentFor(rewriteProject.id, { currentTask: rewriteProject.task, status: 'error', error: 'seed step exited with code 1' });
+  writeIntentFor(rewriteProject.id, { currentTask: rewriteProject.task, status: 'error', error: 'seed step exited with code 1' });
+  const rewriteRead = autoResume.readIntent(projectById(rewriteProject.id));
+  assert.ok(rewriteRead.ok && rewriteRead.intent.status === 'error', 'every-tick error rewrite accepted');
+  writeIntentFor(rewriteProject.id, { currentTask: rewriteProject.task });
+  server = await restartServer(server, true);
+  assertEqual(findProject(await getState(), rewriteProject.id).active, true, 'rewritten intent resumes');
+  assertPlannedIntentConsumed(rewriteProject.id, 'rewritten intent consumed');
 
   // 14. Audit redaction and bounded rotation.
   const probe = { id: 'audit-probe', name: 'audit-probe', path: path.join(PROJECTS_ROOT, 'audit-probe') };
