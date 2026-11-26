@@ -2848,6 +2848,10 @@ async function startStep(project) {
         { task: task.text, handoff }
       );
       if (phase === 'planWrite') {
+        // Pin the exact doc path used by verifyPlanWriteOutput. Agents otherwise
+        // guess a slug from prose or linked doc names and fail the output guard.
+        const planDocPath = `${PROJECT_DOCS_DIR}/PLAN-${planDocSlug(task.text)}.md`;
+        prompt = `${prompt}\n\nPlan document path: ${planDocPath}\nWrite the mapped plan document to this exact path.`;
         // Fresh sessions only: never pass a stored OpenCode session into a
         // plan phase, and snapshot plan.md/PLAN docs for exit validation.
         rt.resumeSessionId = '';

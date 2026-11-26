@@ -51,6 +51,7 @@ const CHILD_SCRIPT = `
 const fs = require('fs');
 const path = require('path');
 const phase = process.argv[process.argv.length - 1] || '';
+const prompt = process.argv[process.argv.length - 2] || '';
 const cwd = process.cwd();
 const loop = path.join(cwd, '.looparr');
 fs.mkdirSync(loop, { recursive: true });
@@ -74,8 +75,9 @@ if (phase === 'planWrite') {
     write('Analysis: implement X in src/a.js. Risks: y. Next fresh agent must write the implementation prompt.');
     process.exit(0);
   }
-  fs.mkdirSync(path.join(cwd, '.project_documents'), { recursive: true });
-  fs.writeFileSync(path.join(cwd, '.project_documents', 'PLAN-widget-launcher.md'), '# Mapped plan\\n\\n- Step 1\\n- Step 2\\n');
+  const planDocPath = prompt.includes('Plan document path: ') ? prompt.split('Plan document path: ')[1].split(String.fromCharCode(10))[0] : '.project_documents/PLAN-widget-launcher.md';
+  fs.mkdirSync(path.dirname(path.join(cwd, planDocPath)), { recursive: true });
+  fs.writeFileSync(path.join(cwd, planDocPath), '# Mapped plan\\n\\n- Step 1\\n- Step 2\\n');
   const planPath = path.join(cwd, 'plan.md');
   let plan = fs.readFileSync(planPath, 'utf8');
   plan = plan.replace(/^\\s*[-*+]\\s+\\[[ xX]\\]\\s*\\(plan\\).*$/m, '- [ ] generated task one\\n- [ ] generated task two');
@@ -111,7 +113,7 @@ registerRunner({
     );
     return {
       command: ${JSON.stringify(process.execPath)},
-      args: ['-e', ${JSON.stringify(CHILD_SCRIPT)}, phase || ''],
+      args: ['-e', ${JSON.stringify(CHILD_SCRIPT)}, prompt, phase || ''],
       options: { cwd }
     };
   },
@@ -460,6 +462,7 @@ async function testPlanWaitAndConfirm() {
   const planWriteEntry = writePrompts.find((entry) => entry.phase === 'planWrite');
   assert.ok(planWriteEntry, 'planWrite spawned after answer');
   assert.ok(planWriteEntry.prompt.includes('Answer 1: only src/a.js'), 'planWrite handoff carries questions + answers');
+  assert.ok(planWriteEntry.prompt.includes('.project_documents/PLAN-build-widget-launcher.md'), 'planWrite prompt pins exact doc path');
   await assertNoSpawns(project, writePrompts.length, 'waitingConfirm must not auto-spawn');
   state = await projectState(project.id);
   assert.equal(state.nextPhase, 'analyze', 'nextPhase analyze while waitingConfirm');
@@ -467,8 +470,8 @@ async function testPlanWaitAndConfirm() {
 
   const planNow = planLib.readPlan(project.path);
   assert.ok(
-    fs.existsSync(path.join(project.path, '.project_documents', 'PLAN-widget-launcher.md')),
-    'planWrite created the mapped PLAN doc'
+    fs.existsSync(path.join(project.path, '.project_documents', 'PLAN-build-widget-launcher.md')),
+    'planWrite created the mapped PLAN doc at pinned path'
   );
   assert.ok(planNow.tasks.every((task) => task.text !== PLAN_TASK || task.checked), 'original (plan) line replaced or removed');
   assert.ok(planNow.tasks.some((task) => task.text === 'generated task one'), 'generated tasks present');
@@ -508,6 +511,36 @@ async function testPlanWaitAndConfirm() {
   );
   assert.ok(phases.slice(0, planWriteIndex).every((phase) => phase === 'planQuestions'), 'only planQuestions before planWrite');
   assert.ok(!phases.slice(planWriteIndex).includes('planQuestions'), 'generated tasks run the normal flow');
+}
+
+// Regression: linked task text must not make the pinned doc path ambiguous.
+async function testPlanWriteLinkedDocPath() {
+  const LINKED_TASK = '(plan) Watchdog timer — see [PLAN-watchdog-timer.md](.project_documents/PLAN-watchdog-timer.md)';
+  const expectedSlug = 'watchdog-timer-see-plan-watchdog-timer-md-project-documents-plan-watchdog-timer';
+  const expectedDoc = `PLAN-${expectedSlug}.md`;
+  const project = await createProject('plan-linked-doc-project', LINKED_TASK);
+  fs.mkdirSync(path.join(project.path, '.project_documents'), { recursive: true });
+  fs.writeFileSync(path.join(project.path, '.project_documents', 'PLAN-watchdog-timer.md'), '# Existing linked doc\n', 'utf8');
+
+  assertEqual((await api('POST', `/api/projects/${encodeURIComponent(project.id)}/start`)).status, 200, 'start linked-doc project');
+  await waitFor(
+    () => projectState(project.id).then((p) => (p.status === 'waitingAnswer' ? p : null)),
+    'linked-doc project waitingAnswer'
+  );
+  const answerPut = await api('PUT', `/api/projects/${encodeURIComponent(project.id)}/answer`, {
+    content: `${readHandoff(project)}\nAnswer 1: proceed.\nAnswer 2: proceed.`
+  });
+  assertEqual(answerPut.status, 200, 'linked-doc answer accepted');
+  await waitFor(
+    () => projectState(project.id).then((p) => (p.status === 'waitingConfirm' ? p : null)),
+    'linked-doc project waitingConfirm'
+  );
+
+  const entry = readPrompts(project).find((item) => item.phase === 'planWrite');
+  assert.ok(entry, 'linked-doc planWrite spawned');
+  assert.ok(entry.prompt.includes(`Plan document path: .project_documents/${expectedDoc}`), 'prompt pins exact linked-doc slug');
+  assert.ok(fs.existsSync(path.join(project.path, '.project_documents', expectedDoc)), 'pinned doc created despite existing linked doc');
+  assert.equal((await projectState(project.id)).nextPhase, 'analyze', 'linked-doc planWrite passed output guard');
 }
 
 // Test 4: bad/empty/meta planWrite outputs never enter waitingConfirm.
@@ -685,6 +718,7 @@ async function main() {
     await testSettingsAndTemplates();
     await testNonPlanFlowUnchanged();
     await testPlanWaitAndConfirm();
+    await testPlanWriteLinkedDocPath();
     await testPlanWriteFailures();
     await testRestartResume();
   } catch (error) {
