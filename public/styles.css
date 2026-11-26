@@ -619,7 +619,7 @@ input[type="number"] { max-width: 130px; }
 }
 
 .card-model { font-size: 11px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.card-up strong { color: #b6c4da; font-weight: 600; }
+.card-up strong { color: #b6c4da; font-weight: 600; flex: 0 0 auto; white-space: nowrap; overflow-wrap: normal; }
 
 .task-detail-wrap { display: inline-flex; align-items: flex-start; gap: 4px; max-width: 100%; min-width: 0; vertical-align: top; }
 .card-task.task-detail-wrap, .card-up.task-detail-wrap { display: flex; width: 100%; }
