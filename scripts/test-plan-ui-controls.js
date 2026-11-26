@@ -84,6 +84,14 @@ function extractFunction(source, signature) {
   throw new Error(`Unbalanced function body: ${signature}`);
 }
 
+function loadVisibleTaskFunctions() {
+  const source = fs.readFileSync(path.join(REPO_ROOT, 'public/app.js'), 'utf8');
+  const indexes = extractFunction(source, 'function visibleTaskIndexes(tasks, showCompleted)');
+  const neighbor = extractFunction(source, 'function visibleTaskNeighbor(visibleIndexes, fromTaskIndex, direction)');
+  const factory = new Function(`${indexes}\n${neighbor}\nreturn { visibleTaskIndexes, visibleTaskNeighbor };`);
+  return factory();
+}
+
 function loadReorderFunctions() {
   const source = fs.readFileSync(path.join(REPO_ROOT, 'public/app.js'), 'utf8');
   const regexMatch = source.match(/^\s*const TASK_LINE_RE = .*;$/m);
@@ -220,8 +228,10 @@ function loadTaskLinkDocStateFunctions(options = {}) {
   return helpers;
 }
 
-function loadChecklistRenderer(appSource, editingTaskIndex = -1) {
+function loadChecklistRenderer(appSource, editingTaskIndex = -1, showCompleted = true) {
   const renderSource = extractFunction(appSource, 'function renderChecklist(plan)');
+  const visibleIndexesSource = extractFunction(appSource, 'function visibleTaskIndexes(tasks, showCompleted)');
+  const visibleNeighborSource = extractFunction(appSource, 'function visibleTaskNeighbor(visibleIndexes, fromTaskIndex, direction)');
   const dom = {
     checklist: {
       innerHTML: '',
@@ -231,7 +241,7 @@ function loadChecklistRenderer(appSource, editingTaskIndex = -1) {
     }
   };
   const documentStub = { activeElement: {} };
-  const app = { drawerId: 'demo', showCompleted: true };
+  const app = { drawerId: 'demo', showCompleted };
   const factory = new Function(
     'app',
     'dom',
@@ -242,7 +252,7 @@ function loadChecklistRenderer(appSource, editingTaskIndex = -1) {
     'updatePlanControls',
     'restoreChecklistFocus',
     'linkPlanReferences',
-    `${renderSource}\nreturn { renderChecklist, app, dom };`
+    `${visibleIndexesSource}\n${visibleNeighborSource}\n${renderSource}\nreturn { renderChecklist, app, dom };`
   );
   const helpers = factory(
     app,
@@ -421,6 +431,12 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(appSource, 'Save plan.md first', 'app dirty status');
   assertIncludes(appSource, 'reorderPlanTask(content, fromTaskIndex, toTaskIndex)', 'app raw reorder helper');
   assertIncludes(appSource, 'reorderChecklistTask(fromTaskIndex, toTaskIndex)', 'app checklist reorder helper');
+  assertIncludes(appSource, 'function visibleTaskIndexes(tasks, showCompleted)', 'app visible task index helper');
+  assertIncludes(appSource, 'function visibleTaskNeighbor(visibleIndexes, fromTaskIndex, direction)', 'app visible neighbor helper');
+  assertIncludes(appSource, 'previousVisibleIndex === undefined', 'app move buttons use visible neighbors');
+  assertIncludes(appSource, 'visibleTaskNeighbor(visibleIndexes, taskIndex, -1)', 'app click move-up uses visible neighbor');
+  assertIncludes(appSource, 'visibleTaskNeighbor(visibleIndexes, fromTaskIndex,', 'app keyboard uses visible neighbor');
+  assertIncludes(appSource, 'toTaskIndex == null', 'app rejects missing visible target');
   assertIncludes(appSource, 'planSaveChain', 'app serialized saves');
   assertIncludes(appSource, 'setPointerCapture', 'app pointer capture');
   assertIncludes(appSource, 'pointerdown', 'app pointerdown listener');
@@ -482,6 +498,25 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
       .map((match) => `${match[1]}:${match[2]}`);
     assertEqual(flags.join(','), `merge-previous:${index},deploy-main:${index}`, `row ${index} flag controls`);
   });
+  const hiddenPlan = {
+    tasks: Array.from({ length: 10 }, (_, index) => ({
+      index,
+      text: `Task ${index + 1}`,
+      checked: index > 0 && index < 9
+    }))
+  };
+  const hiddenRows = checklistRows(loadChecklistRenderer(appSource, -1, false).render(hiddenPlan));
+  assertEqual(hiddenRows.length, 2, 'hidden completed checklist row count');
+  const hiddenDisabled = ['true,true,false,false', 'false,false,true,true'];
+  hiddenRows.forEach((row, index) => {
+    assertEqual(
+      ['move-top', 'move-up', 'move-down', 'move-bottom'].map((action) => checklistButtonDisabled(row, action)).join(','),
+      hiddenDisabled[index],
+      `hidden row ${index} move-button disabled states`
+    );
+  });
+  assert.ok(hiddenRows[0].includes('data-task-index="0"'), 'hidden first row keeps real index 0');
+  assert.ok(hiddenRows[1].includes('data-task-index="9"'), 'hidden last row keeps real index 9');
   assertIncludes(normalRows[1], 'task-deps warn', 'dependency warning stays in label after controls');
   const editingRows = checklistRows(loadChecklistRenderer(appSource, 1).render(checklistPlan));
   assertEqual(editingRows.length, 2, 'editing checklist row count');
@@ -781,6 +816,20 @@ async function testReorderPureFunctions() {
   assertEqual(reorderPlanTask(raw, 2, 2), raw, 'same-position reorder is a no-op');
   assertEqual(reorderPlanTask(raw, -1, 2), null, 'invalid source index');
   assertEqual(reorderPlanTask(raw, 0, 4), null, 'invalid target index');
+}
+
+async function testVisibleTaskPureFunctions() {
+  const { visibleTaskIndexes, visibleTaskNeighbor } = loadVisibleTaskFunctions();
+  const tasks = Array.from({ length: 10 }, (_, index) => ({
+    index,
+    checked: index > 0 && index < 9
+  }));
+  assert.deepEqual(visibleTaskIndexes(tasks, false), [0, 9], 'hidden completed tasks leave first and last visible');
+  assert.deepEqual(visibleTaskIndexes(tasks, true), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 'shown completed tasks stay visible');
+  assertEqual(visibleTaskNeighbor([0, 9], 9, -1), 0, 'move up from last visible jumps to first visible');
+  assertEqual(visibleTaskNeighbor([0, 9], 0, 1), 9, 'move down from first visible jumps to last visible');
+  assertEqual(visibleTaskNeighbor([0, 9], 0, -1), null, 'no visible neighbor above first row');
+  assertEqual(visibleTaskNeighbor([0, 9], 9, 1), null, 'no visible neighbor below last row');
 }
 
 async function testTaskActionPureFunctions() {
@@ -1357,6 +1406,7 @@ async function main() {
     assertServedAssets(indexHtml, appSource, cssSource);
 
     await testReorderPureFunctions();
+    await testVisibleTaskPureFunctions();
     await testTaskActionPureFunctions();
     await testExpansionPureFunctions();
     await testShowCompletedPureFunctions();
