@@ -146,10 +146,76 @@ async function testLinkDocHelpers() {
   }
 }
 
+function loadReorderHelpers() {
+  const source = fs.readFileSync(path.join(REPO_ROOT, 'public/app.js'), 'utf8');
+  const lineRegex = source.match(/^\s*const TASK_LINE_RE = .*;$/m);
+  assert.ok(lineRegex, 'Missing TASK_LINE_RE');
+  const indexes = extractFunction(source, 'function planTaskLineIndexes(content)');
+  const reorder = extractFunction(source, 'function reorderPlanTask(content, fromTaskIndex, toTaskIndex)');
+  const visibleIndexes = extractFunction(source, 'function visibleTaskIndexes(tasks, showCompleted)');
+  const neighbor = extractFunction(source, 'function visibleTaskNeighbor(visibleIndexes, fromTaskIndex, direction)');
+  const factory = new Function([
+    lineRegex[0],
+    indexes,
+    reorder,
+    visibleIndexes,
+    neighbor,
+    'return { planTaskLineIndexes, reorderPlanTask, visibleTaskIndexes, visibleTaskNeighbor };'
+  ].join('\n'));
+  return factory();
+}
+
+function testReorderHelpers() {
+  const { reorderPlanTask, visibleTaskIndexes, visibleTaskNeighbor } = loadReorderHelpers();
+
+  const buildPlan = (count, checked) => {
+    const lines = ['# Plan', ''];
+    for (let index = 1; index <= count; index += 1) {
+      lines.push(`- [${checked(index - 1) ? 'x' : ' '}] item ${index}`);
+    }
+    return lines.join('\n');
+  };
+  const tasksFor = (count, checked) => Array.from({ length: count }, (_, index) => ({
+    index,
+    checked: checked(index)
+  }));
+  const taskLinesOf = (content) => content.split('\n').filter((line) => /\[.\]/.test(line));
+
+  const hiddenCompleted = (index) => index > 0 && index < 9;
+  const content = buildPlan(10, hiddenCompleted);
+  const tasks = tasksFor(10, hiddenCompleted);
+
+  assert.deepEqual(visibleTaskIndexes(tasks, false), [0, 9], 'hidden completed leaves first and last visible');
+  assert.deepEqual(visibleTaskIndexes(tasks, true), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 'shown completed keeps all visible');
+
+  const visible = visibleTaskIndexes(tasks, false);
+  const upTarget = visibleTaskNeighbor(visible, 9, -1);
+  assertEqual(upTarget, 0, 'single up from item 10 targets first visible item');
+  const movedUp = taskLinesOf(reorderPlanTask(content, 9, upTarget));
+  assertEqual(movedUp[0], '- [ ] item 10', 'single up moves item 10 to position 1');
+  assertEqual(movedUp[1], '- [ ] item 1', 'item 1 shifts down one visible slot');
+
+  const downTarget = visibleTaskNeighbor(visible, 0, 1);
+  assertEqual(downTarget, 9, 'single down from item 1 targets last visible item');
+  const movedDown = taskLinesOf(reorderPlanTask(content, 0, downTarget));
+  assertEqual(movedDown[movedDown.length - 1], '- [ ] item 1', 'single down moves item 1 to last visible position');
+  assertEqual(movedDown[movedDown.length - 2], '- [ ] item 10', 'item 10 shifts up one visible slot');
+
+  assertEqual(visibleTaskNeighbor(visible, 0, -1), null, 'no visible neighbor above first row');
+  assertEqual(visibleTaskNeighbor(visible, 9, 1), null, 'no visible neighbor below last row');
+
+  const allVisible = visibleTaskIndexes(tasks, true);
+  assertEqual(visibleTaskNeighbor(allVisible, 4, -1), 3, 'shown completed moves up one full position');
+  assertEqual(visibleTaskNeighbor(allVisible, 4, 1), 5, 'shown completed moves down one full position');
+  const adjacentUp = taskLinesOf(reorderPlanTask(content, 4, 3));
+  assertEqual(adjacentUp[3], '- [x] item 5', 'shown completed single up swaps adjacent items');
+}
+
 async function main() {
   assertIncludes(Object.keys(planLib).join(','), 'nextUncheckedAfter', 'plan exports');
   testTaskEdits();
   await testLinkDocHelpers();
+  testReorderHelpers();
 
   const run = tasksFrom([
     '- [x] zero',

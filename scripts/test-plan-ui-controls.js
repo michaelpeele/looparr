@@ -436,6 +436,8 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(appSource, 'previousVisibleIndex === undefined', 'app move buttons use visible neighbors');
   assertIncludes(appSource, 'visibleTaskNeighbor(visibleIndexes, taskIndex, -1)', 'app click move-up uses visible neighbor');
   assertIncludes(appSource, 'visibleTaskNeighbor(visibleIndexes, fromTaskIndex,', 'app keyboard uses visible neighbor');
+  assertIncludes(appSource, 'disabled = visibleTaskNeighbor(visibleIndexes, taskIndex, -1) == null', 'app move-up disabled uses visible edge');
+  assertIncludes(appSource, 'disabled = visibleTaskNeighbor(visibleIndexes, taskIndex, 1) == null', 'app move-down disabled uses visible edge');
   assertIncludes(appSource, 'toTaskIndex == null', 'app rejects missing visible target');
   assertIncludes(appSource, 'planSaveChain', 'app serialized saves');
   assertIncludes(appSource, 'setPointerCapture', 'app pointer capture');

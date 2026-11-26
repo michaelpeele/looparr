@@ -1050,7 +1050,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
   function updatePlanControls() {
     const noDrawer = !app.drawerId;
     const locked = noDrawer || app.savingPlan || app.planDirty;
-    const taskCount = app.planTaskCount || 0;
+    const visibleIndexes = visibleTaskIndexes(app.currentPlan?.tasks, app.showCompleted);
     dom.checklist.querySelectorAll('button[data-action]').forEach((button) => {
       const action = button.dataset.action;
       if (action === 'toggle-completed') {
@@ -1064,8 +1064,8 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
         const input = dom.checklist.querySelector(`.task-edit-input[data-task-index="${taskIndex}"]`);
         disabled = locked || taskIndex !== editingTaskIndex || !input || !cleanTaskText(input.value);
       }
-      if (!disabled && (action === 'move-up' || action === 'move-top')) disabled = taskIndex === 0;
-      if (!disabled && (action === 'move-down' || action === 'move-bottom')) disabled = taskIndex === taskCount - 1;
+      if (!disabled && (action === 'move-up' || action === 'move-top')) disabled = visibleTaskNeighbor(visibleIndexes, taskIndex, -1) == null;
+      if (!disabled && (action === 'move-down' || action === 'move-bottom')) disabled = visibleTaskNeighbor(visibleIndexes, taskIndex, 1) == null;
       if (!disabled && action === 'toggle-flag') disabled = app.currentPlan?.started?.[taskIndex] === true;
       button.disabled = disabled;
     });
