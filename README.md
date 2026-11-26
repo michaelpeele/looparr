@@ -237,6 +237,26 @@ Hosted URL: <https://looparr.tail0307d.ts.net/>.
 
 This deployment uses Tailscale Serve only. It is reachable from the tailnet, not from the public internet. Funnel is intentionally off. Do not enable Funnel without explicit approval: Looparr can run AI CLIs inside mounted project directories.
 
+### Published container image
+
+The Looparr image is published to GitHub Container Registry by [.github/workflows/docker-publish.yml](.github/workflows/docker-publish.yml):
+
+- Image: `ghcr.io/michaelpeele/looparr`
+- Multi-arch: `linux/amd64` and `linux/arm64` (Buildx with QEMU emulation for arm64)
+- Trigger contract: the workflow publishes on `v*` tag pushes and manual `workflow_dispatch` runs only. The `latest` tag is applied to `v*` tag builds.
+
+```bash
+docker pull ghcr.io/michaelpeele/looparr:latest
+
+docker run -d --name looparr \
+  -p 3000:3000 \
+  -v looparr-data:/app/data \
+  -e CONFIG_PATH=/app/data/config.json \
+  ghcr.io/michaelpeele/looparr:latest
+```
+
+The container serves port 3000 and persists runtime state under a `data/` volume (`CONFIG_PATH` points at the config file inside it). Each workflow run ends with a read-only `docker buildx imagetools inspect` step that confirms the pushed manifest lists both `linux/amd64` and `linux/arm64`.
+
 ### Files
 
 - `Dockerfile`: Node 20 image, production dependencies only, no OpenCode install.
