@@ -23,7 +23,8 @@ Optional alternatives, both host-side binaries: `kilo` (Kilo CLI runner) and `vi
 ## Install and run
 
 ```bash
-cd /home/michaelpeele/ai-projects/looparr
+git clone https://github.com/michaelpeele/looparr.git
+cd looparr
 npm install
 npm start
 ```
@@ -387,4 +388,4 @@ looparr/
 
 ## Git
 
-This repository is initialized locally with an initial commit and no remote. Add a remote only when you want to publish it.
+The remote is <https://github.com/michaelpeele/looparr.git> (private). `master` is pushed to `origin` and `v1.0` is tagged. Add a remote only when you want to publish it.
