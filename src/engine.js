@@ -17,6 +17,7 @@ const sprintLib = require('./sprint');
 const { getRunner, listRunners, resolveRunnerModels } = require('./runners');
 const { modelList, joinModelList } = require('./model-list');
 const { normalizeOpenCodeSessionId, createOpenCodeSessionCapture } = require('./runners/opencode-session');
+const paseoTransport = require('./paseo-transport');
 
 const config = configStore.loadConfig();
 const runtime = new Map();
@@ -113,6 +114,7 @@ function ensureRuntime(project) {
       error: '',
       logs: [],
       child: null,
+      paseoAgentId: '',
       starting: false,
       token: 0,
       modelIndex: 0,
@@ -1323,9 +1325,10 @@ function maybeStartHealer(project, rt, failedPhase, opts = {}) {
     mergedAt: null
   };
   let built;
+  const healerPromptText = healerPrompt(project, { task, error: errorText, logTail }, healer);
   try {
     built = runner.buildCommand({
-      prompt: healerPrompt(project, { task, error: errorText, logTail }, healer),
+      prompt: healerPromptText,
       cwd: worktree,
       files: [],
       model,
@@ -1344,17 +1347,53 @@ function maybeStartHealer(project, rt, failedPhase, opts = {}) {
     return false;
   }
   let child;
-  try {
-    child = spawn(built.command, built.args, built.options);
-  } catch (error) {
-    recordHealerExit(project, rt);
-    removeHealWorktree(healer);
-    autoResume.appendAudit(project, 'healer-failed', { phase: auditPhase, task, cause: 'spawn-failed' });
-    appendLog(project.id, 'system', `✖ Self-heal could not start: ${error.message}`);
-    emitState();
-    return false;
+  const healerPaseoOn = paseoTransport.isEnabled(config.settings);
+  if (healerPaseoOn) {
+    try {
+      child = paseoTransport.spawnRun({
+        cwd: worktree,
+        prompt: healerPromptText,
+        model,
+        runKey: `selfheal-${runId}`,
+        projectId: project.id,
+        phase: HEALER_PHASE,
+        task,
+        runnerId: runner.id,
+        workspaceCwd: project.path,
+        onLog: (stream, chunk) => {
+          if (rt.healer !== healer) return;
+          appendLog(project.id, stream, chunk);
+        }
+      });
+    } catch (error) {
+      recordHealerExit(project, rt);
+      removeHealWorktree(healer);
+      autoResume.appendAudit(project, 'healer-failed', { phase: auditPhase, task, cause: 'spawn-failed' });
+      appendLog(project.id, 'system', `✖ Self-heal could not start: ${error.message}`);
+      emitState();
+      return false;
+    }
+  } else {
+    try {
+      child = spawn(built.command, built.args, built.options);
+    } catch (error) {
+      recordHealerExit(project, rt);
+      removeHealWorktree(healer);
+      autoResume.appendAudit(project, 'healer-failed', { phase: auditPhase, task, cause: 'spawn-failed' });
+      appendLog(project.id, 'system', `✖ Self-heal could not start: ${error.message}`);
+      emitState();
+      return false;
+    }
   }
   healer.pid = child.pid;
+  if (healerPaseoOn) {
+    healer.paseoAgentId = child.paseoAgentId || '';
+    child.on('agentId', (id) => {
+      if (rt.healer !== healer) return;
+      healer.paseoAgentId = id;
+      writeHealerStatus(project, healer);
+    });
+  }
   healer.round = Math.min(healer.round, HEALER_MAX_ROUNDS);
   rt.healer = healer;
   writeHealerStatus(project, healer);
@@ -1724,6 +1763,10 @@ function stop(id) {
     try { rt.child.kill('SIGTERM'); } catch { /* already gone */ }
     rt.child = null;
   }
+  if (rt.paseoAgentId) {
+    paseoTransport.stopAgent(rt.paseoAgentId).catch(() => {});
+    rt.paseoAgentId = '';
+  }
   for (const run of rt.sprintRuns) {
     if (run.child) {
       try { run.child.kill('SIGTERM'); } catch { /* already gone */ }
@@ -1985,16 +2028,72 @@ async function spawnRunnerAttempt(project, rt, runner, options) {
     task,
     sessionId
   });
+  const paseoOn = paseoTransport.isEnabled(config.settings);
+  const taskText = typeof task === 'string' ? task : String(task?.text || '');
+  const tokenBeforeSpawn = rt.token;
   try {
-    await runner.cancelStaleRuns?.({ projectId: project.id, cwd: project.path, keepRunKey: runKey });
+    if (paseoOn) {
+      await paseoTransport.cleanStaleRuns({ projectId: project.id, keepRunKey: runKey });
+    } else {
+      await runner.cancelStaleRuns?.({ projectId: project.id, cwd: project.path, keepRunKey: runKey });
+    }
   } catch (error) {
     appendLog(project.id, 'system', `Stale run cancellation failed: ${error.message}`);
   }
-  const child = spawn(built.command, built.args, built.options);
+  let child;
+  let paseoHandle = null;
+  if (paseoOn) {
+    try {
+      paseoHandle = paseoTransport.spawnRun({
+        cwd: project.path,
+        prompt: String(prompt),
+        model,
+        runKey,
+        projectId: project.id,
+        phase,
+        task: taskText,
+        title: `${project.id} ${phase || 'run'}: ${taskText}`.trim(),
+        runnerId: runner.id,
+        onLog: (stream, chunk) => {
+          if (rt.token !== token) return;
+          rt.stepOutput += String(chunk);
+          appendLog(project.id, stream, chunk);
+        }
+      });
+    } catch (error) {
+      rt.child = null;
+      rt.status = 'error';
+      rt.active = false;
+      rt.error = error.message;
+      appendLog(project.id, 'system', `✖ ${error.message}`);
+      emitState();
+      maybeStartHealer(project, rt, phase);
+      scheduleTick();
+      return;
+    }
+    child = paseoHandle;
+  } else {
+    child = spawn(built.command, built.args, built.options);
+  }
   rt.child = child;
   rt.token += 1;
   const token = rt.token;
-  appendLog(project.id, 'system', shortCommand(built.command, built.args));
+  if (rt.token !== tokenBeforeSpawn + 1) {
+    // A stop/cancel landed while the stale-run cleanup awaited: the token bump
+    // above would otherwise mask it and the fresh child would outlive the
+    // stop as an orphan. Kill it now and bail before wiring anything up.
+    try { child.kill('SIGTERM'); } catch { /* already gone */ }
+    rt.child = null;
+    rt.token += 1; // keep the killed child's close handler from respawning
+    return;
+  }
+  if (paseoHandle) {
+    rt.paseoAgentId = paseoHandle.paseoAgentId || '';
+    paseoHandle.on('agentId', (id) => { rt.paseoAgentId = id; });
+    appendLog(project.id, 'system', shortCommand('paseo', paseoHandle.paseoArgs || []));
+  } else {
+    appendLog(project.id, 'system', shortCommand(built.command, built.args));
+  }
 
   const sessionCapture = runner && runner.id === 'opencode' ? createOpenCodeSessionCapture() : null;
   let checkpointRewritten = false;
@@ -2036,6 +2135,7 @@ async function spawnRunnerAttempt(project, rt, runner, options) {
   child.on('close', (code) => {
     if (rt.token !== token) return;
     rt.child = null;
+    if (paseoHandle) rt.paseoAgentId = '';
     if (tryNextCandidate(project, rt, runner, phase, code)) return;
     handleClose(project, rt, code, task, phase, runner);
   });
@@ -3592,6 +3692,10 @@ function shutdown() {
     const rt = runtime.get(project.id);
     if (rt && rt.child) {
       try { rt.child.kill('SIGTERM'); } catch { /* ignore */ }
+    }
+    if (rt && rt.paseoAgentId) {
+      try { paseoTransport.stopAgent(rt.paseoAgentId).catch(() => {}); } catch { /* ignore */ }
+      rt.paseoAgentId = '';
     }
     if (rt) for (const run of rt.sprintRuns) {
       if (run.child) {

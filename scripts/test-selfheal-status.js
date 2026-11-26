@@ -254,7 +254,7 @@ async function testExecutorRelay() {
   const { spawn } = require('node:child_process');
   const { setTimeout: delay } = require('node:timers/promises');
   const token = 'testtoken-0123456789abcdef';
-  const port = 4197;
+  const port = 5497;
   const baseUrl = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ['scripts/host-executor.js'], {
     cwd: REPO_ROOT,

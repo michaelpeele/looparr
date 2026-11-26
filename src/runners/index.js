@@ -67,6 +67,19 @@ function resolveRunnerModels(runner, configured, options = {}) {
   return { models, dropped, fallback, usedFallback };
 }
 
+// Paseo provider per Looparr runner id (PLAN-02). Unlisted ids map to
+// themselves so future runners work without touching this table.
+const PASEO_PROVIDERS = {
+  opencode: 'opencode',
+  vibe: 'mistral-vibe',
+  kilo: 'kilo'
+};
+
+function paseoProviderForRunner(runnerId) {
+  const id = String(runnerId || '').trim().toLowerCase();
+  return PASEO_PROVIDERS[id] || id;
+}
+
 registerRunner(require('./opencode'));
 registerRunner(require('./kilo'));
 registerRunner(require('./vibe'));
@@ -76,5 +89,6 @@ module.exports = {
   getRunner,
   listRunners,
   runnerSupportsModel,
-  resolveRunnerModels
+  resolveRunnerModels,
+  paseoProviderForRunner
 };
