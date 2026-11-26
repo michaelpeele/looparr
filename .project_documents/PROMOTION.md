@@ -17,10 +17,11 @@ Run in order. Any failure blocks promotion.
    active-run postcheck of 1 or 0 looparr runs.
 4. **Health and image.** `docker ps` shows the `looparr` container `running`
    and `healthy`; record the new image id.
-5. **Container source hashes.** Compare `sha256sum` of `/app/index.html`,
+5. **Container source hashes.** Compare `sha256sum` of `/app/public/index.html`,
    `/app/public/*`, `/app/src/*`, `/app/scripts/*` inside the container against
-   the same files in the working tree. All must match. Some root-owned scripts
-   are mode `0711`; read them with `docker exec -u 0`.
+   the same files in the working tree. Local `public/index.html` maps to
+   `/app/public/index.html`; there is no `/app/index.html`. All must match.
+   Some root-owned scripts are mode `0711`; read them with `docker exec -u 0`.
 6. **Served asset hashes.** `curl` `/`, `/styles.css`, `/app.js`,
    `/favicon.svg` from `http://127.0.0.1:4188/` and `sha256` each against the
    matching `public/` file (`index.html` after the `/` fetch). All must match.
@@ -65,6 +66,27 @@ Run in order. Any failure blocks promotion.
 - Status: `systemctl --user status looparr-promote --no-pager`
 - The unit is transient and collected after completion; status is most useful immediately after a run.
 
+## Healer branch promotion and prod visibility
+
+Healer branches are local and never pushed. A healed branch reaches prod only
+after a human reviews it and either merges it from the UI or cherry-picks it
+onto `master` by hand. Both paths require the verified sequence above.
+
+- **UI merge path:** A fresh healer status in `data/selfheal/` must report
+  `state: healed`, no `mergedAt`, and a matching branch. The branch icon appears
+  only under those conditions and only inside the 30-minute status TTL.
+  Clicking it POSTs `/api/projects/<id>/selfheal/merge`; `src/engine.js` runs
+  `git merge --no-ff` locally, marks the status merged, writes the status file,
+  and starts the restart. The icon then hides. Nothing is pushed.
+- **Manual promotion path:** Cherry-pick the reviewed healer commit onto
+  `master`, then run the verified sequence. This puts code on prod but does not
+  write a healer status record and does not show the branch icon. An absent,
+  stale, or merged status keeps the icon hidden.
+- **Current case:** `4f5e761` was a manual cherry-pick of healer commit
+  `2705d24`. No fresh healed status exists, so the icon is hidden by design.
+  To make the icon visible later, run a fresh healer round to `healed` and use
+  the UI merge path. Do not hand-edit status files.
+
 ## Promotion log
 
 - 2026-11-22 — Rate-limit false-positive fix promoted after `npm test`.
@@ -76,3 +98,14 @@ Run in order. Any failure blocks promotion.
   read via `docker exec -u 0`). Served `/`, `/styles.css`, `/app.js`,
   `/favicon.svg` matched local `public/`. `/api/state` returned `projects` and
   `settings`. `npm run watchdog:check` clean.
+- 2026-11-25 — Manual cherry-pick `4f5e761` from healer branch
+  `looparr-selfheal-1795657600462-0` (commit `2705d24`,
+  `fix(plan): pin exact PLAN doc path for planWrite`). `npm test` green,
+  `git diff --check` clean, dry-run clean. Restart ran through `systemd-run`
+  (`looparr-promote.service`, success). Container `34d0db7a3fc7` healthy on
+  image `91c5851012fc`. Container source hashes: 78 files, `bad=0`; served
+  `/`, `/styles.css`, `/app.js`, `/favicon.svg` matched local `public/`;
+  `/api/state` had `projects` and `settings`; `npm run watchdog:check` clean.
+  Nonfatal note: active-run postcheck fetch to `LOOPARR_EXECUTOR_URL` failed;
+  launcher caught it and did not fail the restart. No healer status record was
+  written, so the branch icon stayed hidden by design.
