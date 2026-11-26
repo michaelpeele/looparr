@@ -330,7 +330,7 @@ npm run restart:looparr -- --dry-run
 npm run restart:looparr
 ```
 
-The helper leaves `data/config.json`, the host executor, and the Tailscale sidecar alone. After a real restart, confirm the served HTML, CSS, and JS contain the change and that container files match local source before treating the deployment as verified.
+The helper leaves `data/config.json`, the host executor, and the Tailscale sidecar alone. The full verification sequence (test gate, dry run, restart, health and image id, container source hashes, served asset hashes, `/api/state`, watchdog) is in [PROMOTION.md](.project_documents/PROMOTION.md); follow it before treating a deployment as verified.
 
 ### Future Funnel
 
