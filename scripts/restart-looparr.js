@@ -945,8 +945,15 @@ async function main() {
     updatePromotionStatus({ imageId: details.imageId, containerId: details.containerId });
   }
 
-  const watchdog = runWatchdogCheck();
-  updatePromotionStatus({ watchdogOk: watchdog.ok });
+  let watchdog = runWatchdogCheck();
+  if (!watchdog.ok) {
+    console.log('[looparr] Watchdog check reports looparr down; running immediate fix pass.');
+    const fix = await runWatchdogFixRecovery('post-promotion');
+    watchdog = runWatchdogCheck();
+    updatePromotionStatus({ watchdogFix: fix.attempts, watchdogOk: watchdog.ok });
+  } else {
+    updatePromotionStatus({ watchdogOk: watchdog.ok });
+  }
 
   try {
     const executorUrl = process.env.LOOPARR_EXECUTOR_URL || 'http://127.0.0.1:4187';

@@ -22,8 +22,8 @@ const restartSource = fs.readFileSync(RESTART_SCRIPT, 'utf8');
 const STATUS_FIELDS = [
   'runId', 'startedAt', 'finishedAt', 'phase', 'result', 'executor', 'unit',
   'invocationId', 'imageId', 'containerId', 'sourceHashSummary',
-  'servedHashSummary', 'apiStateOk', 'watchdogOk', 'skipReason', 'error',
-  'logPath', 'recovery'
+  'servedHashSummary', 'apiStateOk', 'watchdogOk', 'watchdogFix', 'skipReason',
+  'error', 'logPath', 'recovery'
 ];
 
 // ---------------------------------------------------------------------------
@@ -121,6 +121,20 @@ const STATUS_FIELDS = [
     restartSource,
     /LOOPARR_RESTART_LOCK_HELD: '1'/,
     'watchdog fix recovery must reuse the already-held restart lock'
+  );
+  const closeoutBody = restartSource.slice(
+    restartSource.indexOf('const details = inspectLooparrDetails()'),
+    restartSource.indexOf("const executorUrl = process.env.LOOPARR_EXECUTOR_URL")
+  );
+  assert.match(
+    closeoutBody,
+    /await runWatchdogFixRecovery\('post-promotion'\)/,
+    'failed post-promotion watchdog check must trigger an immediate fix pass'
+  );
+  assert.match(
+    closeoutBody,
+    /watchdogFix: fix\.attempts/,
+    'post-promotion fix outcome must be recorded in promotion status'
   );
   assert.match(
     restartSource,

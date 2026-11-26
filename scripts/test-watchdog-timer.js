@@ -8,7 +8,7 @@ const path = require('node:path');
 
 // Static guards for the watchdog timer mapped plan
 // (.project_documents/PLAN-watchdog-timer.md): the systemd user timer units
-// exist and reference the watchdog script, the timer is a 5-minute Persistent
+// exist and reference the watchdog script, the timer is a 30-second Persistent
 // schedule, and restart-watchdog.sh owns timer mode with a quiet exit-75
 // `busy:` branch and an every-5th-cycle read-only `review:` check.
 
@@ -28,8 +28,9 @@ const serviceUnit = fs.readFileSync(servicePath, 'utf8');
 assert.match(timerUnit, /restart-watchdog\.sh/, 'timer unit must reference restart-watchdog.sh');
 assert.match(serviceUnit, /restart-watchdog\.sh/, 'service unit must reference restart-watchdog.sh');
 
-// Timer: 5-minute cadence and Persistent=true.
-assert.match(timerUnit, /OnUnitActiveSec=5min/, 'timer must use a 5-minute OnUnitActiveSec cadence');
+// Timer: 30-second cadence, 1-minute boot delay, and Persistent=true.
+assert.match(timerUnit, /OnUnitActiveSec=30s/, 'timer must use a 30-second OnUnitActiveSec cadence');
+assert.match(timerUnit, /OnBootSec=1min/, 'timer must use a 1-minute OnBootSec delay');
 assert.match(timerUnit, /Persistent=true/, 'timer must set Persistent=true');
 assert.match(timerUnit, /Unit=looparr-watchdog\.service/, 'timer must target looparr-watchdog.service');
 
