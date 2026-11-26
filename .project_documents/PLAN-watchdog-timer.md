@@ -1,86 +1,136 @@
-# Watchdog timer — implementation prompt
+# Watchdog timer — mapped plan
 
-Status: open. Plan item: `(plan) Watchdog timer`.
-Batch: pairs with `(plan) Promotion concurrency lock` (same incident family).
+Status: planned 2026-11-24. Plan item: `(plan) Watchdog timer` in plan.md (replaced by concrete checklist there).
 
-## Incident this prevents
+## Decisions from clarifying answers
 
-On 2026-11-23 15:48 UTC a killed agent session process group tore down
-`docker compose up -d looparr` mid-recreate. The replacement looparr container
-was left in `Created` state — never started, never supervised (`restart:
-unless-stopped` does not resurrect a container that never started) — and the UI
-was offline for ~46 minutes until a human noticed. Commit `88cb168` already
-shipped two guards: the compose rebuild now runs detached and signal-immune in
-`scripts/restart-looparr.js`, and `scripts/restart-watchdog.sh` can detect and
-recover the outage manually (`npm run watchdog:fix` / `watchdog:check`). What
-is still missing is anything that runs the watchdog automatically.
+1. **Alert channel: none external.** The user no longer uses ntfy for this
+   ("I use Looparr"). All notification is via failure-only handling in
+   `scripts/restart-watchdog.sh`: distinct `FAILED:` log lines in
+   `logs/watchdog.log` plus a non-zero exit in direct modes. No ntfy publish,
+   no new dependency. `FAILED:` lines are the grep-able alert surface.
+2. **Timer units live in the repo**: `systemd/looparr-watchdog.service` and
+   `systemd/looparr-watchdog.timer`, persisted and enabled by
+   `scripts/install-watchdog-timer.sh` (systemd user units, `--now`,
+   `daemon-reload`, `loginctl enable-linger` so the timer survives without an
+   active user session).
+3. **Review-mode check is required**: every 5th timer cycle additionally runs
+   `watchdog:check` (read-only) and records a `review:` line in
+   `logs/watchdog.log`. If the fix pass just succeeded but check still reports
+   down, log `FAILED: review check` so an off-stack that was not recovered is
+   visible. It must never open a second mutate path — the fix pass earlier in
+   the same cycle is what recovers an off stack.
+4. **Alert/exit-75 logic lives inside `scripts/restart-watchdog.sh`**, not in a
+   wrapper: a new `timer` mode in the script owns cycle counting, the
+   every-5th review, and exit-code normalization.
 
-## Goal
+## Design
 
-A reboot-safe scheduled timer runs the watchdog every few minutes, so an
-interrupted restart self-heals within minutes without a human, and failures
-that cannot self-heal alert visibly.
+`systemd/looparr-watchdog.timer`
 
-## Current building blocks (already implemented in commit 88cb168)
+- `OnBootSec=2min`, `OnUnitActiveSec=5min`, `Persistent=true` (missed runs
+  after downtime fire once on boot), `Unit=looparr-watchdog.service`.
+- No cron fallback unless systemd user units prove unusable on the host.
 
-- `scripts/restart-watchdog.sh <fix|check>`
-  - `fix` (default): if no looparr container is running and a stopped/created
-    looparr compose container exists, re-converges via `docker compose up -d
-    looparr` **under the restart lock** (`scripts/restart-lock.sh`, exits 75
-    while a promotion/restart is in flight — must be treated as "busy", not as
-    failure), then polls `GET http://127.0.0.1:${LOOPARR_LOCAL_PORT:-4188}/api/state`.
-  - `check`: read-only, exits 0 when a looparr container is running, exit 1
-    when down; never takes the lock, never mutates.
-  - Both modes append UTC-prefixed lines to `logs/watchdog.log`.
-- npm scripts: `watchdog:fix`, `watchdog:check`.
+`systemd/looparr-watchdog.service`
 
-## Requirements
+- `Type=oneshot`, `ExecStart=/bin/bash <abs-repo-path>/scripts/restart-watchdog.sh timer`,
+  `WorkingDirectory=<abs-repo-path>` (install script rewrites a placeholder to
+  the real repo path at install time), `SuccessExitStatus=0 75` as a belt-and-
+  braces guard (the script already normalizes, so 75 should never escape).
 
-1. Schedule `npm run watchdog:fix` (or an equivalent direct invocation of
-   `bash scripts/restart-watchdog.sh` from the repo root) every 5 minutes.
-   Prefer a systemd user timer (`Persistent=true` so missed runs after reboots
-   still fire) over a bare crontab entry; if systemd user units are not usable
-   in this environment use `cron` `*/5 * * * *` with the output going to
-   `logs/watchdog.log` (the script already tees there, so cron logs may go to
-   `logs/watchdog-cron.log`).
-2. The timer must survive reboots and engine restarts: it lives on the host,
-   not in the container, and must not be defined as a Looparr project task.
-3. Alert on failure, not on busy: trigger the alert channel (the host already
-   runs an `ntfy-router` container — route through the same ntfy topic the iOS
-   widgets use, or server-side `docs/` if a different channel is standard)
-   only when `watchdog:fix` exits with an error (container started but API
-   never answered, compose failed) or when `watchdog:check` exits 1 while no
-   active executor run is holding the restart lock. Exit 75 (lock held) is a
-   normal "promotion in progress" event: log only, no alert, no noise.
-4. Keep the check/fix decision documented: every 5th cycle may additionally
-   run `watchdog:check` in review mode for the verification record; do not add
-   a second independent timer for the same job.
-5. Do not weaken the restart lock: no timer code may bypass
-   `scripts/restart-lock.sh` or ignore its exit code 75.
-6. Tests: extend `scripts/test-restart-watchdog.js` (or add
-   `scripts/test-watchdog-timer.js` in the same style) with static guards: the
-   timer unit/crontab file exists and references `restart-watchdog.sh`, the
-   failure-only alert branch exists, and exit-75 handling logs without
-   alerting. `npm test` must stay green.
+`scripts/restart-watchdog.sh` — new `timer` mode (fix/check unchanged):
 
-## Verification
+- Accept `timer` in the case statement. Timer mode runs the fix logic under
+  the existing restart lock via a `LOOPARR_TIMER_MODE=1`-style re-entry or a
+  refactor of the fix body into a function; it never bypasses
+  `scripts/restart-lock.sh` and never treats exit 75 as failure.
+- Cycle counter in `logs/watchdog-cycle-count` (plain integer, `cut -d' ' -f1`
+  of `/proc/uptime`-free simple increment; tolerant of file loss — resets to 1).
+- Exit-75 handling: log `busy: restarting/promotion lock held; skipping this cycle`
+  and exit 0 (log-only, no FAILED, no noise) — the requirement says log only.
+- Other fix failure (compose error, API never answered): the existing
+  `FAILED:` log lines already fire; timer mode propagates exit 1.
+- Every 5th cycle (counter % 5 == 0): after the fix pass, run the check-mode
+  body read-only, log `review: looparr service is up (cycle N)` on exit 0 or
+  `FAILED: review check reports the service down (cycle N)` on exit 1 (exit 1
+  propagates).
+- Direct `fix`/`check` invocations keep their current behavior and exit codes;
+  nothing changes for `npm run watchdog:fix` / `watchdog:check`.
 
-- `systemctl --user list-timers` (or `crontab -l`) shows the schedule enabled
-  and target reachable.
-- Live drill: `docker stop looparr`, then run the watchdog in fix mode by hand
-  once to confirm the outage path recovers the friendly-named container and
-  the API answers; confirm `logs/watchdog.log` records
-  `steady:`/`fix:` lines correctly. Restore the timer and confirm it reports
-  `steady:` within 5 minutes.
-- Stop the looparr container, suppress the watchdog's fix path (e.g. hold the
-  restart lock in a test shell), and confirm the alert branch fires or,
-  alternatively, exit 75 is logged quietly — no false page for a busy promotion.
+`scripts/install-watchdog-timer.sh`
+
+- Resolves the repo root, substitutes the repo path into copies of the unit
+  files under `~/.config/systemd/user/`, runs `systemctl --user daemon-reload`,
+  `systemctl --user enable --now looparr-watchdog.timer`, and
+  `loginctl enable-linger` for the current user (best-effort with a clear
+  message if it needs sudo). Idempotent; re-running refreshes the units.
+- `--uninstall` path: `disable --now`, remove the installed copies.
+
+## File map
+
+| File | Change |
+| --- | --- |
+| `systemd/looparr-watchdog.timer` | new — 5-min schedule, Persistent |
+| `systemd/looparr-watchdog.service` | new — oneshot calling restart-watchdog.sh timer |
+| `scripts/install-watchdog-timer.sh` | new — install/enable/persist units, --uninstall |
+| `scripts/restart-watchdog.sh` | add `timer` mode: cycle counter, review check on 5th, exit-75 log-only |
+| `scripts/test-watchdog-timer.js` | new — static guards |
+| `plan.md` | replace the `(plan)` line with checklist items |
+| `.project_documents/PROGRESS.md` | verification record appended |
+
+## Ordered steps
+
+1. Add the `timer` mode to `scripts/restart-watchdog.sh` (counter file, busy
+   log-only branch, every-5th review check, failure FAILED lines unchanged).
+2. Write `systemd/looparr-watchdog.service` and `systemd/looparr-watchdog.timer`
+   with a `__LOOPARR_REPO__` placeholder and documented install-time rewrite.
+3. Write `scripts/install-watchdog-timer.sh` (chmod +x; include the watchdog
+   log path in the unit via `LOOPARR_WATCHDOG_LOG` if logs/ is bind-mounted
+   differently on the host — default repo-relative works).
+4. Add `scripts/test-watchdog-timer.js` guarding: both unit files exist and
+   reference `restart-watchdog.sh`, the timer has `Persistent=true` and a 5
+   minute cadence, the script contains `timer` mode, exit-75 log-only branch,
+   and the every-5th review check; register it so `npm test` runs it.
+5. Update `plan.md` checklist and run verification.
+
+## Tests
+
+- `node scripts/test-watchdog-timer.js` (new static guards).
+- `node scripts/test-restart-watchdog.js` still passes (direct modes untouched).
+- `bash -n scripts/restart-watchdog.sh scripts/install-watchdog-timer.sh`.
+- `npm test` green overall.
+- Host drill (needs host access): `bash scripts/install-watchdog-timer.sh`,
+  `systemctl --user list-timers` shows the timer; `docker stop looparr`, wait
+  one period (or run `restart-watchdog.sh timer` by hand), confirm recovery,
+  `steady:` then `review:` lines in `logs/watchdog.log`; hold the restart lock
+  in a shell and confirm a cycle logs `busy:` quietly with no `FAILED:`.
 
 ## Acceptance criteria
 
-- A stalled/never-started looparr container is detected and recovered
-  automatically within one timer period; the UI outage window without human
-  intervention drops from "until someone notices" to ≤5 minutes plus re-run.
-- Failures that cannot self-heal alert on the chosen channel; promotion-in-
-  progress (lock held) never alerts.
-- Schedule survives host reboot; `npm test` passes with the new guards.
+- The looparr service recovers from an interrupted restart within one timer
+  period with no human action; outage window ≤5 min + re-run.
+- Schedule is a systemd user timer with `Persistent=true`, installed via
+  `scripts/install-watchdog-timer.sh`, and survives host reboot
+  (`enable-linger`).
+- Every 5th cycle writes a `review:` verification line; an unrecovered off
+  stack produces `FAILED: review check`.
+- Exit 75 (restart/promotion lock held) logs `busy:` only — never a FAILED
+  alert; genuine failures log `FAILED:` and exit non-zero.
+- No second independent timer; the restart lock is never bypassed; `npm test`
+  passes with the new guards.
+
+## Risks
+
+- systemd user units may need `loginctl enable-linger`; without it the timer
+  dies at logout. Mitigation: install script enables linger and reports if
+  sudo is required.
+- Very old systemd without `OnUnitActiveSec` + `Persistent` interplay —
+  fallback to `OnCalendar=*:0/5` if the active-sec form misbehaves.
+- Cycle-counter file lives in `logs/`; log rotation must not delete it
+  (name it outside the rotated pattern; tolerate a missing file by resetting).
+- Timer mode shares the fix path: a bug there could break `npm run
+  watchdog:fix`; mitigate by keeping the fix body intact and testing direct
+  modes in `test-restart-watchdog.js`.
+- The host drill (`docker stop looparr`) is deliberately disruptive — run it
+  only when no active executor runs are in flight.
