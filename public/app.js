@@ -1378,7 +1378,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       </div>
       <p class="card-task task-detail-wrap" data-task-field="current" data-project-id="${esc(project.id)}" data-fallback="true"><span class="task-detail-text task-detail-clamped" id="${currentTextId}"></span><button class="task-expand-toggle" type="button" aria-controls="${currentTextId}" aria-expanded="false" aria-label="Expand current task" title="Expand current task" hidden>▼</button></p>
       <div class="card-model-row"><div class="card-model mono"></div><button class="icon-button terminal-button" type="button" aria-label="Open agent terminal" title="Agent terminal"><svg class="terminal-icon" aria-hidden="true" focusable="false"><use href="#icon-terminal"></use></svg></button></div>
-      <div class="card-up task-detail-wrap" data-task-field="next" data-project-id="${esc(project.id)}" data-fallback="true"><strong>Up next:</strong> <span class="task-detail-text task-detail-clamped" id="${nextTextId}"></span><button class="task-expand-toggle" type="button" aria-controls="${nextTextId}" aria-expanded="false" aria-label="Expand up next" title="Expand up next" hidden>▼</button></div>
+      <div class="card-up" data-task-field="next" data-project-id="${esc(project.id)}" data-fallback="true"><strong>Up next:</strong> <span class="task-detail-wrap"><span class="task-detail-text task-detail-clamped" id="${nextTextId}"></span><button class="task-expand-toggle" type="button" aria-controls="${nextTextId}" aria-expanded="false" aria-label="Expand up next" title="Expand up next" hidden>▼</button></span></div>
       <div class="progress-row">
         <span>Progress</span>
         <span class="progress-count"></span>
