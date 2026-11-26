@@ -155,6 +155,11 @@
                 <button type="button" class="icon-button model-rotate-button" data-rotate-for="global-runner" aria-pressed="false" aria-label="Runner Rotation" title="Runner Rotation"><svg class="model-rotate-icon" aria-hidden="true" focusable="false"><use href="#icon-model-rotation"></use></svg></button>
               </div>
             </label>
+            <label class="auto-resume-row">
+              <input type="checkbox" id="paseo-transport" />
+              <span>Route CLI runs through Paseo transport</span>
+            </label>
+            <small class="field-hint">Opt-in. When enabled, Looparr calls the CLI through the Paseo daemon (mobile session visibility). Off by default keeps direct CLI calls. Paseo transport initially supports host-executor-off runs only.</small>
             <label class="field">
               <span>Default model <small>fallback</small></span>
               <div class="model-field-row">

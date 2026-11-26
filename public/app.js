@@ -31,6 +31,7 @@
     planWritePromptTemplate: $('plan-write-prompt-template'),
     promptCliToolsNote: $('prompt-cli-tools-note'),
     stickyAddTaskRow: $('sticky-add-task-row'),
+    paseoTransport: $('paseo-transport'),
     handoffRecovery: $('handoff-recovery-toggle'),
     selfHealing: $('self-healing-toggle'),
     selfHealPill: $('self-heal-pill'),
@@ -3101,6 +3102,9 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     if (dom.stickyAddTaskRow && document.activeElement !== dom.stickyAddTaskRow) {
       dom.stickyAddTaskRow.checked = settings.stickyAddTaskRow === true;
     }
+    if (dom.paseoTransport && document.activeElement !== dom.paseoTransport) {
+      dom.paseoTransport.checked = settings.paseoTransport === true;
+    }
     if (dom.handoffRecovery && document.activeElement !== dom.handoffRecovery) {
       dom.handoffRecovery.checked = settings.handoffRecovery === true;
     }
@@ -3172,6 +3176,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
           planWritePromptTemplate: dom.planWritePromptTemplate.value,
           promptCliToolsNote: dom.promptCliToolsNote.checked,
           stickyAddTaskRow: dom.stickyAddTaskRow.checked,
+          paseoTransport: dom.paseoTransport.checked,
           handoffRecovery: dom.handoffRecovery.checked,
           selfHealing: dom.selfHealing.checked
         })

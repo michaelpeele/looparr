@@ -658,6 +658,12 @@ app.patch('/api/settings', (req, res) => {
     }
     patch.stickyAddTaskRow = body.stickyAddTaskRow;
   }
+  if (body.paseoTransport !== undefined) {
+    if (typeof body.paseoTransport !== 'boolean') {
+      return fail(res, 400, 'paseoTransport must be a boolean');
+    }
+    patch.paseoTransport = body.paseoTransport;
+  }
   if (body.handoffRecovery !== undefined) {
     if (typeof body.handoffRecovery !== 'boolean') {
       return fail(res, 400, 'handoffRecovery must be a boolean');

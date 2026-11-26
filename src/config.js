@@ -342,6 +342,7 @@ const DEFAULT_SETTINGS = {
   permanentLift: '',
   promptCliToolsNote: false,
   stickyAddTaskRow: false,
+  paseoTransport: false,
   handoffRecovery: false,
   selfHealing: false,
   seedPromptTemplate: DEFAULT_SEED_PROMPT_TEMPLATE,
@@ -512,6 +513,7 @@ function normalizeSettings(settings) {
   }
   normalized.promptCliToolsNote = normalized.promptCliToolsNote === true;
   normalized.stickyAddTaskRow = normalized.stickyAddTaskRow === true;
+  normalized.paseoTransport = normalized.paseoTransport === true;
   normalized.handoffRecovery = normalized.handoffRecovery === true;
   normalized.selfHealing = normalized.selfHealing === true;
   normalized.runnerRotation = normalized.runnerRotation === true;

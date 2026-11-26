@@ -212,7 +212,7 @@ Opt-in Paseo transport so spawned agent CLI sessions (mobile session visibility 
 ## Durable resume and self-healing batch
 
 - [x] Investigate desktop layout, div not going wide on project card, awkward placement of sidebar and detail just goes to the right side instead of overlay like mobile.
-- [ ] (plan 01) Paseo transport setting — see [PLAN-01-paseo-transport-setting.md](.project_documents/PLAN-01-paseo-transport-setting.md): add opt-in global `paseoTransport` setting (default false) plus settings-UI checkbox near `globalRunner`; validate in `PATCH /api/settings`.
+- [x] (plan 01) Paseo transport setting — see [PLAN-01-paseo-transport-setting.md](.project_documents/PLAN-01-paseo-transport-setting.md): add opt-in global `paseoTransport` setting (default false) plus settings-UI checkbox near `globalRunner`; validate in `PATCH /api/settings`.
 - [ ] (plan 02) Paseo run adapter — see [PLAN-02-paseo-run-adapter.md](.project_documents/PLAN-02-paseo-run-adapter.md): new `src/paseo-transport.js` adapter (spawn Paseo agent, stream output, wait, stop on cancel) integrated into the engine and self-heal spawn paths.
 
 ## Desktop layout and drawer batch
