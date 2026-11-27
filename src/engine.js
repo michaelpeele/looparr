@@ -312,6 +312,25 @@ function getState() {
   const idleHealer = {
     state: 'idle', round: 0, cycles: 0, branch: '', phase: '', errorAt: '', mergedAt: null
   };
+  // Mirror tick()'s slot accounting so the client can tell "queued behind a
+  // full worker pool" apart from "never started". Read-only: no scheduling.
+  const limit = maxWorkers();
+  let running = 0;
+  for (const project of config.projects) {
+    try {
+      const rt = ensureRuntime(project);
+      if (rt.status === 'error') continue;
+      if (rt.child) running += 1;
+      for (const run of rt.sprintRuns) {
+        if (run.child) running += 1;
+      }
+      if (rt.sprintValidation) running += 1;
+    } catch (error) {
+      // A single project's runtime must never abort the running-count sweep.
+      console.error(`[engine] getState skipped ${project.id}: ${error && error.message}`);
+    }
+  }
+  const slotsFull = running >= limit;
   return {
     settings: { ...config.settings },
     selfHealingAvailable: available,
@@ -420,6 +439,16 @@ function getState() {
         nextPhase: rt.nextPhase || 'seed',
         active: rt.active,
         paused: rt.paused,
+        awaitingSlot: slotsFull
+          && rt.active === true
+          && !rt.paused
+          && !rt.child
+          && !rt.starting
+          && !rt.resumeAt
+          && !WAITING_STATUSES.has(rt.status)
+          && rt.status !== 'done'
+          && rt.status !== 'error'
+          && plan.ok,
         pauseRequested: rt.pauseAfterStep,
         currentTask: rt.currentTask || '',
         nextTask,

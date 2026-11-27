@@ -1104,6 +1104,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
 
   function statusInfo(project) {
     if (isPlanSetup(project)) return { label: STATUS.setup[0], cls: STATUS.setup[1] };
+    if (project.awaitingSlot) return { label: 'Awaiting Slot', cls: 'idle' };
     const found = STATUS[project.status] || STATUS.idle;
     return { label: found[0], cls: found[1] };
   }
@@ -1500,6 +1501,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     if (project.status === 'paused') return 'Paused. Press Start to continue.';
     if (project.status === 'rateLimited') return 'Rate limit backoff active. Auto-retry pending; press Retry to start immediately.';
     if (project.status === 'done') return 'All tasks complete.';
+    if (project.awaitingSlot) return 'Awaiting worker slot…';
     return 'Idle. Press Start to run the checklist.';
   }
 
