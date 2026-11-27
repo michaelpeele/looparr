@@ -802,18 +802,60 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     if (dom.selfHealState) dom.selfHealState.textContent = SELF_HEAL_LABELS[healerState] || 'Idle';
     if (dom.selfHealBranch) {
       // The header merge button only covers the exactly-one-merge-ready case;
-      // with zero or many the per-card merge buttons handle each one. Once
-      // mergedAt is set the round is done and no button reappears.
-      const showHeader = healedUnmerged.length === 1;
+      // with zero or many the per-card merge buttons handle each one. A button
+      // already in the Refresh state stays visible until the user reloads.
+      const refreshReady = dom.selfHealBranch.dataset.mergeAction === 'refresh';
+      const showHeader = refreshReady || healedUnmerged.length === 1;
       dom.selfHealBranch.hidden = !showHeader;
-      dom.selfHealBranch.dataset.projectId = showHeader ? healedUnmerged[0].projectId : '';
-      dom.selfHealBranch.dataset.branch = showHeader ? (healedUnmerged[0].branch || '') : '';
+      if (!refreshReady) {
+        dom.selfHealBranch.dataset.projectId = showHeader ? healedUnmerged[0].projectId : '';
+        dom.selfHealBranch.dataset.branch = showHeader ? (healedUnmerged[0].branch || '') : '';
+      }
     }
+  }
+
+  function setMergeButtonState(button, state) {
+    if (!button) return;
+    if (!('mergeIdleHtml' in button.dataset)) {
+      button.dataset.mergeIdleHtml = button.innerHTML;
+      button.dataset.mergeIdleLabel = button.getAttribute('aria-label') || '';
+    }
+    if (state === 'busy') {
+      button.innerHTML = '';
+      button.classList.add('merging');
+      button.classList.remove('done');
+      button.disabled = true;
+      button.dataset.mergeAction = 'merge';
+      button.setAttribute('aria-label', 'Merging');
+      return;
+    }
+    if (state === 'done') {
+      button.innerHTML = '';
+      button.classList.add('done');
+      button.classList.remove('merging');
+      button.disabled = false;
+      button.dataset.mergeAction = 'refresh';
+      button.setAttribute('aria-label', 'Refresh page');
+      return;
+    }
+    button.innerHTML = button.dataset.mergeIdleHtml;
+    button.classList.remove('merging', 'done');
+    button.disabled = false;
+    button.dataset.mergeAction = 'merge';
+    if (button.dataset.mergeIdleLabel) button.setAttribute('aria-label', button.dataset.mergeIdleLabel);
+    else button.removeAttribute('aria-label');
+    delete button.dataset.mergeIdleHtml;
+    delete button.dataset.mergeIdleLabel;
   }
 
   function mergeSelfHealBranch(button) {
     const target = button || dom.selfHealBranch;
-    if (!target || !target.dataset.projectId) return;
+    if (!target) return;
+    if (target.dataset.mergeAction === 'refresh') {
+      location.reload();
+      return;
+    }
+    if (!target.dataset.projectId) return;
     const branch = target.dataset.branch || 'the healed branch';
     const confirmed = window.confirm(
       `Test complete on ${branch}. Merge to main and rebuild/restart? Nothing is published.`
@@ -822,7 +864,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     // The rebuild recreates the server, so the POST may drop mid-request. Treat a
     // dropped connection as "restarting" and confirm the merge on reconnect.
     dom.settingsStatus.textContent = `merging ${branch}…`;
-    target.disabled = true;
+    setMergeButtonState(target, 'busy');
     fetch(`/api/projects/${encodeURIComponent(target.dataset.projectId)}/selfheal/merge`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -833,19 +875,19 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
         try { body = await res.json(); } catch { /* no json */ }
         if (!res.ok) {
           dom.settingsStatus.textContent = (body && body.error) || `merge failed (${res.status})`;
+          setMergeButtonState(target, 'idle');
           return;
         }
         dom.settingsStatus.textContent = body && body.mergeCommit
           ? `merged ${branch} (${body.mergeCommit}); restarting…`
           : `merged ${branch}; restarting…`;
+        setMergeButtonState(target, 'done');
       })
       .catch(() => {
         // Likely a dropped request during the rebuild/restart. Confirm via the
         // reconnected state rather than reporting a false failure.
         dom.settingsStatus.textContent = `merge submitted for ${branch}; waiting for restart…`;
-      })
-      .finally(() => {
-        target.disabled = false;
+        setMergeButtonState(target, 'done');
       });
   }
 
@@ -1665,10 +1707,14 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       const healer = project.selfHealer;
       // Same gate as the header: healed, unmerged, real branch, and the host
       // must not have flagged the branch stale (missing or already merged).
+      // A button already in the Refresh state stays visible until reload.
       const showMerge = isMergeReadyHealer(healer);
-      mergeButton.hidden = !showMerge;
-      mergeButton.dataset.projectId = showMerge ? String(project.id) : '';
-      mergeButton.dataset.branch = showMerge ? (healer.branch || '') : '';
+      const refreshReady = mergeButton.dataset.mergeAction === 'refresh';
+      mergeButton.hidden = !(refreshReady || showMerge);
+      if (!refreshReady) {
+        mergeButton.dataset.projectId = showMerge ? String(project.id) : '';
+        mergeButton.dataset.branch = showMerge ? (healer.branch || '') : '';
+      }
     }
 
     const buttons = card.querySelectorAll('.card-controls button');
@@ -2148,6 +2194,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
         : '';
     }
     const waitingAnswer = project.status === 'waitingAnswer';
+    if (dom.saveAnswer) dom.saveAnswer.hidden = !waitingAnswer;
     if (waitingAnswer && dom.answerStatus && dom.answerStatus.textContent === 'No handoff loaded') {
       dom.answerStatus.textContent = 'questions ready — add your answers, then Save answer';
     }
@@ -3136,8 +3183,9 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
         method: 'PUT',
         body: JSON.stringify({ content: dom.answerEditor.value })
       });
-      dom.answerStatus.textContent = 'saved';
+      dom.answerStatus.textContent = 'answered';
       applyAutoEmptySections(id);
+      await refreshState();
     } catch (error) {
       dom.answerStatus.textContent = error.message;
     } finally {
@@ -3228,20 +3276,26 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
   }
 
   async function mergeSprintBranches() {
+    const target = dom.sprintMerge;
+    if (!target) return;
+    if (target.dataset.mergeAction === 'refresh') {
+      location.reload();
+      return;
+    }
     const id = app.drawerId;
     if (!id) return;
     dom.sprintStatus.textContent = 'merging…';
-    dom.sprintMerge.disabled = true;
+    setMergeButtonState(target, 'busy');
     try {
       const result = await api(`/api/projects/${encodeURIComponent(id)}/sprint/merge`, {
         method: 'POST',
         body: JSON.stringify({})
       });
       dom.sprintStatus.textContent = `merged: ${(result.sprints || []).join(', ') || 'nothing to merge'}`;
+      setMergeButtonState(target, 'done');
     } catch (error) {
       dom.sprintStatus.textContent = error.message;
-    } finally {
-      dom.sprintMerge.disabled = false;
+      setMergeButtonState(target, 'idle');
     }
   }
 

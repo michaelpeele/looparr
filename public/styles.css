@@ -480,6 +480,25 @@ input[type="number"] { max-width: 130px; }
 .button.danger:hover { background: rgba(248, 113, 113, 0.12); }
 .button:disabled { opacity: 0.45; cursor: not-allowed; }
 
+button.merging::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 8px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: -2px;
+}
+button.merging::after { content: "Merging…"; }
+button.done::after { content: "Refresh"; }
+button.merging:disabled { opacity: 1; cursor: progress; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.self-heal-branch.merging, .self-heal-branch.done { width: auto; padding: 0 10px; }
+.self-heal-branch.merging svg, .self-heal-branch.done svg { display: none; }
+
 .icon-button {
   border: 1px solid var(--border);
   background: transparent;

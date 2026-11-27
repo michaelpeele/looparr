@@ -202,6 +202,44 @@ onto `master` by hand. Both paths require the verified sequence above.
   and `settings` (incl. `paseoTransport:false`); `npm run watchdog:check`
   steady. Paseo/direct/cancel/stale-run/mobile/bridge verification recorded in
   PLAN-05; host-level Paseo daemon polyfill documented there.
+- 2026-11-27 — Merge-button progress/Refresh UI, Save-answer state transition,
+  and favicon check. `npm test` green and `git diff --check` clean at that
+  point. Dry-run clean. `npm run restart:looparr` promoted through
+  `systemd-run --user --unit=looparr-promote` (run
+  `6b6766b5-dab7-402b-9142-711bb2c3efae`), image
+  `sha256:ccfab13bd93f56011529ec6cd1fe28001c124418a132f03f27676464713e651f`,
+  container `8f995af9dbd5` healthy. Promotion status `result: "success"`,
+  `apiStateOk: true`, `watchdogOk: true`, recovery `recoverCreatedContainer`
+  ok. All 101 tracked `src`/`public`/`scripts` hashes matched local (`bad=0`);
+  served `/`, `/styles.css`, `/app.js`, `/favicon.svg` matched local `public/`
+  (`bad=0`); `/api/state` returned `projects` and `settings`;
+  `npm run watchdog:check` steady. Nonfatal: active-run postcheck fetch
+  failed, matching documented precedent. The running container had returned
+  404 for `/favicon.svg`; source favicon was already at HEAD, and a temporary
+  favicon variant was included in that run. Original `public/favicon.svg` was
+  restored from HEAD afterwards, so this evidence is superseded by the final
+  promotion entry after the UI edits.
+- 2026-11-27 — Final promotion after merge-button progress/Refresh UI and
+  Save-answer state transition. `npm test` green and `git diff --check` clean.
+  Dry-run at 19:55:43Z detected stale `public/app.js`, `public/styles.css`, and
+  `/favicon.svg` hashes; it made no Docker call. `npm run restart:looparr` at
+  19:55:48Z promoted via `systemd-run --user --unit=looparr-promote` (run
+  `7e9e2fc5-8e64-4989-8906-21dc46a73d60`), finished 19:56:05.308Z. Status:
+  `result: "success"`, `phase: "done"`, `apiStateOk: true`, `watchdogOk: true`,
+  `error: null`, recovery `recoverCreatedContainer` ok. Image
+  `sha256:469b40a40cce507398d7bc6e622c16ce2f0f3f75f25925b557e87bf7dc11b2ed`,
+  container `2c547c7104a6` healthy. Source manifest: 105 files, combined hash
+  `b128afff01dcc4c1352d29a6206320f5d0e40859bd2e1344bc5562da8212474a`; served
+  manifest: 4 files, combined hash
+  `e269e3ec05a987c060e6c714fd941fc780fef0adcbbde6db31006b965b014b30`. Live
+  verification: tracked `src`/`public`/`scripts` hashes matched local (`bad=0`,
+  excluding Docker build-context files); served `/`, `/styles.css`, `/app.js`,
+  `/favicon.svg` matched local `public/` via container-local fetch (`bad=0`);
+  `/api/state` returned `projects=4 settings=31`; `npm run watchdog:check`
+  steady. Host `curl /app.js` returns 302 to `/login` from the external auth
+  proxy, so container-local fetch was used for served assets. Nonfatal
+  `Active-run postcheck failed: fetch failed`, matching documented precedent.
+  `public/favicon.svg` is unchanged from HEAD after restoring the original art.
 ## Idempotent, observable promotion (promotion-status.json)
 
 `npm run restart:looparr` is idempotent. Every run writes
