@@ -661,6 +661,8 @@ input[type="number"] { max-width: 130px; }
   stroke-linejoin: round;
 }
 .terminal-icon use { pointer-events: none; }
+.archive-icon { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vertical-align: -2px; margin-right: 4px; }
+.archive-icon use { pointer-events: none; }
 .repo-link {
   flex: 0 0 auto;
   width: 44px;

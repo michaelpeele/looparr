@@ -334,6 +334,81 @@ function writePlan(projectDir, content) {
   fs.renameSync(temp, planPath);
 }
 
+function pad2(value) {
+  return String(value).padStart(2, '0');
+}
+
+function utcTimestamp(date = new Date()) {
+  return [
+    date.getUTCFullYear(),
+    pad2(date.getUTCMonth() + 1),
+    pad2(date.getUTCDate())
+  ].join('') + '-' + [pad2(date.getUTCHours()), pad2(date.getUTCMinutes()), pad2(date.getUTCSeconds())].join('');
+}
+
+function nextArchiveName(docsDir, base) {
+  let candidate = `PLAN-${base}.md`;
+  let suffix = 2;
+  while (fs.existsSync(path.join(docsDir, candidate))) {
+    candidate = `PLAN-${base}-${suffix}.md`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
+function archivePlan(projectDir, options = {}) {
+  const clear = options.clear !== false;
+  const planPath = path.join(projectDir, 'plan.md');
+  let content;
+  try {
+    content = fs.readFileSync(planPath, 'utf8');
+  } catch (error) {
+    if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) {
+      return { ok: false, error: 'plan.md not found' };
+    }
+    return { ok: false, error: error.message };
+  }
+  if (!String(content).trim()) {
+    return { ok: false, error: 'plan.md is empty' };
+  }
+
+  const docsDir = path.join(projectDir, '.project_documents');
+  try {
+    fs.mkdirSync(docsDir, { recursive: true });
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+
+  const archiveName = nextArchiveName(docsDir, utcTimestamp());
+  const archivePath = path.join(docsDir, archiveName);
+  const archiveRelativePath = path.posix.join('.project_documents', archiveName);
+
+  try {
+    fs.writeFileSync(archivePath, content, 'utf8');
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+
+  try {
+    const verified = fs.readFileSync(archivePath, 'utf8');
+    if (Buffer.byteLength(verified, 'utf8') !== Buffer.byteLength(content, 'utf8')) {
+      return { ok: false, error: 'archive verification failed' };
+    }
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+
+  if (clear) {
+    try {
+      writePlan(projectDir, '');
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  return { ok: true, archivePath: archiveRelativePath, archiveName, cleared: clear };
+}
+
 // "(plan) Task text" — note `\b` never matches after ')' (non-word to
 // non-word), so anchor on whitespace or end-of-string instead.
 const PLAN_TASK_MARKER_RE = /^\(plan\)(?:\s|$)/i;
@@ -415,5 +490,6 @@ module.exports = {
   editTask,
   removeTask,
   markTask,
-  writePlan
+  writePlan,
+  archivePlan
 };

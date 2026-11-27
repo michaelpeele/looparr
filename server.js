@@ -8,6 +8,7 @@ const engine = require('./src/engine');
 const bus = require('./src/events');
 const configStore = require('./src/config');
 const envSettings = require('./src/env-settings');
+const planLib = require('./src/plan');
 const iconLib = require('./src/icon');
 const iconPngLib = require('./src/icon-png');
 const widgetPayload = require('./src/widget-payload');
@@ -744,6 +745,14 @@ app.put('/api/projects/:id/plan', (req, res) => {
   } catch (error) {
     return fail(res, 500, error.message);
   }
+});
+
+app.post('/api/projects/:id/plan/archive', (req, res) => {
+  const project = findProject(req.params.id);
+  if (!project) return fail(res, 404, 'Project not found');
+  const result = planLib.archivePlan(project.path);
+  if (!result.ok) return fail(res, 400, result.error);
+  return res.json(result);
 });
 
 app.get('/api/projects/:id/plan-file', (req, res) => {

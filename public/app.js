@@ -132,6 +132,7 @@
     planGuideSummary: $('plan-format-hint'),
     planEditor: $('plan-editor'),
     insertPlan: $('insert-plan'),
+    archivePlan: $('archive-plan'),
     savePlan: $('save-plan'),
     logList: $('log-list'),
     logStatus: $('log-status'),
@@ -1106,6 +1107,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     });
     if (dom.toggleCompletedTasks) dom.toggleCompletedTasks.disabled = noDrawer || app.savingPlan;
     if (dom.savePlan) dom.savePlan.disabled = noDrawer || app.savingPlan;
+    if (dom.archivePlan) dom.archivePlan.disabled = noDrawer || app.savingPlan || app.planDirty || app.currentPlan?.started === true;
     updateStarterPlanButton();
     if (!noDrawer && !app.savingPlan && app.planDirty) dom.taskStatus.textContent = 'Save plan.md first';
   }
@@ -4193,6 +4195,35 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
 
   dom.savePlan.addEventListener('click', async () => {
     await savePlanContent(dom.planEditor.value, 'saved');
+  });
+
+  dom.archivePlan.addEventListener('click', async () => {
+    const id = app.drawerId;
+    if (!id) return;
+    if (app.planDirty) {
+      dom.planStatus.textContent = 'Save plan.md before archiving';
+      return;
+    }
+    if (app.savingPlan) {
+      dom.planStatus.textContent = 'Save in progress';
+      return;
+    }
+    if (app.currentPlan?.started === true) {
+      dom.planStatus.textContent = 'Stop the project before archiving';
+      return;
+    }
+    if (!window.confirm('Archive the current plan.md and clear it? A timestamped copy is saved to .project_documents.')) return;
+    try {
+      const data = await api('/api/projects/' + encodeURIComponent(id) + '/plan/archive', { method: 'POST' });
+      app.planDirty = false;
+      app.lastPlanKey = '';
+      await loadPlan(id);
+      await refreshState();
+      dom.planStatus.textContent = 'Archived to ' + data.archiveName + '; plan.md cleared.';
+      updatePlanControls();
+    } catch (error) {
+      dom.planStatus.textContent = error.message;
+    }
   });
 
   function connect() {
