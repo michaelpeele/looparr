@@ -575,7 +575,8 @@ function getState() {
                 branch: healerView.branch || '',
                 phase: healerView.phase || '',
                 errorAt: healerView.errorAt || '',
-                mergedAt: healerView.mergedAt || null
+                mergedAt: healerView.mergedAt || null,
+                mergeable: healerView.mergeable !== false
               }
             : (prodViewer
               ? (readHealerStatus(project.id) || (available ? idleHealer : null))
@@ -1258,7 +1259,8 @@ function writeHealerStatus(project, healer) {
     mergedAt: (healer && healer.mergedAt) || null,
     analysisFile: (healer && healer.analysis) || '',
     exitCode: healer && Number.isInteger(healer.exitCode) ? healer.exitCode : null,
-    hostname: process.env.HOSTNAME || ''
+    hostname: process.env.HOSTNAME || '',
+    mergeable: !healer || healer.mergeable !== false
   };
   return selfhealStatus.writeStatus(selfhealRepoRoot(), record);
 }
@@ -1309,6 +1311,26 @@ function heartbeatHealerStatus(now) {
     // failed or merged) so prod keeps seeing how the last round ended. A fresh
     // accounted record is re-stamped so a reviewed fix stays visible.
     writeHealerStatusForRuntime(project, rt);
+  }
+  // Host-side only (this runs after the selfHealingEnabled guard, never in the
+  // prod/viewer container): retire fresh healed statuses whose branch was
+  // deleted or is already contained in HEAD, so prod never shows a dead
+  // Merge button. Parked in-memory lastHealer snapshots of such rounds are
+  // also cleared so the next heartbeat cannot resurrect them.
+  const retired = selfhealStatus.reconcileStaleHealedStatuses(selfhealRepoRoot(), now);
+  if (retired.length > 0) {
+    for (const project of config.projects) {
+      const rt = ensureRuntime(project);
+      const parked = rt.lastHealer;
+      if (
+        rt.healer === null
+        && parked && parked.state === 'healed' && !parked.mergedAt
+        && !selfhealStatus.isMergeableBranch(selfhealRepoRoot(), parked.branch || '')
+      ) {
+        rt.lastHealer = null;
+      }
+    }
+    emitState();
   }
 }
 
@@ -1826,6 +1848,17 @@ function mergeHealerBranch(id, expectedBranch) {
     repoRoot = selfhealRepoRoot();
     auditPhase = healerAuditPhase(statusRecord.phase);
     healer = { state: 'healed', branch, phase: statusRecord.phase, repoRoot };
+  }
+  // Host-side recheck: a stale or missing branch must never reach git merge.
+  // The in-memory healed path can still point at a branch that was deleted or
+  // already merged elsewhere (e.g. a healer round whose changes landed via a
+  // different route), so refuse it here with a clear error.
+  if (!selfhealStatus.isMergeableBranch(repoRoot, branch)) {
+    return {
+      ok: false,
+      status: 409,
+      error: 'Healed branch no longer exists or is already merged into main'
+    };
   }
   const merge = mergeBranchIntoRepo(repoRoot, branch);
   if (!merge.ok) {

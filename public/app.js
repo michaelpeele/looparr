@@ -762,6 +762,16 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     });
   }
 
+  // A healer is merge-ready only when its round is healed, unmerged, its
+  // branch is a real local branch, and the host marked it mergeable. A stale
+  // healed record (branch deleted or already contained in main) never shows a
+  // Merge button, in the header pill or on a project card.
+  const isMergeReadyHealer = (healer) => !!healer
+    && healer.state === 'healed'
+    && !healer.mergedAt
+    && /^looparr-selfheal-\d+-\d+$/.test(healer.branch || '')
+    && healer.mergeable !== false;
+
   const SELF_HEAL_LABELS = {
     idle: 'Idle',
     debugging: 'Debugging',
@@ -783,16 +793,16 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       .map((project) => (project.selfHealer ? { ...project.selfHealer, projectId: project.id } : null))
       .filter(Boolean)
       .filter((healer) => healer.state && healer.state !== 'idle');
-    // The header pill shows `healed` whenever any project has a healed, unmerged
+    // The header pill shows `healed` whenever any project has a merge-ready
     // round; otherwise it reflects the first engaged state.
-    const healedUnmerged = engaged.filter((healer) => healer.state === 'healed' && !healer.mergedAt);
+    const healedUnmerged = engaged.filter(isMergeReadyHealer);
     const healerState = healedUnmerged.length > 0 ? 'healed' : (engaged[0] ? engaged[0].state : 'idle');
     dom.selfHealPill.dataset.state = healerState;
     if (dom.selfHealState) dom.selfHealState.textContent = SELF_HEAL_LABELS[healerState] || 'Idle';
     if (dom.selfHealBranch) {
-      // The header merge button only covers the exactly-one-healed-project case;
-      // with zero or many healed projects the per-card merge buttons handle each
-      // one. Once mergedAt is set the round is done and no button reappears.
+      // The header merge button only covers the exactly-one-merge-ready case;
+      // with zero or many the per-card merge buttons handle each one. Once
+      // mergedAt is set the round is done and no button reappears.
       const showHeader = healedUnmerged.length === 1;
       dom.selfHealBranch.hidden = !showHeader;
       dom.selfHealBranch.dataset.projectId = showHeader ? healedUnmerged[0].projectId : '';
@@ -1651,7 +1661,9 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     const mergeButton = card.querySelector('.self-heal-merge');
     if (mergeButton) {
       const healer = project.selfHealer;
-      const showMerge = !!healer && healer.state === 'healed' && !healer.mergedAt;
+      // Same gate as the header: healed, unmerged, real branch, and the host
+      // must not have flagged the branch stale (missing or already merged).
+      const showMerge = isMergeReadyHealer(healer);
       mergeButton.hidden = !showMerge;
       mergeButton.dataset.projectId = showMerge ? String(project.id) : '';
       mergeButton.dataset.branch = showMerge ? (healer.branch || '') : '';

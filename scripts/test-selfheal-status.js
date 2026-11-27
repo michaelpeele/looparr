@@ -285,6 +285,109 @@ function testAccountedStatus() {
   }
 }
 
+// --- Git-aware mergeability + stale-status reconciliation (throwaway repos) ---
+
+function testIsMergeableBranchGuards() {
+  const repo = makeGitRepo();
+  try {
+    // Malformed names are rejected before any git spawn.
+    assertEqual(selfhealStatus.isMergeableBranch(repo, 'main'), false, 'non-healer branch rejected');
+    assertEqual(selfhealStatus.isMergeableBranch(repo, ''), false, 'empty branch rejected');
+    assertEqual(selfhealStatus.isMergeableBranch(repo, null), false, 'null branch rejected');
+    assertEqual(selfhealStatus.isMergeableBranch(repo, '../../etc'), false, 'traversal branch rejected');
+    assertEqual(selfhealStatus.isMergeableBranch('', 'looparr-selfheal-1-0'), false, 'empty repoRoot rejected');
+    assertEqual(selfhealStatus.isMergeableBranch(null, 'looparr-selfheal-1-0'), false, 'null repoRoot rejected');
+
+    // Missing local branch is not mergeable (repo exists, branch does not).
+    assertEqual(selfhealStatus.isMergeableBranch(repo, 'looparr-selfheal-1700000000000-9'), false, 'missing local branch rejected');
+
+    console.log('selfheal isMergeableBranch guards ok');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+function testReconcileStaleHealedStatuses() {
+  const repo = makeGitRepo();
+  try {
+    const now = Date.now();
+    // A real unmerged branch stays healed.
+    const realBranch = 'looparr-selfheal-1700000000000-1';
+    gitIn(repo, ['checkout', '-b', realBranch]);
+    fs.writeFileSync(path.join(repo, 'fix.txt'), 'fix\n');
+    gitIn(repo, ['add', 'fix.txt']);
+    gitIn(repo, ['commit', '-m', 'fix']);
+    gitIn(repo, ['checkout', 'main']);
+    selfhealStatus.writeStatus(repo, sampleRecord('project-real', { branch: realBranch }), now);
+
+    // An already-ancestor branch (points at main's HEAD) reconciles to idle.
+    const ancestorBranch = 'looparr-selfheal-1700000000000-2';
+    gitIn(repo, ['branch', ancestorBranch, 'main']);
+    selfhealStatus.writeStatus(repo, sampleRecord('project-ancestor', { branch: ancestorBranch }), now);
+
+    // A branch that does not exist locally reconciles to idle.
+    selfhealStatus.writeStatus(repo, sampleRecord('project-missing', { branch: 'looparr-selfheal-1700000000000-3' }), now);
+
+    // A fresh accounted record survives untouched.
+    selfhealStatus.writeStatus(repo, sampleRecord('project-accounted', {
+      state: 'accounted', branch: ancestorBranch, phase: 'accounted'
+    }), now);
+
+    const reconciled = selfhealStatus.reconcileStaleHealedStatuses(repo, now);
+    assert.deepEqual(reconciled.sort(), ['project-ancestor', 'project-missing'], 'exactly the stale healed records reconcile');
+
+    const real = selfhealStatus.readStatus(repo, 'project-real', now);
+    assertEqual(real.state, 'healed', 'real unmerged branch stays healed');
+    assertEqual(real.branch, realBranch, 'real branch preserved');
+
+    for (const id of ['project-ancestor', 'project-missing']) {
+      const record = selfhealStatus.readStatus(repo, id, now);
+      assertEqual(record.state, 'idle', `${id} reconciled to idle`);
+      assertEqual(record.branch, '', `${id} branch cleared`);
+      assertEqual(record.mergedAt, null, `${id} mergedAt stays null`);
+    }
+
+    const accounted = selfhealStatus.readStatus(repo, 'project-accounted', now);
+    assertEqual(accounted.state, 'accounted', 'fresh accounted survives reconciliation');
+    assertEqual(accounted.branch, ancestorBranch, 'accounted branch preserved');
+
+    // Reconciling again is a no-op.
+    assert.deepEqual(selfhealStatus.reconcileStaleHealedStatuses(repo, now), [], 'second reconcile is a no-op');
+
+    console.log('selfheal reconcile stale healed ok');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+function testMergeableFlagMapping() {
+  const repo = makeTempRepo();
+  try {
+    const now = Date.now();
+    // Flag explicitly false survives the round-trip and reaches prod.
+    selfhealStatus.writeStatus(repo, sampleRecord('project-1', { mergeable: false }), now);
+    let healer = selfhealStatus.toSelfHealer(selfhealStatus.readStatus(repo, 'project-1', now));
+    assertEqual(healer.mergeable, false, 'mergeable:false reaches toSelfHealer');
+
+    // Missing flag (old writers) defaults to true so valid records keep working.
+    selfhealStatus.writeStatus(repo, sampleRecord('project-2', { mergeable: undefined }), now);
+    healer = selfhealStatus.toSelfHealer(selfhealStatus.readStatus(repo, 'project-2', now));
+    assertEqual(healer.mergeable, true, 'missing mergeable defaults true');
+
+    // Merge validation refuses a stale record without touching git.
+    let res = selfhealStatus.validateMergeRequest(repo, 'project-1', { branch: 'looparr-selfheal-1700000000000-1' }, now);
+    assertEqual(res.ok, false, 'mergeable:false record refused');
+    assertEqual(res.status, 409, 'mergeable:false refusal is 409');
+
+    res = selfhealStatus.validateMergeRequest(repo, 'project-2', { branch: 'looparr-selfheal-1700000000000-1' }, now);
+    assertEqual(res.ok, true, 'default-mergeable record still accepted');
+
+    console.log('selfheal mergeable flag mapping ok');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+}
+
 function testNoPushGuard() {
   const executor = fs.readFileSync(path.join(REPO_ROOT, 'scripts/host-executor.js'), 'utf8');
   const engine = fs.readFileSync(path.join(REPO_ROOT, 'src/engine.js'), 'utf8');
@@ -474,6 +577,10 @@ testMalformedIgnored();
 testProdMapping();
 testMergeValidation();
 testAccountedStatus();
+// Git-aware helpers run against throwaway repos, never the live checkout.
+testIsMergeableBranchGuards();
+testReconcileStaleHealedStatuses();
+testMergeableFlagMapping();
 testNoPushGuard();
 // Engine-level merge mechanics against throwaway git repos (never the live
 // checkout): already-ancestor idempotence, a real merge, and a conflict.

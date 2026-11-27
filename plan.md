@@ -272,3 +272,4 @@ Why: Scriptable on iOS uses native image decoding. It cannot decode SVG (`image/
 - [x] The add last add after dynamic portion should only list tasks not completed
 - [x] When multiple projects running sometimes a project shows idle before it goes to Awaiting slot, fix so it doesn’t show idle of more tasks and is actively running but just waitings
 - [x] Investigate remaining errors on other projects
+- [x] Cleanup healer branches on other projects , if they have code needed merge to main. If none are left examine why ui still shows merge under two project cards and correct

@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('node:child_process');
 
 // Host-healer status relay: the dev engine writes one small JSON file per
 // project under <repoRoot>/.looparr/selfheal/status/<projectId>.json. Prod (and
@@ -79,6 +80,9 @@ function normalizeRecord(raw, now = Date.now()) {
     phase: typeof raw.phase === 'string' ? raw.phase : '',
     errorAt: typeof raw.errorAt === 'string' ? raw.errorAt : '',
     mergedAt: typeof raw.mergedAt === 'string' && raw.mergedAt ? raw.mergedAt : null,
+    // Mergeability is a host-side git fact; records without the flag (old
+    // writers) default to true so still-valid healed rounds keep their button.
+    mergeable: raw.mergeable !== false,
     analysisFile: typeof raw.analysisFile === 'string' ? raw.analysisFile : '',
     exitCode: Number.isInteger(raw.exitCode) ? raw.exitCode : null,
     hostname: typeof raw.hostname === 'string' ? raw.hostname : '',
@@ -140,8 +144,59 @@ function toSelfHealer(record) {
     branch: record.branch || '',
     phase: record.phase || '',
     errorAt: record.errorAt || '',
-    mergedAt: record.mergedAt || null
+    mergedAt: record.mergedAt || null,
+    mergeable: record.mergeable !== false
   };
+}
+
+// Host-side git-aware mergeability probe: a branch is mergeable only when it
+// matches the healer branch pattern, still exists as a local ref, and is not
+// already contained in HEAD (i.e. already merged or empty versus main). Read
+// only — this never mutates the repo and never pushes.
+function isMergeableBranch(repoRoot, branch) {
+  if (typeof repoRoot !== 'string' || !repoRoot) return false;
+  if (typeof branch !== 'string' || !BRANCH_RE.test(branch)) return false;
+  const dir = path.resolve(repoRoot);
+  const run = (args) =>
+    spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
+  if (run(['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]).status !== 0) return false;
+  // Exit 0 means already an ancestor of HEAD: nothing left to merge.
+  return run(['merge-base', '--is-ancestor', branch, 'HEAD']).status !== 0;
+}
+
+// Rewrite fresh healed + unmerged records whose branch is no longer mergeable
+// (branch deleted, or already contained in main) to idle, so prod stops
+// offering a Merge button for a stale round. Preserves projectId and
+// projectName. Host-side only: it spawns git, so the prod/viewer container
+// must never call it. Sticky accounted records and other states are untouched.
+// Returns the reconciled project ids for tests.
+function reconcileStaleHealedStatuses(repoRoot, now = Date.now()) {
+  const reconciled = [];
+  for (const record of listStatus(repoRoot, now)) {
+    if (record.state !== 'healed' || record.mergedAt) continue;
+    if (isMergeableBranch(repoRoot, record.branch)) continue;
+    const wrote = writeStatus(
+      repoRoot,
+      {
+        version: VERSION,
+        projectId: record.projectId,
+        projectName: record.projectName,
+        state: 'idle',
+        round: 0,
+        cycles: 0,
+        branch: '',
+        phase: '',
+        errorAt: '',
+        mergedAt: null,
+        analysisFile: '',
+        exitCode: null,
+        hostname: record.hostname || ''
+      },
+      now
+    );
+    if (wrote) reconciled.push(record.projectId);
+  }
+  return reconciled;
 }
 
 // Validate a merge request against a fresh status file. Returns a discriminated
@@ -157,6 +212,11 @@ function validateMergeRequest(repoRoot, projectId, body, now = Date.now()) {
   }
   if (record.mergedAt) {
     return { ok: false, status: 409, error: 'Self-heal branch was already merged' };
+  }
+  // Plain data check (no git here): a record already reconciled as stale is
+  // refused so the relay cannot forward a dead merge to the host executor.
+  if (record.mergeable === false) {
+    return { ok: false, status: 409, error: 'Self-heal branch is stale or already merged' };
   }
   const branch = body && typeof body.branch === 'string' ? body.branch : '';
   if (!BRANCH_RE.test(branch)) return { ok: false, status: 400, error: 'Branch name is invalid' };
@@ -198,6 +258,8 @@ module.exports = {
   readStatus,
   listStatus,
   toSelfHealer,
+  isMergeableBranch,
+  reconcileStaleHealedStatuses,
   validateMergeRequest,
   writeStatus
 };

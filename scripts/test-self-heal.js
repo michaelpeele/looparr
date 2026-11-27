@@ -95,6 +95,8 @@ function testEngine() {
   assertIncludes(engine, 'mergeHealerBranch', 'healer merge entry point');
   assertIncludes(engine, "'merge-base', '--is-ancestor'", 'already-ancestor idempotent merge path');
   assertIncludes(engine, 'validateMergeRequest(selfhealRepoRoot()', 'status-file fallback when no in-memory healer');
+  assertIncludes(engine, 'reconcileStaleHealedStatuses(selfhealRepoRoot()', 'heartbeat retires stale healed statuses');
+  assertIncludes(engine, 'isMergeableBranch(repoRoot, branch)', 'merge rechecks branch mergeability before merging');
   assertIncludes(engine, 'function healerAnalysis(', 'end-of-round analysis writeup');
   assertIncludes(engine, '-analysis.md', 'analysis filename');
   assertIncludes(engine, 'function finishHealerRound(', 'end-of-round teardown');
@@ -127,7 +129,11 @@ function testUi() {
   assertIncludes(app, 'dom.selfHealBranch.hidden = !showHeader', 'header merge button only for exactly-one-healed');
   assertIncludes(app, 'healedUnmerged.length === 1', 'header button gated to single healed project');
   assertIncludes(app, 'self-heal-merge', 'per-card merge button class');
-  assertIncludes(app, "healer.state === 'healed' && !healer.mergedAt", 'per-card merge only when healed and unmerged');
+  assertIncludes(app, "healer.state === 'healed'\n    && !healer.mergedAt", 'merge gate requires healed and unmerged');
+  assertIncludes(app, '/^looparr-selfheal-\\d+-\\d+$/.test(healer.branch', 'merge gate requires a real healer branch');
+  assertIncludes(app, 'healer.mergeable !== false', 'merge gate requires the host mergeable flag');
+  assertIncludes(app, 'engaged.filter(isMergeReadyHealer)', 'header gate uses the shared merge-ready check');
+  assertIncludes(app, 'const showMerge = isMergeReadyHealer(healer)', 'per-card gate uses the shared merge-ready check');
   assertIncludes(app, 'mergeSelfHealBranch(mergeButton)', 'per-card merge wired to its own button');
   assertIncludes(app, 'Test complete on', 'merge confirmation');
   assertIncludes(app, 'Merge to main and rebuild/restart?', 'human-gated merge copy');
