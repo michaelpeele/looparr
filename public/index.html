@@ -25,6 +25,14 @@
       <path d="M6.5 9.5 10 12.5l-3.5 3"/>
       <path d="M12 16h5.5"/>
     </symbol>
+    <symbol id="icon-github" viewBox="0 0 24 24">
+      <path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.69c-2.78.6-3.37-1.34-3.37-1.34-.45-1.15-1.11-1.46-1.11-1.46-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.82c.85.04 1.71.11 2.51.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2Z"/>
+    </symbol>
+    <symbol id="icon-docker" viewBox="0 0 24 24">
+      <path d="M3 13h18v2a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4v-2Z"/>
+      <path d="M6 13V9h3v4M10 13V9h3v4M14 13V9h3v4"/>
+      <path d="M18 11h2a2 2 0 0 1 2 2v1h-4v-3Z"/>
+    </symbol>
   </svg>
   <header class="topbar">
     <button class="nav-toggle" id="nav-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="sidebar-nav">
@@ -437,7 +445,7 @@
           <button class="icon-button drawer-close" id="drawer-close" type="button" aria-label="Close project details">✕</button>
         </div>
         <p class="card-task task-detail-wrap" data-task-field="current" data-project-id="" data-fallback="true"><span class="task-detail-text task-detail-clamped" id="drawer-task">—</span><button class="task-expand-toggle" id="drawer-task-toggle" type="button" aria-controls="drawer-task" aria-expanded="false" aria-label="Expand current task" title="Expand current task" hidden>▼</button></p>
-        <div class="card-model-row"><div class="card-model mono" id="drawer-card-model">—</div><button type="button" class="icon-button terminal-button" id="drawer-terminal-button" aria-label="Open agent terminal" title="Agent terminal"><svg class="terminal-icon" aria-hidden="true" focusable="false"><use href="#icon-terminal"></use></svg></button></div>
+        <div class="card-model-row"><div class="card-model mono" id="drawer-card-model">—</div><button type="button" class="icon-button terminal-button" id="drawer-terminal-button" aria-label="Open agent terminal" title="Agent terminal"><svg class="terminal-icon" aria-hidden="true" focusable="false"><use href="#icon-terminal"></use></svg></button><a class="icon-button repo-link" data-repo-link="github" hidden target="_blank" rel="noopener noreferrer" aria-label="Open GitHub repository" title="GitHub repository"><svg class="repo-icon" aria-hidden="true" focusable="false"><use href="#icon-github"></use></svg></a><a class="icon-button repo-link" data-repo-link="docker" hidden target="_blank" rel="noopener noreferrer" aria-label="Open Docker image repository" title="Docker image repository"><svg class="repo-icon" aria-hidden="true" focusable="false"><use href="#icon-docker"></use></svg></a></div>
         <div class="card-up" data-task-field="next" data-project-id="" data-fallback="true"><strong>Up next:</strong> <span class="task-detail-wrap"><span class="task-detail-text task-detail-clamped" id="drawer-next">—</span><button class="task-expand-toggle" id="drawer-next-toggle" type="button" aria-controls="drawer-next" aria-expanded="false" aria-label="Expand up next" title="Expand up next" hidden>▼</button></span></div>
       </div>
     </div>

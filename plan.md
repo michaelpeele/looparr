@@ -235,6 +235,7 @@ Opt-in Paseo transport so spawned agent CLI sessions (mobile session visibility 
 - [x] (plan) Handoff recovery sweep — see [PLAN-handoff-recovery-sweep.md](.project_documents/PLAN-handoff-recovery-sweep.md). Done 2026-11-24: opt-in `handoffRecovery` sweeps every 15s, un-sticking errored analyze/implement projects only on a provenance-matched, non-meta handoff, and stands down for waiting states and active OpenCode sessions with a throttled `handoff-recovery-waiting` audit; `npm test` and `git diff --check` clean.
 
 - [x] (plan) Self-healing debugging mode — see [PLAN-self-healing.md](.project_documents/PLAN-self-healing.md). Done 2026-11-24: dev-signalled `selfHealing` runs one worktree-isolated healer round, validates the branch with two preview cycles, reports Debugging/Healing/Healed/Error in the header pill, and merges locally only (no push); `SELFHEALING.md`, `scripts/test-self-heal.js`, `npm test`, and `git diff --check` clean.
+- [x] Merge healer rounds if they include different updates than you just did in last error investigation round. Deploy after tedting
 - [x] Add desktop-only CSS for centered page width, compact icon rail, aligned full-width cards, and unchanged mobile breakpoints.
 - [x] Convert desktop project drawer to a centered modal overlay with stable scrollbar gutter, pinned header/toolbar, and scrolling body.
 - [x] Run unit tests, diff checks, local and production browser checks at all required widths, promote to production, verify served assets, and commit tracked changes.

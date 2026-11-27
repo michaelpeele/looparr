@@ -661,6 +661,27 @@ input[type="number"] { max-width: 130px; }
   stroke-linejoin: round;
 }
 .terminal-icon use { pointer-events: none; }
+.repo-link {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--muted);
+  background: transparent;
+  display: inline-grid;
+  place-items: center;
+  text-decoration: none;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.repo-link:hover { color: var(--text); background: var(--panel-2); }
+.repo-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.repo-link[hidden] { display: none; }
+.repo-icon { width: 18px; height: 18px; fill: currentColor; stroke: none; }
+.repo-icon use { pointer-events: none; }
 .card-up strong { color: #b6c4da; font-weight: 600; white-space: nowrap; overflow-wrap: normal; margin-right: 4px; }
 
 .task-detail-wrap { display: inline-flex; align-items: flex-start; gap: 4px; max-width: 100%; min-width: 0; vertical-align: top; }
@@ -1087,8 +1108,12 @@ body.plan-dragging .checklist { cursor: grabbing; }
 
 @media (max-width: 520px) {
   .project-grid { grid-template-columns: 1fr; }
-  .brand-word { font-size: 19px; }
-  .connection { font-size: 11px; }
+  .topbar { gap: 8px; }
+  .brand { min-width: 0; flex: 0 1 auto; }
+  .brand-word { font-size: 19px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .self-heal-pill { display: none; }
+  .connection { font-size: 11px; min-width: 0; flex: 0 1 auto; padding: 6px 8px; }
+  #connection-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .drawer-toolbar { --drawer-gutter: 16px; }
   .drawer-header, .drawer-toolbar, .drawer-body { padding-left: 16px; padding-right: 16px; }
   .drawer-controls .button { min-height: 44px; }

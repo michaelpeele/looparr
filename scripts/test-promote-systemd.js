@@ -90,7 +90,7 @@ function assertOk(run, label) {
     const binDir = path.join(dir, 'bin');
     const argvLog = path.join(dir, 'systemd-run.argv');
     const script = `#!/bin/sh
-printf '%s\n' "$@" > ${JSON.stringify(argvLog)}
+printf '%s\n' "$@" >> ${JSON.stringify(argvLog)}
 if [ "$1" = "--user" ] && [ "$2" = "--wait" ] && [ "$3" = "--collect" ] && echo "$4" | grep -q "looparr-promote-probe"; then
   exit 0
 fi
@@ -116,7 +116,13 @@ exit 0
     const bashIdx = argv.indexOf('bash');
     assert.ok(bashIdx >= 0, 'pathA: bash missing');
     assert.equal(argv[bashIdx + 1], '-c', 'pathA: bash -c missing');
-    assert.match(argv[bashIdx + 2] || '', /docker compose build looparr && docker compose up -d looparr/, 'pathA: compose chain missing');
+    const composeCommands = [];
+    for (let i = 0; i < argv.length - 1; i += 1) {
+      if (argv[i] === '-c') composeCommands.push(argv[i + 1] || '');
+    }
+    assert.ok(composeCommands.length >= 2, 'pathA: two compose phases missing');
+    assert.ok(composeCommands.some((cmd) => cmd.includes('docker compose build looparr')), 'pathA: build phase missing');
+    assert.ok(composeCommands.some((cmd) => cmd.includes('timeout --signal=TERM --kill-after=30s 300s docker compose up -d looparr')), 'pathA: up phase missing');
     assert.match(run.result.stdout + run.result.stderr, /promotion-execution-path|systemd-run/, 'pathA: execution path log missing');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -144,7 +150,8 @@ exit 0
     assertOk(run, 'pathB');
     const bashLines = readLines(run.bashLog).join('\n');
     assert.match(bashLines, /trap '' HUP INT TERM QUIT/, 'pathB: signal trap missing');
-    assert.match(bashLines, /docker compose build looparr && docker compose up -d looparr/, 'pathB: compose chain missing');
+    assert.match(bashLines, /docker compose build looparr 2>&1 \| tee/, 'pathB: build phase missing');
+    assert.match(bashLines, /timeout --signal=TERM --kill-after=30s 300s docker compose up -d looparr 2>&1 \| tee/, 'pathB: up phase missing');
     assert.match(run.result.stdout + run.result.stderr, /detached-spawn/, 'pathB: fallback path log missing');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
