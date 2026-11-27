@@ -39,6 +39,15 @@ function assertLooparrBranch(branch) {
   return name;
 }
 
+// spawnSync reports spawn failures (ENOENT, ETIMEDOUT, ENOBUFS) in
+// result.error instead of throwing, so each call site must check it or the
+// failure is silent (empty output, ok:false with no detail).
+function spawnErrorDetail(args, error) {
+  const code = error && error.code ? `${error.code}: ` : '';
+  const msg = (error && error.message) || 'unknown spawn error';
+  return `git ${(args || []).join(' ')} failed to spawn: ${code}${msg}`;
+}
+
 // Raw git result shaped as { ok, status, stdout, stderr }.
 function git(repo, args, options = {}) {
   let result;
@@ -49,6 +58,9 @@ function git(repo, args, options = {}) {
     });
   } catch (error) {
     return { ok: false, status: -1, stdout: '', stderr: String(error.message || error) };
+  }
+  if (result.error) {
+    return { ok: false, status: -1, stdout: '', stderr: spawnErrorDetail(args, result.error) };
   }
   return {
     ok: result.status === 0,
@@ -304,6 +316,14 @@ function mergeBranchInWorktree(worktreePath, branch, message) {
   } catch (error) {
     return { ok: false, status: -1, stdout: '', stderr: String(error.message || error) };
   }
+  if (result.error) {
+    return {
+      ok: false,
+      status: -1,
+      stdout: '',
+      stderr: spawnErrorDetail(['merge', '--no-ff', '-m', message || `looparr: merge ${branch}`, branch], result.error)
+    };
+  }
   const out = {
     ok: result.status === 0,
     status: result.status,
@@ -400,6 +420,7 @@ module.exports = {
   slug,
   runIdFor,
   assertLooparrBranch,
+  git,
   listBranches,
   branchExists,
   currentBranch,
@@ -415,6 +436,7 @@ module.exports = {
   worktreeEntryFor,
   addTaskWorktree,
   worktreeFailureDetail,
+  spawnErrorDetail,
   ensureSprintWorktree,
   removeWorktree,
   mergeBranchInWorktree,
