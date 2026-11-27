@@ -2342,15 +2342,15 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     const select = dom.taskInsertAfter;
     if (!select) return;
     const position = dom.taskInsertPosition ? dom.taskInsertPosition.value : 'last';
-    const tasks = app.currentPlan?.tasks || [];
+    const selectable = (app.currentPlan?.tasks || []).filter((task) => !task.checked);
     const previous = select.value;
     const options = ['<option value="">After which task</option>'];
-    tasks.forEach((task) => {
+    selectable.forEach((task) => {
       const label = taskSnippet(task.text) || `Task ${task.index + 1}`;
       options.push(`<option value="${task.index}">${esc(label)}</option>`);
     });
     select.innerHTML = options.join('');
-    const stillExists = previous === '' || tasks.some((task) => String(task.index) === previous);
+    const stillExists = previous === '' || selectable.some((task) => String(task.index) === previous);
     select.value = stillExists ? previous : '';
     select.hidden = position !== 'after';
   }

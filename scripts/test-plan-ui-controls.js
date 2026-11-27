@@ -434,6 +434,7 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(appSource, 'reorderPlanTask(content, fromTaskIndex, toTaskIndex)', 'app raw reorder helper');
   assertIncludes(appSource, 'reorderChecklistTask(fromTaskIndex, toTaskIndex)', 'app checklist reorder helper');
   assertIncludes(appSource, 'function visibleTaskIndexes(tasks, showCompleted)', 'app visible task index helper');
+  assertIncludes(appSource, '(app.currentPlan?.tasks || []).filter((task) => !task.checked)', 'app insert-after dropdown filters completed tasks');
   assertIncludes(appSource, 'function visibleTaskNeighbor(visibleIndexes, fromTaskIndex, direction)', 'app visible neighbor helper');
   assertIncludes(appSource, 'previousVisibleIndex === undefined', 'app move buttons use visible neighbors');
   assertIncludes(appSource, 'visibleTaskNeighbor(visibleIndexes, taskIndex, -1)', 'app click move-up uses visible neighbor');
@@ -595,6 +596,12 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   const cssNarrowestStart = cssSource.indexOf('@media (max-width: 520px)');
   const cssNarrowestEnd = cssSource.indexOf('@media (min-width: 901px)');
   const cssNarrowest = cssSource.slice(cssNarrowestStart, cssNarrowestEnd);
+  assertIncludes(cssNarrowest, '.topbar { gap: 8px; }', 'css narrowest topbar gap');
+  assertIncludes(cssNarrowest, '.brand { min-width: 0; flex: 0 1 auto; }', 'css narrowest brand shrink');
+  assertIncludes(cssNarrowest, '.brand-word { font-size: 19px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }', 'css narrowest brand label truncation');
+  assertIncludes(cssNarrowest, '.self-heal-pill { display: none; }', 'css narrowest self-heal pill hidden');
+  assertIncludes(cssNarrowest, '.connection { font-size: 11px; min-width: 0; flex: 0 1 auto; padding: 6px 8px; }', 'css narrowest connection shrink');
+  assertIncludes(cssNarrowest, '#connection-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }', 'css narrowest connection text truncation');
   assertIncludes(cssNarrowest, '.drawer-toolbar { --drawer-gutter: 16px; }', 'css narrowest status gutter');
   assertIncludes(cssNarrowest, '.check-item { grid-template-columns: minmax(0, 1fr); row-gap: 6px; }', 'css narrowest stacked checklist row');
   assertIncludes(cssNarrowest, '.task-controls { grid-row: 1; width: 100%; flex-wrap: wrap; justify-content: flex-start; }', 'css narrowest fixed control row');
@@ -1108,6 +1115,62 @@ function loadAddChecklistTaskRunner(options = {}) {
   return { addChecklistTask, calls, apiCalls, appended, composed, dom };
 }
 
+function loadRefreshTaskInsertAfterRunner(options = {}) {
+  const source = fs.readFileSync(path.join(REPO_ROOT, 'public/app.js'), 'utf8');
+  const refreshSource = extractFunction(source, 'function refreshTaskInsertAfterOptions()');
+  const tasks = options.tasks || [
+    { index: 0, text: 'First incomplete task', checked: false },
+    { index: 1, text: 'Done alpha task', checked: true },
+    { index: 2, text: 'Second incomplete task', checked: false },
+    { index: 3, text: 'Done beta task', checked: true }
+  ];
+  const select = {
+    innerHTML: '',
+    value: options.previous === undefined ? '' : String(options.previous),
+    hidden: true
+  };
+  const dom = {
+    taskInsertAfter: select,
+    taskInsertPosition: { value: options.position === undefined ? 'after' : options.position }
+  };
+  const app = { currentPlan: { tasks } };
+  const factory = new Function(
+    'app',
+    'dom',
+    'taskSnippet',
+    'esc',
+    `${refreshSource}\nreturn refreshTaskInsertAfterOptions;`
+  );
+  const refresh = factory(
+    app,
+    dom,
+    (text) => String(text || '').trim().split(/\s+/).slice(0, 5).join(' '),
+    (text) => String(text)
+  );
+  return { refresh, select, app, dom };
+}
+
+async function testRefreshTaskInsertAfterFiltersCompleted() {
+  const filteredRunner = loadRefreshTaskInsertAfterRunner({ previous: '1' });
+  await filteredRunner.refresh();
+  const html = filteredRunner.select.innerHTML;
+  assert.ok(html.startsWith('<option value="">After which task</option>'), 'insert-after placeholder stays first');
+  assertIncludes(html, '<option value="0">First incomplete task</option>', 'incomplete task 0 listed');
+  assertIncludes(html, '<option value="2">Second incomplete task</option>', 'incomplete task 2 listed');
+  assert.ok(!html.includes('value="1"'), 'completed task 1 excluded from options');
+  assert.ok(!html.includes('value="3"'), 'completed task 3 excluded from options');
+  assertEqual(filteredRunner.select.value, '', 'stale selection on completed task resets to placeholder');
+  assertEqual(filteredRunner.select.hidden, false, 'select visible for after position');
+
+  const keptRunner = loadRefreshTaskInsertAfterRunner({ previous: '2' });
+  await keptRunner.refresh();
+  assertEqual(keptRunner.select.value, '2', 'previous selection on incomplete task preserved');
+
+  const lastRunner = loadRefreshTaskInsertAfterRunner({ position: 'last' });
+  await lastRunner.refresh();
+  assertEqual(lastRunner.select.hidden, true, 'select stays hidden for non-after position');
+}
+
 async function testAddChecklistTaskLinkDocSuccess() {
   const runner = loadAddChecklistTaskRunner({ checked: true, docFile: '', title: 'Task link checkbox' });
   await runner.addChecklistTask();
@@ -1480,6 +1543,7 @@ async function main() {
     await testAddChecklistTaskLinkDocSuccess();
     await testAddChecklistTaskUnchecked();
     await testAddChecklistTaskInsertPositions();
+    await testRefreshTaskInsertAfterFiltersCompleted();
     testLinkPlanReferences();
     testTaskLinkDocStateFunctions();
 
