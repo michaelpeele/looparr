@@ -171,6 +171,9 @@ function ensureRuntime(project) {
       // autoResume.RESUME_RETRY_LIMIT); the sanitized previous step output is
       // consumed once as prior-step prompt context. Both reset per restart.
       resumeRetryCount: 0,
+      // Bounded auto-requeue budget for transient SIGKILL/OOM/resource kills.
+      // Persisted in the checkpoint; reset by a manual Retry/Start.
+      transientKillRetryCount: 0,
       resumePriorStepOutput: '',
       resumeRetryLogDigest: readResumeRetryLogDigest(project),
       icon: null,
@@ -238,7 +241,7 @@ function findProject(id) {
 
 const rotationStore = require('./rotation-store');
 const authFailures = require('./auth-failures');
-const { classifyFailure } = require('./failure');
+const { classifyFailure, isTransientKill } = require('./failure');
 
 // Opt-in error recovery: a non-looparr project whose step ends in error queues
 // exactly one 'recover' session per unique error fingerprint instead of parking
@@ -871,6 +874,7 @@ function snapshotRuntime(project, rt) {
   if (typeof rt.stepOutput === 'string' && rt.stepOutput) snapshot.stepOutput = rt.stepOutput;
   if (Number.isInteger(rt.modelIndex) && rt.modelIndex >= 0) snapshot.modelIndex = rt.modelIndex;
   if (Number.isInteger(rt.resumeRetryCount) && rt.resumeRetryCount >= 0) snapshot.resumeRetryCount = rt.resumeRetryCount;
+  if (Number.isInteger(rt.transientKillRetryCount) && rt.transientKillRetryCount >= 0) snapshot.transientKillRetryCount = rt.transientKillRetryCount;
   if (typeof rt.modelAttemptRunKey === 'string' && rt.modelAttemptRunKey) snapshot.modelAttemptRunKey = rt.modelAttemptRunKey;
   if (typeof rt.rateLimitBackoffKey === 'string' && rt.rateLimitBackoffKey) snapshot.rateLimitBackoffKey = rt.rateLimitBackoffKey;
   if (Number.isFinite(rt.cooloffUntil) && rt.cooloffUntil > 0) snapshot.cooloffUntil = rt.cooloffUntil;
@@ -2039,6 +2043,8 @@ function start(id, options = {}) {
     // an exhausted budget strands the project in the restart-blocking "already
     // retried once" state forever, because no operator action can clear it.
     rt.resumeRetryCount = 0;
+    // A manual Retry/Start also re-arms the transient-kill auto-requeue budget.
+    rt.transientKillRetryCount = 0;
     rt.resumeRetryLogDigest = '';
     clearResumeRetryLogDigest(project);
     authFailures.clear();
@@ -2936,11 +2942,53 @@ function redactedOutputTail(output, limit = 4000) {
 
 // Failure containment (R6): keep branch and worktree, surface a redacted
 // error, park the project in error so the pipeline does not advance blindly.
-function sprintRunFailed(project, rt, entry, message, tail) {
+// A transient SIGKILL/OOM/resource kill (`failure.transient`) auto-requeues with
+// bounded backoff instead of parking, unless the text is also a terminal
+// auth/billing/permission failure (isTransientKill returns false) or the bound is
+// reached. Branch and worktree are preserved on every path; no removeWorktree.
+function sprintRunFailed(project, rt, entry, message, tail, failure) {
   entry.status = 'failed';
   entry.exitCode = entry.exitCode == null ? 1 : entry.exitCode;
   entry.endedAt = Date.now();
   const redacted = autoResume.redactText(message, 500);
+  const transientCurrent = Number.isInteger(rt.transientKillRetryCount) ? rt.transientKillRetryCount : 0;
+  if (failure && failure.transient === true && isTransientKill(redacted)
+    && transientCurrent < autoResume.TRANSIENT_KILL_RETRY_LIMIT) {
+    const attempt = transientCurrent + 1;
+    rt.transientKillRetryCount = attempt;
+    rt.error = '';
+    rt.status = 'idle';
+    rt.active = true;
+    rt.resumeAt = Date.now() + autoResume.TRANSIENT_KILL_COOLDOWN_MS;
+    releaseWorkerSlots(rt);
+    // Keep the killed branch/worktree for review; requeue a fresh pending entry
+    // so the retry cuts a new -N suffixed branch via the normal start path.
+    if (entry.taskIndex != null) {
+      rt.sprintPending.push({
+        runKey: entry.runKey,
+        taskIndex: entry.taskIndex,
+        taskText: entry.taskText,
+        sprint: entry.sprint,
+        mergePrevious: entry.mergePrevious,
+        deployMain: entry.deployMain,
+        prompt: entry.prompt
+      });
+    }
+    if (!rt.currentTask) rt.currentTask = entry.taskText || '';
+    appendLog(project.id, 'system', `✖ ${redacted}`);
+    appendLog(
+      project.id,
+      'system',
+      `↻ Auto-requeue after transient kill (attempt ${attempt}/${autoResume.TRANSIENT_KILL_RETRY_LIMIT}); `
+      + `cooldown ${Math.round(autoResume.TRANSIENT_KILL_COOLDOWN_MS / 60000)}m. `
+      + `Branch ${entry.branch} and worktree kept for review.`
+    );
+    gitStateCache.delete(project.id);
+    emitState();
+    // Persist the counter and cooldown so a restart cannot widen the bound.
+    writeCheckpointIntent(project, rt);
+    return;
+  }
   rt.error = redacted;
   rt.status = 'error';
   rt.active = false;
@@ -2960,10 +3008,11 @@ function sprintRunFailed(project, rt, entry, message, tail) {
 // cgroup kill of the agent CLI. This is separate from model-rotation failure
 // classification; sprint failures must keep the branch and worktree for review.
 function sprintExitFailure(code, signal) {
-  if (code === 0) return { killed: false, exitCode: 0, message: '' };
+  if (code === 0) return { killed: false, transient: false, exitCode: 0, message: '' };
   if (code === 137 || signal === 'SIGKILL') {
     return {
       killed: true,
+      transient: true,
       exitCode: code == null ? 137 : code,
       message: 'Sprint implement killed by SIGKILL (exit 137) — likely OOM or a resource/cgroup kill of the agent CLI. Reduce memory pressure or raise the limit, then resume.'
     };
@@ -2971,6 +3020,7 @@ function sprintExitFailure(code, signal) {
   const signalSuffix = signal ? ` (signal ${signal})` : '';
   return {
     killed: false,
+    transient: false,
     exitCode: code,
     message: `Sprint implement exited with code ${code}${signalSuffix}`
   };
@@ -3121,7 +3171,7 @@ function startSprintRun(project, rt, entry, options = {}) {
     const failure = sprintExitFailure(code, signal);
     entry.exitCode = failure.exitCode;
     if (code === 0) finishSprintRun(project, rt, entry);
-    else sprintRunFailed(project, rt, entry, failure.message, entry.output);
+    else sprintRunFailed(project, rt, entry, failure.message, entry.output, failure);
   });
   emitState();
   return true;
@@ -3257,6 +3307,9 @@ function pumpSprintWork(project, rt, capacity, options = {}) {
   if (settings.mode === 'off') return 0;
   if (!rt.active || rt.paused || rt.status === 'error' || rt.status === 'done') return 0;
   if (WAITING_STATUSES.has(rt.status)) return 0;
+  // Honor a pending cooldown (transient-kill requeue backoff or rate-limit):
+  // tick clears a due resumeAt before pumping, so a set value means "not yet".
+  if (rt.resumeAt && Date.now() < rt.resumeAt) return 0;
   let started = 0;
   const busyChildren = rt.sprintRuns.filter((run) => run.child).length;
   if (!rt.sprintValidation && busyChildren === 0 && !options.skipValidation) {
@@ -4160,6 +4213,11 @@ async function resumeOnStart() {
           && snap.resumeRetryCount <= autoResume.RESUME_RETRY_LIMIT) {
           rt.resumeRetryCount = snap.resumeRetryCount;
         }
+        if (Number.isInteger(snap.transientKillRetryCount)
+          && snap.transientKillRetryCount >= 0
+          && snap.transientKillRetryCount <= autoResume.TRANSIENT_KILL_RETRY_LIMIT) {
+          rt.transientKillRetryCount = snap.transientKillRetryCount;
+        }
         if (Number.isInteger(snap.modelIndex) && snap.modelIndex >= 0) rt.modelIndex = snap.modelIndex;
         if (typeof snap.modelAttemptRunKey === 'string') rt.modelAttemptRunKey = snap.modelAttemptRunKey;
         if (typeof snap.rateLimitBackoffKey === 'string') rt.rateLimitBackoffKey = snap.rateLimitBackoffKey;
@@ -4207,6 +4265,44 @@ async function resumeOnStart() {
         rt.resumeSessionId = '';
         if (sessionId && sessionUsable) sessionCause = 'session-missing';
         emitState();
+      } else if (intent.status === 'error' && isTransientKill(intent.error)) {
+        // Transient SIGKILL/OOM/resource kill restored from an error checkpoint:
+        // auto-requeue with bounded backoff instead of parking. Terminal
+        // auth/billing/permission text never reaches here (isTransientKill is
+        // false for it), so those keep the RESUME_RETRY_LIMIT behavior below.
+        if (rt.transientKillRetryCount < autoResume.TRANSIENT_KILL_RETRY_LIMIT) {
+          rt.transientKillRetryCount += 1;
+          rt.resumeAt = Date.now() + autoResume.TRANSIENT_KILL_COOLDOWN_MS;
+          rt.status = 'idle';
+          rt.error = '';
+          rt.resumeSessionId = '';
+          rt.opencodeSessionId = '';
+          rt.resumePriorStepOutput = '';
+          sessionCause = `transient-kill-requeue=${rt.transientKillRetryCount}`;
+          appendLog(
+            project.id,
+            'system',
+            `↻ Auto-requeue after transient kill on restart (attempt ${rt.transientKillRetryCount}/${autoResume.TRANSIENT_KILL_RETRY_LIMIT}); `
+            + `cooldown ${Math.round(autoResume.TRANSIENT_KILL_COOLDOWN_MS / 60000)}m.`
+          );
+          emitState();
+        } else {
+          // Bound reached across restarts: park in error for the operator.
+          rt.resumeAt = null;
+          rt.status = 'error';
+          rt.active = false;
+          rt.error = (typeof intent.error === 'string' && intent.error.trim())
+            ? intent.error
+            : 'sprint implement repeatedly killed by SIGKILL/OOM';
+          rt.currentTask = taskText;
+          rt.nextPhase = phase;
+          rt.resumeSessionId = '';
+          rt.opencodeSessionId = '';
+          rt.resumePriorStepOutput = '';
+          sessionCause = 'transient-kill-exhausted';
+          appendLog(project.id, 'system', '✖ Sprint implement repeatedly killed by SIGKILL/OOM; use the project Retry/Start control after resolving the error.');
+          emitState();
+        }
       } else if (intent.status === 'error' && rt.resumeRetryCount >= autoResume.RESUME_RETRY_LIMIT) {
         // Retry bound reached across restarts: never start another runner.
         // Preserve the error state so the operator sees and resolves it.
@@ -4368,5 +4464,6 @@ module.exports = {
   sprintTaskBranchesInOrder,
   startedTaskIndexes,
   mergeSprintBranches,
-  sprintExitFailure
+  sprintExitFailure,
+  sprintRunFailed
 };

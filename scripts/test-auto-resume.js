@@ -543,7 +543,8 @@ function testSnapshotFields(engine) {
       stepTask: { index: 3, text: 'Implement the snapshot' },
       stepOutput: `boom https://secret.example/path token=abcd1234 Bearer live-token-99 ${'y'.repeat(4200)}`,
       planPhaseSnapshot: { taskText: 'Implement the snapshot', foo: 'bar' },
-      resumeRetryCount: 1
+      resumeRetryCount: 1,
+      transientKillRetryCount: 2
     };
     const written = engine.writeCheckpointIntent(project, rt);
     assert.equal(written, true, 'error checkpoint writes');
@@ -558,6 +559,9 @@ function testSnapshotFields(engine) {
     assert.equal(checked.intent.snapshot.resumeSessionId, 'ses_snapshot123', 'snapshot resumeSessionId');
     assert.equal(checked.intent.opencodeSessionId, 'ses_opencode123', 'snapshot opencodeSessionId');
     assert.equal(checked.intent.snapshot.resumeRetryCount, 1, 'snapshot retry count');
+    assert.equal(checked.intent.snapshot.transientKillRetryCount, 2, 'snapshot transient-kill count');
+    assert.equal(autoResume.TRANSIENT_KILL_RETRY_LIMIT, 3, 'transient-kill bound defined once in auto-resume');
+    assert.equal(autoResume.TRANSIENT_KILL_COOLDOWN_MS, 5 * 60 * 1000, 'transient-kill cooldown defined');
     assert.equal(checked.intent.snapshot.stepTask.index, 3, 'snapshot stepTask index');
     assert.deepEqual(checked.intent.snapshot.rotationCursor, { 'model-a': 1, 'model-b': 2 }, 'snapshot rotationCursor');
     assert.ok(!checked.intent.snapshot.stepOutput.includes('abcd1234'), 'snapshot stepOutput redacts token');
@@ -570,6 +574,13 @@ function testSnapshotFields(engine) {
     assert.equal(autoResume.sanitizeSnapshot({ resumeRetryCount: 0.5 }), undefined, 'non-integer retry count omitted');
     assert.equal(autoResume.sanitizeSnapshot({ resumeRetryCount: -1 }), undefined, 'negative retry count omitted');
     assert.equal(autoResume.sanitizeSnapshot({ resumeRetryCount: 7 }), undefined, 'over-limit retry count omitted');
+    // Transient-kill counter is bounded the same way.
+    assert.equal(autoResume.sanitizeSnapshot({ transientKillRetryCount: 2 }).transientKillRetryCount, 2, 'in-range transient-kill count kept');
+    assert.equal(autoResume.sanitizeSnapshot({ transientKillRetryCount: 0 }).transientKillRetryCount, 0, 'zero transient-kill count kept');
+    assert.equal(autoResume.sanitizeSnapshot({ transientKillRetryCount: 3 }).transientKillRetryCount, 3, 'at-limit transient-kill count kept');
+    assert.equal(autoResume.sanitizeSnapshot({ transientKillRetryCount: 0.5 }), undefined, 'non-integer transient-kill count omitted');
+    assert.equal(autoResume.sanitizeSnapshot({ transientKillRetryCount: -1 }), undefined, 'negative transient-kill count omitted');
+    assert.equal(autoResume.sanitizeSnapshot({ transientKillRetryCount: 4 }), undefined, 'over-limit transient-kill count omitted');
 
     const raw = fs.readFileSync(autoResume.statePath(project), 'utf8');
     assertNoSecrets(raw, 'snapshot file');
@@ -1299,6 +1310,106 @@ async function main() {
   assertEqual(rearmFinal.active, false, 'spent rearmed budget starts no runner');
   assertEqual(rearmFinal.status, 'error', 'spent rearmed budget stays in error');
   assert.equal(readPrompts(retryArm).length, rearmFinalPromptCount, 'rearmed retry never loops unboundedly');
+
+  // 13d-2. Transient SIGKILL/OOM kills auto-requeue with bounded backoff across
+  // restarts instead of parking; the transient budget preempts the resume-retry
+  // budget; terminal auth/billing text still parks; manual Retry clears both.
+  const transientKillMessage = 'Sprint implement killed by SIGKILL (exit 137) — likely OOM or a resource/cgroup kill of the agent CLI. Reduce memory pressure or raise the limit, then resume.';
+  const transientProject = await createProjectViaApi('transient-kill-resume', true);
+  const transientPidPath = path.join(transientProject.path, '.looparr', 'fake-child.pid');
+  const writeTransientErrorIntent = (error, snapshotOverrides) => {
+    writeIntentFor(transientProject.id, {
+      nextPhase: 'implement',
+      status: 'error',
+      currentTask: transientProject.task,
+      error,
+      snapshot: {
+        stepTask: { index: 2, text: transientProject.task },
+        ...snapshotOverrides
+      }
+    });
+  };
+
+  // Below the bound: requeue with cooldown, non-error, no runner yet. The
+  // resume-retry budget is already exhausted, proving the transient path wins.
+  fs.rmSync(RESTART_CONTINUE_TEST_FILE, { force: true });
+  writeTransientErrorIntent(transientKillMessage, {
+    resumeRetryCount: autoResume.RESUME_RETRY_LIMIT,
+    transientKillRetryCount: 0
+  });
+  const transientPromptsBefore = readPrompts(transientProject).length;
+  server = await restartServer(server, true);
+  const transientRequeued = findProject(await getState(), transientProject.id);
+  assertEqual(transientRequeued.active, true, 'transient kill below bound stays active');
+  assert.notEqual(transientRequeued.status, 'error', 'transient kill below bound is non-error');
+  assert.ok(
+    transientRequeued.resumeAt >= Date.now() + autoResume.TRANSIENT_KILL_COOLDOWN_MS - 2000,
+    'transient requeue sets a cooldown ahead'
+  );
+  assert.ok(
+    readAudit(transientProject.id).some(
+      (entry) => entry.event === 'resume-on-start' && String(entry.cause || '').includes('transient-kill-requeue=1')
+    ),
+    'transient requeue audited (not the resume-retry path)'
+  );
+  await delay(300);
+  assert.equal(readPrompts(transientProject).length, transientPromptsBefore, 'cooldown gates the runner on restart');
+
+  // Manual Retry clears both budgets and starts a fresh run.
+  await startAndWait(transientProject.id);
+  const transientPid = await waitForChildPid(projectById(transientProject.id));
+  let transientCheckpoint = null;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const checked = autoResume.readIntent(projectById(transientProject.id));
+    if (checked.ok && checked.intent.reason === 'checkpoint') { transientCheckpoint = checked.intent; break; }
+    await delay(50);
+  }
+  assert.ok(transientCheckpoint, 'transient manual Retry writes a fresh checkpoint');
+  assert.equal(transientCheckpoint.snapshot.transientKillRetryCount, 0, 'manual Retry resets the transient-kill budget');
+  assert.equal(transientCheckpoint.snapshot.resumeRetryCount, 0, 'manual Retry resets the resume-retry budget');
+
+  await stopAllProjects();
+  await waitForPidGone(transientPid);
+  fs.rmSync(transientPidPath, { force: true });
+
+  // At the bound across a restart: parks in error with the operator log line.
+  const transientParkPrompts = readPrompts(transientProject).length;
+  writeTransientErrorIntent(transientKillMessage, {
+    resumeRetryCount: 0,
+    transientKillRetryCount: autoResume.TRANSIENT_KILL_RETRY_LIMIT
+  });
+  server = await restartServer(server, true);
+  const transientParked = findProject(await getState(), transientProject.id);
+  assertEqual(transientParked.active, false, 'transient kill at the bound starts no runner');
+  assertEqual(transientParked.status, 'error', 'transient kill at the bound parks in error');
+  assert.ok(
+    (transientParked.logs || []).some((entry) => String(entry.text).includes('repeatedly killed by SIGKILL/OOM')),
+    'operator log line present at the bound'
+  );
+  assert.ok(
+    !readAudit(transientProject.id).some(
+      (entry) => entry.event === 'resume-on-start' && String(entry.cause || '').includes('transient-kill-requeue')
+    ),
+    'no requeue at the bound'
+  );
+  assert.equal(readPrompts(transientProject).length, transientParkPrompts, 'no runner at the bound');
+
+  // Terminal auth/billing text that mentions kill words still parks (never
+  // auto-requeued), keeping the existing resume-retry behavior byte-for-byte.
+  writeTransientErrorIntent('401 unauthorized: killed by OOM (exit 137) invalid api key', {
+    resumeRetryCount: autoResume.RESUME_RETRY_LIMIT,
+    transientKillRetryCount: 0
+  });
+  server = await restartServer(server, true);
+  const terminalKill = findProject(await getState(), transientProject.id);
+  assertEqual(terminalKill.status, 'error', 'terminal kill text parks');
+  assertEqual(terminalKill.active, false, 'terminal kill text starts no runner');
+  assert.ok(
+    !readAudit(transientProject.id).some(
+      (entry) => entry.event === 'resume-on-start' && String(entry.cause || '').includes('transient-kill-requeue')
+    ),
+    'terminal kill text is never auto-requeued'
+  );
 
   // 13e. Snapshot-free degrades and session handling.
   const planMismatchProject = await createProjectViaApi('plan-write-mismatch', true);

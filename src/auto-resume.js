@@ -82,6 +82,10 @@ const SNAPSHOT_MAX_STEP_OUTPUT = 4000;
 // Restored errored snapshots re-run exactly once across restarts. Defined once
 // here; engine.js imports it instead of duplicating the bound.
 const RESUME_RETRY_LIMIT = 1;
+// Transient SIGKILL/OOM/resource kills auto-requeue with bounded backoff instead
+// of parking for operator action. Defined once here; engine.js imports them.
+const TRANSIENT_KILL_RETRY_LIMIT = 3;
+const TRANSIENT_KILL_COOLDOWN_MS = 5 * 60 * 1000;
 const SNAPSHOT_MAX_ROTATION_ENTRIES = 50;
 const SNAPSHOT_MAX_PLAN_KEYS = 20;
 const SNAPSHOT_MAX_PLAN_STRING = 500;
@@ -127,6 +131,14 @@ function sanitizeSnapshot(input) {
     && input.resumeRetryCount >= 0
     && input.resumeRetryCount <= RESUME_RETRY_LIMIT) {
     out.resumeRetryCount = input.resumeRetryCount;
+  }
+  // Bounded transient-kill retry counter: only finite integers in
+  // [0, TRANSIENT_KILL_RETRY_LIMIT] survive, so a crashed loop cannot widen the
+  // bound via the checkpoint. Absent field stays backward compatible (default 0).
+  if (Number.isInteger(input.transientKillRetryCount)
+    && input.transientKillRetryCount >= 0
+    && input.transientKillRetryCount <= TRANSIENT_KILL_RETRY_LIMIT) {
+    out.transientKillRetryCount = input.transientKillRetryCount;
   }
   if (typeof input.modelAttemptRunKey === 'string' && input.modelAttemptRunKey.trim()) {
     out.modelAttemptRunKey = input.modelAttemptRunKey.trim().slice(0, 128);
@@ -349,6 +361,8 @@ module.exports = {
   PHASES,
   REASONS,
   RESUME_RETRY_LIMIT,
+  TRANSIENT_KILL_RETRY_LIMIT,
+  TRANSIENT_KILL_COOLDOWN_MS,
   shouldCaptureResumeIntent,
   statePath,
   logPath,

@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const { classifyFailure } = require('../src/failure');
+const { classifyFailure, isTransientKill } = require('../src/failure');
 
 const isRateLimit = (text) => /\b429\b|rate[ _-]?limit/i.test(String(text));
 
@@ -27,4 +27,36 @@ for (const [expected, text, options] of cases) {
   assert.equal(classifyFailure(text, options), expected, `classify ${JSON.stringify(text)}`);
 }
 
-console.log(`failure classification: ${cases.length} cases matched.`);
+// isTransientKill: SIGKILL / exit 137 / OOM / cgroup-kill phrasings are
+// retryable transient kills; terminal auth/billing/permission text always wins.
+const sprintKillMessage = 'Sprint implement killed by SIGKILL (exit 137) — likely OOM or a resource/cgroup kill of the agent CLI. Reduce memory pressure or raise the limit, then resume.';
+const transientCases = [
+  sprintKillMessage,
+  'process killed by SIGKILL',
+  'Sprint implement exited with code 137',
+  'exit 137',
+  'JavaScript heap out of memory',
+  'OOMKilled: container exceeded memory limit',
+  'cgroup memory limit exceeded, killed by kernel',
+  'resource/cgroup kill of the agent CLI'
+];
+for (const text of transientCases) {
+  assert.equal(isTransientKill(text), true, `transient kill ${JSON.stringify(text)}`);
+}
+
+const terminalKillCases = [
+  '401 unauthorized: killed by OOM after SIGKILL',
+  'invalid api key (exit 137 SIGKILL)',
+  'billing subscription required; process OOM killed',
+  '403 forbidden cgroup kill'
+];
+for (const text of terminalKillCases) {
+  assert.equal(isTransientKill(text), false, `terminal wins ${JSON.stringify(text)}`);
+}
+
+const nonKillCases = ['', 'handoff missing', 'Sprint implement exited with code 1', 'rate limit exceeded'];
+for (const text of nonKillCases) {
+  assert.equal(isTransientKill(text), false, `non-kill ${JSON.stringify(text)}`);
+}
+
+console.log(`failure classification: ${cases.length} classify cases + ${transientCases.length + terminalKillCases.length + nonKillCases.length} transient-kill cases matched.`);

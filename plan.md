@@ -17,6 +17,10 @@ Stale production assets have shipped three times. For every batch that changes s
 - [x] Correct splitarr error
 - [x] Make promotion idempotent and observable — see [PLAN-idempotent-promotion.md](.project_documents/PLAN-idempotent-promotion.md). Automatable scope: known promotion log/status artifact, pre-promote evidence check (skip rebuild when current source hashes already deployed + container healthy + `/api/state` OK), bounded compose phase logging/journal capture, lock release on timeout/failure, watchdog-aware recovery hook, and focused tests. No manual UI gates.
 
+## Auto-requeue transient runner kills
+
+- [x] Auto-requeue SIGKILL/OOM failures instead of parking for operator action. Current behavior: `sprintExitFailure` labels exit 137/SIGKILL correctly, but restored `error` checkpoints get one bounded retry (`RESUME_RETRY_LIMIT = 1`), then stay `error`/`active=false`, are excluded from `eligibleProjects`, and log `✖ Errored resume already retried once; use the project Retry/Start control after resolving the error.`. The operator is the human owner clicking project Retry/Start (`POST /api/projects/:id/start` → `engine.start(..., { manual: true })`), not a background daemon. Add a retryable transient-kill class for SIGKILL/exit 137/OOM/resource-cgroup kills; auto-requeue those runs with bounded backoff/cooldown and a checkpoint-persisted retry count; preserve branch/worktree for review. Keep auth, billing, and permission failures terminal, and keep manual Retry able to clear the budget. Extend `scripts/test-sprint-kill.js`, `scripts/test-failure-classification.js`, and `scripts/test-auto-resume.js` for repeated kill retries, bound/cooldown behavior, and terminal-error guards. Verify with focused tests, `npm test`, `git diff --check`, then production per lines 3-11 before marking complete.
+
 ## Hosted deployment baseline
 
 - [x] Test with a task at item 1 with 8 items complete and then task 10. If I hit single up arrow it should move 10 to position 1, it is moving it to position 9 so I have to click many times. Same behavior in the opposite direction
