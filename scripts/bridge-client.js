@@ -5,6 +5,17 @@ const https = require('https');
 
 const MAX_RUN_KEY_LENGTH = 128;
 const RUN_KEY_PATTERN = /^[A-Za-z0-9._:-]+$/;
+const CONNECT_RETRY_WINDOW_MS = readPositiveInt(process.env.LOOPARR_EXECUTOR_CONNECT_RETRY_MS, 10000);
+const CONNECT_RETRY_DELAY_MS = readPositiveInt(process.env.LOOPARR_EXECUTOR_CONNECT_RETRY_DELAY_MS, 250);
+
+function readPositiveInt(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function validateRunKey(value) {
   if (typeof value !== 'string' || !value || value.length > MAX_RUN_KEY_LENGTH || !RUN_KEY_PATTERN.test(value)) {
@@ -45,6 +56,24 @@ function requestRun(executorUrl, token, payload) {
     req.on('error', reject);
     req.end(body);
   });
+}
+
+async function requestRunWithConnectRetry(executorUrl, token, payload) {
+  const deadline = Date.now() + CONNECT_RETRY_WINDOW_MS;
+  for (;;) {
+    try {
+      return await requestRun(executorUrl, token, payload);
+    } catch (error) {
+      const retryable = error && error.code === 'ECONNREFUSED';
+      if (!retryable || Date.now() >= deadline) {
+        if (retryable) {
+          throw new Error(`executor connection failed after ${CONNECT_RETRY_WINDOW_MS}ms: ${error.message}`);
+        }
+        throw error;
+      }
+      await wait(Math.min(CONNECT_RETRY_DELAY_MS, deadline - Date.now()));
+    }
+  }
 }
 
 function cancelExecutorRun(executorUrl, token, payload) {
@@ -99,7 +128,7 @@ async function main() {
   process.once('SIGTERM', () => { shutdown('SIGTERM'); });
   process.once('SIGINT', () => { shutdown('SIGINT'); });
 
-  const response = await requestRun(executorUrl, token, { ...payload, runKey });
+  const response = await requestRunWithConnectRetry(executorUrl, token, { ...payload, runKey });
   response.setEncoding('utf8');
 
   let buffer = '';
