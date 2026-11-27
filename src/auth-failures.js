@@ -21,13 +21,21 @@ const HINTS = {
 };
 
 // Runner transcripts echo prompts and logs as structured JSON. Auth words in
-// those records are conversation data, not CLI auth failures.
+// those records are conversation data, not CLI auth failures. Records can be
+// whole lines, embedded after a prefix, pretty-printed, or truncated.
 const TRANSCRIPT_TYPES = new Set([
-  'tool_use', 'tool_result', 'effect', 'message', 'step', 'result', 'user', 'assistant'
+  'tool_use', 'tool_result', 'effect', 'message', 'step', 'result', 'user', 'assistant', 'reasoning'
 ]);
 const TRANSCRIPT_KEYS = [
   'sessionID', 'sessionId', 'turnId', 'messageID', 'partID', 'inputEntryId', 'part'
 ];
+const TRANSCRIPT_MARKER_RE = new RegExp(
+  `"(?:${TRANSCRIPT_KEYS.join('|')})"\\s*:`
+  + `|"type"\\s*:\\s*"(?:${[...TRANSCRIPT_TYPES].join('|')})"`
+  + '|"role"\\s*:\\s*"(?:user|assistant)"',
+  'i'
+);
+const ANSI_RE = /\u001B\[[0-?]*[ -/]*[@-~]|\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)/g;
 
 function emptyState() {
   return { version: 1, failures: {} };
@@ -62,21 +70,60 @@ function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
-function isStructuredLogLine(line) {
-  const trimmed = String(line || '').trim();
-  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return false;
-  let parsed;
-  try { parsed = JSON.parse(trimmed); } catch { return false; }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
-  if (TRANSCRIPT_TYPES.has(String(parsed.type || '').toLowerCase())) return true;
-  return TRANSCRIPT_KEYS.some((key) => Object.prototype.hasOwnProperty.call(parsed, key));
+function stripAnsi(value) {
+  return String(value || '').replace(ANSI_RE, '');
+}
+
+function jsonSpanEnd(text, start) {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\') { escaped = true; continue; }
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === '{') { depth += 1; continue; }
+    if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return i + 1;
+    }
+  }
+  // Truncated tail: drop it too when it is clearly a transcript record.
+  return text.length;
+}
+
+function transcriptSpans(text) {
+  const spans = [];
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== '{') continue;
+    const end = jsonSpanEnd(text, i);
+    if (end <= i) continue;
+    const raw = text.slice(i, end);
+    if (TRANSCRIPT_MARKER_RE.test(raw)) {
+      spans.push({ start: i, end });
+      i = end - 1;
+    }
+  }
+  return spans;
 }
 
 function authRelevantText(text) {
-  return String(text || '')
-    .split(/\r?\n/)
-    .filter((line) => !isStructuredLogLine(line))
-    .join('\n');
+  const cleaned = stripAnsi(text);
+  const spans = transcriptSpans(cleaned);
+  if (!spans.length) return cleaned;
+  let kept = '';
+  let cursor = 0;
+  for (const span of spans) {
+    if (span.start < cursor) continue;
+    kept += `${cleaned.slice(cursor, span.start)}\n`;
+    cursor = span.end;
+  }
+  return kept + cleaned.slice(cursor);
 }
 
 function looksLikeFetchedHtml(text) {
