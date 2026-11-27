@@ -281,6 +281,10 @@ Why: Scriptable on iOS uses native image decoding. It cannot decode SVG (`image/
 - [x] Add option to archive current plan.md come up with button options and suggest placement options
 - [x] Change start to a play icon, pause to pause icon, stop to stop sign, remove to red trash can, add a + button that opens an add task model with the same options from project detail page
 
+## Temporary worktree artifact review
+
+- [x] Evaluate untracked test artifacts in `.looparr/worktrees/verify-merged` from `.tmp-auto-resume-test/` and `.tmp-rate-limit-success-guard-test/`. Compare each artifact against the main checkout copies, keep what is new, and merge good updates into the main checkout. Discard only duplicates and stale outputs after review. Then purge the detached `.looparr/worktrees/verify-merged` worktree with `git worktree remove --force` and confirm `git worktree list` shows only the main worktree. Do not delete branches.
+
 ## Client sign-in card
 
 Split into four tasks so each slice is verifiable and promotable on its own. Design and rationale: [PLAN-auth-signin-card.md](.project_documents/PLAN-auth-signin-card.md). Executable steps: [PLAN-auth-signin-card-steps.md](.project_documents/PLAN-auth-signin-card-steps.md) (preflight is step 0; do it once at the start of 01). Related: [AUTH_FAILURE_UI.md](AUTH_FAILURE_UI.md).
