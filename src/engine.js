@@ -1922,11 +1922,13 @@ function maxWorkers() {
   return Math.max(1, Math.floor(value));
 }
 
-function start(id) {
+function start(id, options = {}) {
   const project = findProject(id);
   if (!project) return false;
   const rt = ensureRuntime(project);
-  if (rt.status === 'rateLimited' && rt.resumeAt && Date.now() < rt.resumeAt) return true;
+  // Only auto-resume (non-manual) starts honor the rate-limit backoff; a manual
+  // Retry must clear it immediately so the countdown cannot strand the project.
+  if (!options.manual && rt.status === 'rateLimited' && rt.resumeAt && Date.now() < rt.resumeAt) return true;
   if (rt.status === 'done') {
     const plan = planLib.readPlan(project.path);
     if (plan.ok && !plan.next) return true;

@@ -58,10 +58,12 @@ function findProject(projects, needle) {
   ) || null;
 }
 
-// With no parameter the widget tracks whatever is happening: a running project,
-// then one waiting on a rate limit, then the first card.
+// With no parameter the widget tracks whatever is happening: a genuinely running
+// project, then one waiting on a rate limit, then the first card. Non-progressing
+// states (rate-limited/error/done) stay active-but-stuck, so they must not win
+// over a project that is actually making progress.
 function pickProject(projects) {
-  return projects.find((project) => project.active && !project.paused) ||
+  return projects.find((project) => project.active && !project.paused && project.status !== 'rateLimited' && project.status !== 'error' && project.status !== 'done') ||
     projects.find((project) => project.status === 'rateLimited') ||
     projects[0] ||
     null;

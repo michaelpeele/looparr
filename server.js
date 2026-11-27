@@ -616,7 +616,8 @@ app.delete('/api/projects/:id', (req, res) => {
 for (const action of ['start', 'pause', 'stop']) {
   app.post(`/api/projects/:id/${action}`, (req, res) => {
     if (!findProject(req.params.id)) return fail(res, 404, 'Project not found');
-    engine[action](req.params.id);
+    if (action === 'start') engine.start(req.params.id, { manual: true });
+    else engine[action](req.params.id);
     return res.json({ ok: true });
   });
 }

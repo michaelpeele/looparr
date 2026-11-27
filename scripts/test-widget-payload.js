@@ -62,12 +62,16 @@ assert.equal(widget.runnerModelText(project({ runner: '', effectiveRunners: '', 
 // Project resolution for the widget parameter, and the default selection order.
 const running = project({ id: 'running', name: 'Running', path: '/projects/running', status: 'implement', active: true });
 const limited = project({ id: 'limited', name: 'Limited', path: '/projects/limited', status: 'rateLimited' });
+// A rate-limited project stays active:true, so it must not outrank a project
+// that is genuinely progressing.
+const limitedActive = project({ id: 'limited-active', name: 'Limited Active', path: '/projects/limited-active', status: 'rateLimited', active: true });
 const idle = project({ id: 'idle', name: 'Idle', path: '/projects/idle' });
 
 assert.equal(widget.findProject([idle, limited], 'LIMITED').id, 'limited', 'match is case-insensitive');
 assert.equal(widget.findProject([idle], '/projects/idle/').id, 'idle', 'trailing slash tolerated');
 assert.equal(widget.findProject([idle], 'missing'), null, 'unknown project is null');
 assert.equal(widget.pickProject([idle, limited, running]).id, 'running', 'running wins by default');
+assert.equal(widget.pickProject([idle, limitedActive, running]).id, 'running', 'running wins over active rate-limited');
 assert.equal(widget.pickProject([idle, limited]).id, 'limited', 'then rate-limited');
 assert.equal(widget.pickProject([idle]).id, 'idle', 'then first');
 
