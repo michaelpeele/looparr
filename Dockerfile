@@ -9,6 +9,7 @@ ENV NODE_ENV=production \
 
 COPY package*.json ./
 RUN npm ci --omit=dev
+RUN apk add --no-cache git
 
 COPY server.js ./
 COPY src ./src
