@@ -2602,6 +2602,26 @@ function sprintRunFailed(project, rt, entry, message, tail) {
   emitState();
 }
 
+// Classify sprint child exits. Exit 137 is 128+SIGKILL, commonly an OOM or
+// cgroup kill of the agent CLI. This is separate from model-rotation failure
+// classification; sprint failures must keep the branch and worktree for review.
+function sprintExitFailure(code, signal) {
+  if (code === 0) return { killed: false, exitCode: 0, message: '' };
+  if (code === 137 || signal === 'SIGKILL') {
+    return {
+      killed: true,
+      exitCode: code == null ? 137 : code,
+      message: 'Sprint implement killed by SIGKILL (exit 137) — likely OOM or a resource/cgroup kill of the agent CLI. Reduce memory pressure or raise the limit, then resume.'
+    };
+  }
+  const signalSuffix = signal ? ` (signal ${signal})` : '';
+  return {
+    killed: false,
+    exitCode: code,
+    message: `Sprint implement exited with code ${code}${signalSuffix}`
+  };
+}
+
 function finishSprintRun(project, rt, entry, flags) {
   const repo = project.path;
   try {
@@ -2741,12 +2761,13 @@ function startSprintRun(project, rt, entry, options = {}) {
     entry.exitCode = 1;
     sprintRunFailed(project, rt, entry, `Sprint implement failed: ${error.message}`, entry.output);
   });
-  child.on('close', (code) => {
+  child.on('close', (code, signal) => {
     if (rt.token !== token) return;
     entry.child = null;
-    entry.exitCode = code;
+    const failure = sprintExitFailure(code, signal);
+    entry.exitCode = failure.exitCode;
     if (code === 0) finishSprintRun(project, rt, entry);
-    else sprintRunFailed(project, rt, entry, `Sprint implement exited with code ${code}`, entry.output);
+    else sprintRunFailed(project, rt, entry, failure.message, entry.output);
   });
   emitState();
   return true;
@@ -3945,5 +3966,6 @@ module.exports = {
   sprintSettingsFor,
   sprintTaskBranchesInOrder,
   startedTaskIndexes,
-  mergeSprintBranches
+  mergeSprintBranches,
+  sprintExitFailure
 };
