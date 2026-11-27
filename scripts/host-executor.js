@@ -25,6 +25,12 @@ const MAX_BODY_BYTES = 10 * 1024 * 1024;
 const MAX_RUN_KEY_LENGTH = 128;
 const RUN_KEY_PATTERN = /^[A-Za-z0-9._:-]+$/;
 const CHILD_TERMINATE_TIMEOUT_MS = 3000;
+const LOGIN_TIMEOUT_MS = 15 * 60 * 1000;
+const AUTH_LOG_MAX_LINES = 100;
+const AUTH_RAW_MAX_CHARS = 64 * 1024;
+const KILO_AUTH_METHOD = 'Kilo Gateway (Device Authorization)';
+const KILO_AUTH_URL_RE = /Go to:\s*(https:\/\/app\.kilo\.ai\/device-auth\?code=\S+)/;
+const KILO_AUTH_CODE_RE = /enter code:\s*(\S+)/;
 
 function loadDotEnv(file) {
   if (!fs.existsSync(file)) return;
@@ -118,6 +124,7 @@ try {
 
 const activeRuns = new Map();
 const replacingRuns = new Map();
+const authSessions = new Map();
 let attachFlag = null;
 let attachProbed = false;
 let serverPromise = null;
@@ -348,6 +355,248 @@ async function terminateEntry(entry) {
     child.kill('SIGKILL');
     await closed;
   }
+}
+
+function stripAnsi(text) {
+  return text
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, '')
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\u001b[@-_]/g, '');
+}
+
+// Remove anything that looks like credential material before it reaches a
+// browser. The device code is surfaced through the parsed `code` field, never
+// by dumping raw pty output.
+function redactTokens(text) {
+  return text
+    .replace(/\b(?:sk|pk|rk|ak)[-_][A-Za-z0-9]{8,}/g, '[redacted]')
+    .replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|bearer)\b\s*[:=]?\s*[A-Za-z0-9._-]{8,}/gi, '$1=[redacted]')
+    .replace(/\b[A-Za-z0-9._-]{40,}\b/g, '[redacted]');
+}
+
+function isSpinnerFrame(line) {
+  return /^\s*[\u280b\u280d\u2819\u2839\u283c\u2834\u2832\u2837\u2836\u2827\u25d0\u25d3\u25d1\u25d2]/.test(line);
+}
+
+function cleanLogLine(rawLine) {
+  let line = stripAnsi(rawLine).replace(/\u0008/g, '');
+  line = redactTokens(line).replace(/\s+$/g, '');
+  if (!line.trim()) return '';
+  if (isSpinnerFrame(line)) return '';
+  return line.length > 500 ? line.slice(0, 500) : line;
+}
+
+function pushAuthLog(session, chunk) {
+  for (const rawLine of String(chunk).split(/\r\n|\r|\n/)) {
+    const line = cleanLogLine(rawLine);
+    if (!line) continue;
+    session.log.push(line);
+    if (session.log.length > AUTH_LOG_MAX_LINES) {
+      session.log.splice(0, session.log.length - AUTH_LOG_MAX_LINES);
+    }
+  }
+}
+
+function authRunnerFromPath(url) {
+  const match = url.match(/^\/auth\/([^/]+)\/(login|status|cancel)$/);
+  if (!match) return null;
+  if (!RUNNERS.has(match[1])) return { error: 'unknown runner' };
+  return { runner: match[1] };
+}
+
+function authStateFor(session) {
+  if (!session) return 'idle';
+  return session.state;
+}
+
+function buildKiloLoginCommand() {
+  const bin = /\s/.test(kiloBin) ? `'${kiloBin}'` : kiloBin;
+  return `${bin} auth login -p kilo -m "${KILO_AUTH_METHOD}"`;
+}
+
+function startAuthSession(runner, res) {
+  const command = buildKiloLoginCommand();
+  const args = ['-qec', command, '/dev/null'];
+  let child;
+  try {
+    child = spawn('script', args, {
+      cwd: REPO_ROOT,
+      env: process.env,
+      shell: false,
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+  } catch (error) {
+    return sendJson(res, 500, { error: error.message });
+  }
+
+  const session = {
+    runner,
+    child,
+    state: 'starting',
+    url: null,
+    code: null,
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    reason: '',
+    log: [],
+    raw: '',
+    timer: null,
+    finalized: false
+  };
+  authSessions.set(runner, session);
+  pushAuthLog(session, `[host-executor] $ script -qec '${command}' /dev/null\n`);
+
+  const ingest = (chunk) => {
+    const text = chunk.toString();
+    session.raw = (session.raw + text).slice(-AUTH_RAW_MAX_CHARS);
+    const clean = stripAnsi(session.raw);
+    if (!session.url) {
+      const urlMatch = clean.match(KILO_AUTH_URL_RE);
+      if (urlMatch) {
+        session.url = urlMatch[1];
+        if (session.state === 'starting') session.state = 'waiting';
+      }
+    }
+    if (!session.code) {
+      const codeMatch = clean.match(KILO_AUTH_CODE_RE);
+      if (codeMatch) session.code = codeMatch[1];
+    }
+    pushAuthLog(session, text);
+  };
+  child.stdout.on('data', ingest);
+  child.stderr.on('data', ingest);
+  child.on('error', (error) => {
+    pushAuthLog(session, `[host-executor] ${error.message}\n`);
+    finalizeAuthSession(session, 1, null);
+  });
+  child.on('close', (code, signal) => {
+    finalizeAuthSession(session, Number.isInteger(code) ? code : 1, signal || null);
+  });
+
+  session.timer = setTimeout(() => {
+    if (session.finalized) return;
+    session.reason = 'login timed out';
+    pushAuthLog(session, '[host-executor] login timed out\n');
+    session.state = 'failed';
+    session.finishedAt = new Date().toISOString();
+    session.finalized = true;
+    terminateAuthSession(session).catch(() => {});
+  }, LOGIN_TIMEOUT_MS);
+  session.timer.unref?.();
+
+  return sendJson(res, 200, {
+    state: session.state,
+    url: session.url,
+    code: session.code,
+    startedAt: session.startedAt
+  });
+}
+
+function finalizeAuthSession(session, code, signal) {
+  if (session.finalized) return;
+  session.finalized = true;
+  if (session.timer) {
+    clearTimeout(session.timer);
+    session.timer = null;
+  }
+  session.finishedAt = new Date().toISOString();
+  if (session.state === 'authorized') return;
+  if (code === 0 && !signal) {
+    session.state = 'authorized';
+    session.reason = '';
+    return;
+  }
+  session.state = 'failed';
+  if (!session.reason) {
+    const lastLine = session.log.length ? session.log[session.log.length - 1] : '';
+    session.reason = lastLine || `login exited with code ${code}`;
+  }
+}
+
+async function terminateAuthSession(session) {
+  const child = session.child;
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const closed = new Promise((resolve) => child.once('close', resolve));
+  try {
+    process.kill(-child.pid, 'SIGTERM');
+  } catch {
+    try { child.kill('SIGTERM'); } catch { /* already gone */ }
+  }
+  const exited = await Promise.race([
+    closed.then(() => true),
+    wait(CHILD_TERMINATE_TIMEOUT_MS).then(() => false)
+  ]);
+  if (!exited && child.exitCode === null && child.signalCode === null) {
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+    } catch {
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    }
+    await closed;
+  }
+}
+
+function runnerHasActiveRun(runner) {
+  for (const entry of activeRuns.values()) {
+    if (entry.runner === runner) return true;
+  }
+  return false;
+}
+
+async function handleAuthLogin(req, res, runner) {
+  if (!authorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
+  const existing = authSessions.get(runner);
+  if (existing && (existing.state === 'starting' || existing.state === 'waiting')) {
+    return sendJson(res, 409, { error: 'a login session is already running for this runner' });
+  }
+  if (runnerHasActiveRun(runner)) {
+    return sendJson(res, 409, { error: 'runner has an active step; finish or cancel it before signing in' });
+  }
+  return startAuthSession(runner, res);
+}
+
+function handleAuthStatus(req, res, runner) {
+  if (!authorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
+  const session = authSessions.get(runner);
+  if (!session) {
+    return sendJson(res, 200, {
+      state: 'idle',
+      url: null,
+      code: null,
+      startedAt: null,
+      finishedAt: null,
+      log: []
+    });
+  }
+  return sendJson(res, 200, {
+    state: authStateFor(session),
+    url: session.url,
+    code: session.code,
+    startedAt: session.startedAt,
+    finishedAt: session.finishedAt,
+    log: session.log.slice()
+  });
+}
+
+async function handleAuthCancel(req, res, runner) {
+  if (!authorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
+  const session = authSessions.get(runner);
+  const running = session && (session.state === 'starting' || session.state === 'waiting');
+  if (!running) {
+    return sendJson(res, 200, { ok: true, cancelled: false });
+  }
+  session.finalized = true;
+  if (session.timer) {
+    clearTimeout(session.timer);
+    session.timer = null;
+  }
+  session.state = 'failed';
+  session.reason = 'cancelled';
+  session.finishedAt = new Date().toISOString();
+  pushAuthLog(session, '[host-executor] login cancelled\n');
+  await terminateAuthSession(session);
+  return sendJson(res, 200, { ok: true, cancelled: true });
 }
 
 async function replaceActiveRun(runKey, res) {
@@ -686,6 +935,17 @@ const server = http.createServer((req, res) => {
   if (req.url === '/selfheal/merge' && req.method === 'POST') {
     return handleSelfhealMerge(req, res);
   }
+  const authRoute = authRunnerFromPath(req.url);
+  if (authRoute && req.method) {
+    if (authRoute.error) return sendJson(res, 400, { error: authRoute.error });
+    if (req.method === 'POST') {
+      if (req.url.endsWith('/login')) return handleAuthLogin(req, res, authRoute.runner);
+      if (req.url.endsWith('/cancel')) return handleAuthCancel(req, res, authRoute.runner);
+    }
+    if (req.method === 'GET' && req.url.endsWith('/status')) {
+      return handleAuthStatus(req, res, authRoute.runner);
+    }
+  }
   return sendJson(res, 404, { error: 'not found' });
 });
 
@@ -699,6 +959,11 @@ server.on('error', (error) => fail(`server error: ${error.message}`));
 
 function shutdown() {
   for (const entry of activeRuns.values()) entry.child.kill('SIGTERM');
+  for (const session of authSessions.values()) {
+    session.finalized = true;
+    if (session.timer) clearTimeout(session.timer);
+    terminateAuthSession(session).catch(() => {});
+  }
   if (managedServer) managedServer.kill('SIGTERM');
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 3000).unref();
