@@ -28,6 +28,31 @@ assert.equal(store.detect('Fetched page said Sign in to continue'), false, 'beni
 assert.equal(store.detect('status code 401 from remote API body'), false, 'bare 401 in tool output should not match');
 assert.equal(store.detect(''), false, 'empty should not match');
 
+// Structured transcripts echo auth words as conversation data, not CLI errors.
+const transcriptToolUse = JSON.stringify({
+  type: 'tool_use',
+  sessionID: 'ses_test',
+  input: { text: 'HTTP 401 INVALID_TOKEN. Please sign in again.' }
+});
+const transcriptEffect = JSON.stringify({
+  id: 'effect_test',
+  sessionId: 'ses_test',
+  turnId: 'turn_test',
+  data: { error: 'unauthorized' }
+});
+assert.equal(store.detect(transcriptToolUse), false, 'tool_use transcript should not match');
+assert.equal(store.detect(transcriptEffect), false, 'effect transcript should not match');
+assert.equal(
+  store.detect(`noise\n${transcriptToolUse}\nHTTP 401 INVALID_TOKEN`),
+  true,
+  'real auth error beside transcript should match'
+);
+assert.equal(
+  store.extractMessage(`${transcriptToolUse}\nHTTP 401 INVALID_TOKEN`),
+  'HTTP 401 INVALID_TOKEN',
+  'extractMessage should skip transcript records'
+);
+
 const rec = store.record('kilo', {
   runnerLabel: 'Kilo',
   message: 'Your authentication token is invalid. Please sign in again.',
