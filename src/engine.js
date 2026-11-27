@@ -2578,13 +2578,19 @@ function startSprintRun(project, rt, entry, options = {}) {
   }
   const worktree = options.worktree || sprintLib.taskWorktreePath(repo, runId, entry.taskIndex);
   const base = options.base !== undefined ? options.base : (sprintBranchExists ? sprintBranch : '');
-  const added = sprintLib.addTaskWorktree(repo, worktree, branch, base);
-  if (!added.ok) {
-    sprintRunFailed(project, rt, entry, `Sprint worktree failed for task ${entry.taskIndex + 1}`, `${added.stderr}${added.stdout}`);
-    return false;
-  }
+  // Record the branch/worktree before the add so a failure reports the real
+  // values instead of "Branch undefined".
   entry.branch = branch;
   entry.worktree = worktree;
+  const added = sprintLib.addTaskWorktree(repo, worktree, branch, base);
+  if (!added.ok) {
+    sprintRunFailed(
+      project, rt, entry,
+      `Sprint worktree failed for task ${entry.taskIndex + 1}`,
+      sprintLib.worktreeFailureDetail(added)
+    );
+    return false;
+  }
   if (entry.mergePrevious) {
     const plan = planLib.readPlan(repo);
     const earlier = plan.ok

@@ -153,20 +153,110 @@ function worktreePathsWithin(root) {
   return paths;
 }
 
+// Registered worktree entry at `worktreePath`, or null. The branch is '' for a
+// detached worktree so callers can distinguish "not registered" from
+// "registered but detached".
+function worktreeEntryFor(repo, worktreePath) {
+  const wanted = path.resolve(worktreePath);
+  const result = git(repo, ['worktree', 'list', '--porcelain']);
+  if (!result.ok) return null;
+  const entries = [];
+  let current = null;
+  for (const line of result.stdout.split(/\r?\n/)) {
+    if (line.startsWith('worktree ')) {
+      if (current) entries.push(current);
+      current = { path: line.slice('worktree '.length).trim(), branch: '' };
+    } else if (current && line.startsWith('branch ')) {
+      current.branch = line.slice('branch '.length).trim().replace(/^refs\/heads\//, '');
+    }
+  }
+  if (current) entries.push(current);
+  return entries.find((entry) => path.resolve(entry.path) === wanted) || null;
+}
+
+// Drop a stale worktree registration/directory so the target path can be
+// recreated. Never touches a branch: a "kept for review" branch survives.
+function clearWorktreePath(repo, worktreePath) {
+  const entry = worktreeEntryFor(repo, worktreePath);
+  const output = [];
+  if (entry) {
+    const removed = git(repo, ['worktree', 'remove', worktreePath]);
+    output.push(removed.stdout, removed.stderr);
+    if (!removed.ok) {
+      const forced = git(repo, ['worktree', 'remove', '--force', worktreePath]);
+      output.push(forced.stdout, forced.stderr);
+    }
+  }
+  // A directory removed outside git leaves a dead registration behind.
+  const pruned = git(repo, ['worktree', 'prune']);
+  if (pruned.stderr) output.push(pruned.stderr);
+  try {
+    if (fs.existsSync(worktreePath)) {
+      fs.rmSync(worktreePath, { recursive: true, force: true });
+    }
+  } catch (error) {
+    output.push(String(error.message || error));
+    return { ok: false, output: output.join('') };
+  }
+  return { ok: true, output: output.join('') };
+}
+
 // Cut a new task branch at `base` and check it out in its own worktree. The
 // live checkout is never switched; `git worktree add` writes a separate index.
+// A repeat attempt after a "kept for review" failure reuses the same stable
+// path, so an existing branch is checked out without `-b` and a stale path is
+// recreated instead of colliding.
 function addTaskWorktree(repo, worktreePath, branch, base) {
   assertLooparrBranch(branch);
   let okBase = base;
   if (!okBase) okBase = currentBranch(repo) || 'HEAD';
-  const result = git(repo, ['worktree', 'add', '-b', branch, worktreePath, okBase]);
+  const branchAlreadyExists = branchExists(repo, branch);
+  const existing = worktreeEntryFor(repo, worktreePath);
+  const present = fs.existsSync(worktreePath);
+  const reusable = Boolean(existing && existing.branch === branch && present);
+  let setup = '';
+  if (!reusable && (existing || present)) {
+    const cleared = clearWorktreePath(repo, worktreePath);
+    setup = cleared.output || '';
+    if (!cleared.ok) {
+      return {
+        ok: false,
+        branch,
+        worktree: worktreePath,
+        stdout: setup,
+        stderr: setup
+      };
+    }
+  }
+  if (reusable) {
+    return {
+      ok: true,
+      branch,
+      worktree: worktreePath,
+      stdout: setup,
+      stderr: `reused worktree on ${branch}`
+    };
+  }
+  const args = branchAlreadyExists
+    ? ['worktree', 'add', worktreePath, branch]
+    : ['worktree', 'add', '-b', branch, worktreePath, okBase];
+  const result = git(repo, args);
   return {
     ok: result.ok,
     branch,
     worktree: worktreePath,
-    stdout: result.stdout,
-    stderr: result.stderr
+    stdout: setup + result.stdout,
+    stderr: setup + result.stderr
   };
+}
+
+// Last-resort detail for a worktree-add failure: always name the branch and
+// worktree so a failure can never render as "Branch undefined".
+function worktreeFailureDetail(added) {
+  const branch = added && added.branch ? added.branch : '(unknown branch)';
+  const worktree = added && added.worktree ? added.worktree : '(unknown worktree)';
+  const tail = `${added && added.stderr ? added.stderr : ''}${added && added.stdout ? added.stdout : ''}`.trim();
+  return tail || `git worktree add failed for branch ${branch} at ${worktree}`;
 }
 
 // Create (or reuse) the sprint integration worktree on `looparr/sprint/<name>`.
@@ -322,7 +412,9 @@ module.exports = {
   sprintWorktreePath,
   mainWorktreePath,
   worktreePathsWithin,
+  worktreeEntryFor,
   addTaskWorktree,
+  worktreeFailureDetail,
   ensureSprintWorktree,
   removeWorktree,
   mergeBranchInWorktree,

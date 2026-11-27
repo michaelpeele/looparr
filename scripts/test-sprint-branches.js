@@ -244,9 +244,115 @@ function testRunSprintValidationPassAndFail() {
   }
 }
 
+function testAddTaskWorktreeReusesExistingBranch() {
+  const repo = makeTempRepo();
+  try {
+    git(repo, ['branch', 'looparr/task/backend/add-api']);
+    const worktree = sprint.taskWorktreePath(repo, sprint.runIdFor('proj1', 'backend'), 0);
+    const added = sprint.addTaskWorktree(repo, worktree, 'looparr/task/backend/add-api', 'main');
+    assertOk(added.ok, `existing branch reused: ${added.stderr}`);
+    assertEqual(sprint.currentBranch(worktree), 'looparr/task/backend/add-api', 'worktree checked out existing branch');
+    assertEqual(sprint.currentBranch(repo), 'main', 'live checkout never switched');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+function testAddTaskWorktreeRecreatesStaleDir() {
+  const repo = makeTempRepo();
+  try {
+    const worktree = sprint.taskWorktreePath(repo, sprint.runIdFor('proj1', 'backend'), 0);
+    fs.mkdirSync(worktree, { recursive: true });
+    fs.writeFileSync(path.join(worktree, 'stale.txt'), 'stale\n');
+    const added = sprint.addTaskWorktree(repo, worktree, 'looparr/task/backend/add-api', 'main');
+    assertOk(added.ok, `stale directory recreated: ${added.stderr}`);
+    assertOk(!fs.existsSync(path.join(worktree, 'stale.txt')), 'stale file removed');
+    assertEqual(sprint.currentBranch(worktree), 'looparr/task/backend/add-api', 'fresh worktree on task branch');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+function testAddTaskWorktreeReusesRegisteredWorktree() {
+  const repo = makeTempRepo();
+  try {
+    const branch = 'looparr/task/backend/add-api';
+    const worktree = sprint.taskWorktreePath(repo, sprint.runIdFor('proj1', 'backend'), 0);
+    const first = sprint.addTaskWorktree(repo, worktree, branch, 'main');
+    assertOk(first.ok, `first add: ${first.stderr}`);
+    fs.writeFileSync(path.join(worktree, 'keep.txt'), 'keep\n');
+    const second = sprint.addTaskWorktree(repo, worktree, branch, 'main');
+    assertOk(second.ok, `second add reuses: ${second.stderr}`);
+    assertOk(fs.existsSync(path.join(worktree, 'keep.txt')), 'reused worktree preserved');
+    assertEqual(sprint.currentBranch(worktree), branch, 'reused worktree stays on branch');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+function testAddTaskWorktreeReplacesDifferentBranch() {
+  const repo = makeTempRepo();
+  try {
+    const worktree = sprint.taskWorktreePath(repo, sprint.runIdFor('proj1', 'backend'), 0);
+    const first = sprint.addTaskWorktree(repo, worktree, 'looparr/task/backend/first', 'main');
+    assertOk(first.ok, `first add: ${first.stderr}`);
+    git(repo, ['branch', 'looparr/task/backend/second']);
+    const second = sprint.addTaskWorktree(repo, worktree, 'looparr/task/backend/second', 'main');
+    assertOk(second.ok, `replacement add: ${second.stderr}`);
+    assertEqual(sprint.currentBranch(worktree), 'looparr/task/backend/second', 'worktree moved to new branch');
+    assertOk(sprint.branchExists(repo, 'looparr/task/backend/first'), 'old branch kept for review');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+function testWorktreeFailureDetailNamesBranch() {
+  const detail = sprint.worktreeFailureDetail({
+    ok: false,
+    branch: 'looparr/task/backend/fail',
+    worktree: '/tmp/looparr-fail',
+    stdout: '',
+    stderr: ''
+  });
+  assertOk(detail.includes('looparr/task/backend/fail'), 'failure detail names the branch');
+  assertOk(detail.includes('/tmp/looparr-fail'), 'failure detail names the worktree');
+  assertOk(!detail.includes('undefined'), 'failure detail never says undefined');
+  const withGit = sprint.worktreeFailureDetail({
+    ok: false,
+    branch: 'looparr/task/backend/fail',
+    worktree: '/tmp/looparr-fail',
+    stdout: '',
+    stderr: 'fatal: real git error'
+  });
+  assertOk(withGit.includes('fatal: real git error'), 'real git stderr is preserved');
+}
+
+function testAddTaskWorktreeReportsRealGitFailure() {
+  const repo = makeTempRepo();
+  try {
+    const worktree = sprint.taskWorktreePath(repo, sprint.runIdFor('proj1', 'backend'), 0);
+    const added = sprint.addTaskWorktree(repo, worktree, 'looparr/task/backend/fail', 'does-not-exist');
+    assertOk(!added.ok, 'missing base fails');
+    assertOk(
+      `${added.stderr}${added.stdout}`.includes('does-not-exist'),
+      'real git error returned'
+    );
+    assertEqual(added.branch, 'looparr/task/backend/fail', 'branch reported on failure');
+    assertEqual(added.worktree, worktree, 'worktree reported on failure');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+}
+
 run('branch naming and looparr guards', testBranchNamingAndGuards);
 run('branchForTask collision suffixes', testBranchForTaskCollision);
 run('worktree add/remove', testWorktreeAddAndRemove);
+run('worktree add reuses existing branch', testAddTaskWorktreeReusesExistingBranch);
+run('worktree add recreates stale dir', testAddTaskWorktreeRecreatesStaleDir);
+run('worktree add reuses registered worktree', testAddTaskWorktreeReusesRegisteredWorktree);
+run('worktree add replaces different branch', testAddTaskWorktreeReplacesDifferentBranch);
+run('worktree failure detail names branch', testWorktreeFailureDetailNamesBranch);
+run('worktree add reports real git failure', testAddTaskWorktreeReportsRealGitFailure);
 run('mergeTaskBranches ordering', testMergeTaskBranchesInOrder);
 run('merge stops at conflict', testMergeStopsAtConflict);
 run('looparr-only merge guard', testLooparrOnlyMergeGuard);
