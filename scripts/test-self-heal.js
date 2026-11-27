@@ -150,6 +150,14 @@ function testUi() {
   }
   assertIncludes(css, 'linear-gradient(90deg, var(--accent), var(--accent-2), var(--green))', 'engaged gradient');
   assertIncludes(css, 'var(--green)', 'healed green dot');
+  assertIncludes(app, 'function setSettingsStatus(message, isError = false)', 'shared settings status writer');
+  assertIncludes(app, "classList.toggle('error', !!isError)", 'settings status error class');
+  assertIncludes(app, 'function confirmMergeCompleted(button, branch)', 'merge completion verification');
+  assertIncludes(app, "fetch('/api/state'", 'merge verification reads state');
+  assertIncludes(app, 'healer.mergedAt', 'merge verification checks merged state');
+  assertIncludes(app, 'could not confirm', 'clear merge failure copy');
+  assertAbsent(app, 'merge submitted for', 'no false success on dropped merge');
+  assertIncludes(css, '#settings-status.error { color: var(--red); }', 'settings status error styling');
 }
 
 function testDocsAndCompose() {

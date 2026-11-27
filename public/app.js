@@ -826,6 +826,34 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     }
   }
 
+  function setSettingsStatus(message, isError = false) {
+    if (!dom.settingsStatus) return;
+    dom.settingsStatus.textContent = message;
+    dom.settingsStatus.classList.toggle('error', !!isError);
+  }
+
+  async function confirmMergeCompleted(button, branch) {
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch('/api/state', { cache: 'no-store' });
+        if (res.ok) {
+          const state = await res.json();
+          const project = (state.projects || []).find((item) => item.id === button.dataset.projectId);
+          const healer = project && project.selfHealer;
+          if (healer && healer.mergedAt) {
+            setSettingsStatus(`merged ${branch}; restart complete`);
+            setMergeButtonState(button, 'done');
+            return;
+          }
+        }
+      } catch { /* retry while the app restarts */ }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    setSettingsStatus(`merge failed: could not confirm ${branch}. Check the host executor log and retry.`, true);
+    setMergeButtonState(button, 'idle');
+  }
+
   function setMergeButtonState(button, state) {
     if (!button) return;
     if (!('mergeIdleHtml' in button.dataset)) {
@@ -873,9 +901,9 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       `Test complete on ${branch}. Merge to main and rebuild/restart? Nothing is published.`
     );
     if (!confirmed) return;
-    // The rebuild recreates the server, so the POST may drop mid-request. Treat a
-    // dropped connection as "restarting" and confirm the merge on reconnect.
-    dom.settingsStatus.textContent = `merging ${branch}…`;
+    // The rebuild recreates the server, so the POST may drop mid-request. A
+    // dropped connection only counts as merged after state verification.
+    setSettingsStatus(`merging ${branch}…`);
     setMergeButtonState(target, 'busy');
     fetch(`/api/projects/${encodeURIComponent(target.dataset.projectId)}/selfheal/merge`, {
       method: 'POST',
@@ -886,20 +914,19 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
         let body = null;
         try { body = await res.json(); } catch { /* no json */ }
         if (!res.ok) {
-          dom.settingsStatus.textContent = (body && body.error) || `merge failed (${res.status})`;
+          setSettingsStatus((body && body.error) || `merge failed (${res.status})`, true);
           setMergeButtonState(target, 'idle');
           return;
         }
-        dom.settingsStatus.textContent = body && body.mergeCommit
+        setSettingsStatus(body && body.mergeCommit
           ? `merged ${branch} (${body.mergeCommit}); restarting…`
-          : `merged ${branch}; restarting…`;
+          : `merged ${branch}; restarting…`);
         setMergeButtonState(target, 'done');
       })
-      .catch(() => {
-        // Likely a dropped request during the rebuild/restart. Confirm via the
-        // reconnected state rather than reporting a false failure.
-        dom.settingsStatus.textContent = `merge submitted for ${branch}; waiting for restart…`;
-        setMergeButtonState(target, 'done');
+      .catch(async () => {
+        // Likely a dropped request during the rebuild/restart. Verify the
+        // merged state on reconnect instead of assuming success.
+        await confirmMergeCompleted(target, branch);
       });
   }
 
@@ -3541,7 +3568,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
 
   async function saveSettings(event) {
     event.preventDefault();
-    dom.settingsStatus.textContent = 'saving…';
+    setSettingsStatus('saving…');
     try {
       const response = await api('/api/settings', {
         method: 'PATCH',
@@ -3574,9 +3601,9 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
         })
       });
       if (response?.settings) applyState({ ...(app.state || {}), settings: response.settings });
-      dom.settingsStatus.textContent = 'saved';
+      setSettingsStatus('saved');
     } catch (error) {
-      dom.settingsStatus.textContent = error.message;
+      setSettingsStatus(error.message, true);
     }
   }
 
