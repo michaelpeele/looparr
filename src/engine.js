@@ -237,6 +237,7 @@ function findProject(id) {
 }
 
 const rotationStore = require('./rotation-store');
+const authFailures = require('./auth-failures');
 const { classifyFailure } = require('./failure');
 
 // Opt-in error recovery: a non-looparr project whose step ends in error queues
@@ -331,10 +332,16 @@ function pickRunner(project, phase, list) {
   const start = rotationStore.getCursor(list);
   const now = Date.now();
   let earliest = Infinity;
+  let authBlocked = null;
   for (let offset = 0; offset < list.length; offset += 1) {
     const index = (start + offset) % list.length;
     const runner = getRunner(list[index]);
     if (!runner) continue;
+    if (authFailures.isBlocked(runner.id)) {
+      authBlocked = authBlocked || { id: runner.id, runner };
+      appendLog(project.id, 'system', `Skipping ${runner.label}: auth required.`);
+      continue;
+    }
     const models = modelsFor(project, phase, runner);
     if (!models.length) return { id: list[index], index, waitMs: 0 };
     let ready = false;
@@ -351,6 +358,9 @@ function pickRunner(project, phase, list) {
       'system',
       `Skipping ${runner.label}: models cooling (${models.join(', ')}) for another ${Math.ceil((runnerEarliest - now) / 1000)}s.`
     );
+  }
+  if (earliest === Infinity && authBlocked) {
+    return { id: authBlocked.id, index: start, waitMs: 0, authBlocked: true };
   }
   return { id: list[start], index: start, waitMs: earliest === Infinity ? 0 : earliest - now };
 }
@@ -428,6 +438,7 @@ function getState() {
   return {
     settings: { ...config.settings },
     selfHealingAvailable: available,
+    authFailures: authFailures.list(),
     runners: listRunners(),
     projects: config.projects.map((project) => {
       const rt = ensureRuntime(project);
@@ -2030,6 +2041,8 @@ function start(id, options = {}) {
     rt.resumeRetryCount = 0;
     rt.resumeRetryLogDigest = '';
     clearResumeRetryLogDigest(project);
+    authFailures.clear();
+    appendLog(project.id, 'system', '↻ Manual Start: cleared auth-failure blocks.');
   }
   rt.error = '';
   rt.currentTask = rt.currentTask || '';
@@ -2303,6 +2316,11 @@ function tryNextCandidate(project, rt, runner, phase, code) {
   if (!effectiveRunnerRotation(project)) return false;
   for (const id of effectiveRunnerList(project)) {
     if (id === runner.id) continue;
+    if (authFailures.isBlocked(id)) {
+      const blockedRunner = getRunner(id);
+      appendLog(project.id, 'system', `Skipping ${blockedRunner ? blockedRunner.label : id}: auth required.`);
+      continue;
+    }
     const nextRunner = getRunner(id);
     if (!nextRunner) continue;
     const nextModels = modelsFor(project, phase, nextRunner);
@@ -2596,6 +2614,15 @@ function handleRecoverClose(project, rt, code, task, runner) {
   let question = '';
   try { question = fs.readFileSync(promptFile, 'utf8').trim(); } catch { /* none */ }
   const hasQuestion = Boolean(question) && !isMetaPromptHandoff(question).poisoned;
+  if (code !== 0 && runner && authFailures.detect(output)) {
+    const message = authFailures.extractMessage(output) || String(context.error || '').slice(0, 240);
+    authFailures.record(runner.id, {
+      runnerLabel: runner.label || runner.id,
+      message,
+      hint: authFailures.hintFor(runner.id)
+    });
+    appendLog(project.id, 'system', `AUTH REQUIRED: ${runner.label || runner.id} blocked. ${authFailures.hintFor(runner.id)}`);
+  }
   rt.pendingRecovery = null;
   rt.stepTask = null;
   rt.stepOutput = '';
@@ -2626,6 +2653,7 @@ function handleRecoverClose(project, rt, code, task, runner) {
   rt.status = 'idle';
   rt.active = true;
   rt.error = '';
+  if (code === 0 && runner) authFailures.clear(runner.id);
   appendLog(project.id, 'system', `✓ Recovery complete; resuming ${failedPhase}.`);
   emitState();
   scheduleTick();
@@ -2650,6 +2678,15 @@ function handleClose(project, rt, code, task, phase, runner) {
       return;
     }
     if (code !== 0) {
+      if (runner && authFailures.detect(rt.stepOutput)) {
+        const message = authFailures.extractMessage(rt.stepOutput) || `${phase} step exited with code ${code}`;
+        authFailures.record(runner.id, {
+          runnerLabel: runner.label || runner.id,
+          message,
+          hint: authFailures.hintFor(runner.id)
+        });
+        appendLog(project.id, 'system', `AUTH REQUIRED: ${runner.label || runner.id} blocked. ${authFailures.hintFor(runner.id)}`);
+      }
       parkStepError(project, rt, phase, `${phase} step exited with code ${code}`, { checkpoint: true });
       return;
     }
@@ -2676,6 +2713,7 @@ function handleClose(project, rt, code, task, phase, runner) {
         return;
       }
       stampHandoffTask(project, task.text);
+      if (runner) authFailures.clear(runner.id);
       rt.nextPhase = phase === 'seed' ? 'analyze' : 'implement';
     } else {
       const current = planLib.readPlan(project.path);
@@ -2686,6 +2724,7 @@ function handleClose(project, rt, code, task, phase, runner) {
       clearHandoff(project);
       appendLog(project.id, 'system', `✓ Done: ${task.text}`);
       rt.nextPhase = 'seed';
+      if (runner) authFailures.clear(runner.id);
       const cooloffMs = cooloffMsFor(project);
       if (cooloffMs > 0) {
         rt.cooloffUntil = Date.now() + cooloffMs;
@@ -3385,10 +3424,24 @@ async function startStep(project) {
       runner = getRunner(rt.forcedRunnerId);
       rt.forcedRunnerId = '';
       rt.runnerIndex = Math.max(0, runnerList.indexOf(runner ? runner.id : ''));
+      if (runner && authFailures.isBlocked(runner.id)) {
+        const blocked = authFailures.get(runner.id);
+        throw new Error(`AUTH REQUIRED: ${blocked && blocked.runnerLabel ? blocked.runnerLabel : runner.label} needs sign-in. ${blocked && blocked.hint ? blocked.hint : authFailures.hintFor(runner.id)}`);
+      }
     } else {
       const runnerPick = runnerRotating
         ? pickRunner(project, phase, runnerList)
-        : { id: runnerList[0], index: 0, waitMs: 0 };
+        : (() => {
+            const only = getRunner(runnerList[0]);
+            if (only && authFailures.isBlocked(only.id)) return { id: runnerList[0], index: 0, waitMs: 0, authBlocked: true };
+            return { id: runnerList[0], index: 0, waitMs: 0 };
+          })();
+      if (runnerPick.authBlocked) {
+        const blockedRunner = getRunner(runnerPick.id);
+        const blocked = authFailures.get(runnerPick.id);
+        const label = (blocked && blocked.runnerLabel) || (blockedRunner && blockedRunner.label) || runnerPick.id;
+        throw new Error(`AUTH REQUIRED: ${label} needs sign-in. ${(blocked && blocked.hint) || authFailures.hintFor(runnerPick.id)} Check home card.`);
+      }
       if (runnerPick.waitMs > 0) {
         rt.status = 'rateLimited';
         rt.resumeAt = Date.now() + runnerPick.waitMs;
@@ -3401,6 +3454,10 @@ async function startStep(project) {
       rt.runnerIndex = Math.max(0, runnerPick.index);
     }
     if (!runner) throw new Error(`Runner "${project.runner || config.settings.globalRunner}" is not registered`);
+    if (authFailures.isBlocked(runner.id)) {
+      const blocked = authFailures.get(runner.id);
+      throw new Error(`AUTH REQUIRED: ${(blocked && blocked.runnerLabel) || runner.label} needs sign-in. ${(blocked && blocked.hint) || authFailures.hintFor(runner.id)} Check home card.`);
+    }
 
     const loopDir = path.join(project.path, '.looparr');
     fs.mkdirSync(loopDir, { recursive: true });
@@ -4276,6 +4333,8 @@ module.exports = {
   start,
   pause,
   stop,
+  pickRunner,
+  authFailures,
   prepareShutdownResume,
   runKeyFor,
   resumeOnStart,
