@@ -263,5 +263,6 @@ Why: Scriptable on iOS uses native image decoding. It cannot decode SVG (`image/
 - [x] When I got to the GitHub repo the docker package isn’t linked, also the docker button is still broken
 - [x] If one project is in error it shouldn’t hold another project from continuing
 - [x] If multiple projects are running serially the text shouldn’t indicate to press start if it’s already pressed and project idle. Verbiage should indicate awaiting worker slot
+- [x] For projects other than looparr if an error is encountered a session should start (in queue if doing round robin don’t change flow just add task type) to attempt to clear the error. If needed ask questions on how to proceed but if clear path to correct take it
 - [x] Diagnose task 4 failure on splitarr project
 - [x] Jump to latest on CLI log detail not appearing until I scroll a little. Please make it appear on initial open

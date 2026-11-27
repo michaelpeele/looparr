@@ -11,6 +11,7 @@ const DEPENDENCY_SUFFIX_RE = /\s*\(depends:\s*([^)]*)\)\s*$/i;
 const SPRINT_TOKEN_RE = /\s*\[sprint:([^\]]*)\]\s*$/i;
 const MERGE_PREVIOUS_TOKEN_RE = /\s*\[merge-previous\]\s*$/i;
 const DEPLOY_MAIN_TOKEN_RE = /\s*\[deploy-main\]\s*$/i;
+const RECOVER_TOKEN_RE = /\s*\[recover\]\s*$/i;
 // "(validation: Backend) [Backend] Validation" prefix marker, parsed the same
 // way as "(plan)". The marker stays in the task text for the agent (Q7).
 const VALIDATION_TASK_MARKER_RE = /^\(validation:\s*([^)\s][^)]*)\)\s(?:|$)/i;
@@ -21,6 +22,7 @@ function parseTaskTokens(text) {
   let sprint = '';
   let mergePrevious = false;
   let deployMain = false;
+  let recover = false;
   for (;;) {
     const sprintMatch = working.match(SPRINT_TOKEN_RE);
     if (sprintMatch) {
@@ -40,9 +42,15 @@ function parseTaskTokens(text) {
       working = working.slice(0, deployMatch.index).trimEnd();
       continue;
     }
+    const recoverMatch = working.match(RECOVER_TOKEN_RE);
+    if (recoverMatch) {
+      recover = true;
+      working = working.slice(0, recoverMatch.index).trimEnd();
+      continue;
+    }
     break;
   }
-  return { text: working, sprint, mergePrevious, deployMain };
+  return { text: working, sprint, mergePrevious, deployMain, recover };
 }
 
 // Cropped task view: dependency suffix plus sprint/merge tokens, all in one
@@ -62,7 +70,8 @@ function parseTaskMetadata(text) {
     dependencyIssue: lastDeps.issue || firstDeps.issue,
     sprint: firstTokens.sprint || lastTokens.sprint,
     mergePrevious: firstTokens.mergePrevious || lastTokens.mergePrevious,
-    deployMain: firstTokens.deployMain || lastTokens.deployMain
+    deployMain: firstTokens.deployMain || lastTokens.deployMain,
+    recover: firstTokens.recover || lastTokens.recover
   };
 }
 
@@ -109,7 +118,8 @@ function parseTasks(content) {
       dependencyIssue: parsed.dependencyIssue,
       sprint: parsed.sprint,
       mergePrevious: parsed.mergePrevious,
-      deployMain: parsed.deployMain
+      deployMain: parsed.deployMain,
+      recover: parsed.recover
     });
   });
   return tasks;
@@ -282,7 +292,7 @@ function editTask(content, index, newText) {
   // a plain text edit can never drop sprint membership or merge flags (R10).
   // Tokens the caller explicitly sent on the new line win over the old ones so
   // an API edit can add or drop a flag.
-  const explicit = Boolean(incoming.dependencySuffix || incoming.sprint || incoming.mergePrevious || incoming.deployMain)
+  const explicit = Boolean(incoming.dependencySuffix || incoming.sprint || incoming.mergePrevious || incoming.deployMain || incoming.recover)
     || normalized === target.task.text;
   const text = explicit ? incoming.text : normalized;
   if (!text) return { ok: false, error: 'Task text is required' };
@@ -291,6 +301,8 @@ function editTask(content, index, newText) {
   if (deployMain) parts.push('[deploy-main]');
   const mergePrevious = explicit ? incoming.mergePrevious : target.task.mergePrevious;
   if (mergePrevious) parts.push('[merge-previous]');
+  const recover = explicit ? incoming.recover : target.task.recover;
+  if (recover) parts.push('[recover]');
   const sprint = incoming.sprint || target.task.sprint || '';
   if (sprint) parts.push(`[sprint:${sprint}]`);
   const suffix = incoming.dependencySuffix || target.task.dependencySuffix || '';
@@ -359,6 +371,7 @@ function taskFlags(task) {
       : tokens.sprint,
     mergePrevious: task?.mergePrevious === true || tokens.mergePrevious,
     deployMain: task?.deployMain === true || tokens.deployMain,
+    recover: task?.recover === true || tokens.recover,
     validationType: validationTypeOfText(tasks_text(task, text))
   };
 }
@@ -369,6 +382,7 @@ function joinTaskTokens(task) {
   const parts = [task.text];
   if (task.mergePrevious) parts.push('[merge-previous]');
   if (task.deployMain) parts.push('[deploy-main]');
+  if (task.recover) parts.push('[recover]');
   if (task.sprint) parts.push(`[sprint:${task.sprint}]`);
   if (task.dependencySuffix) parts.push(task.dependencySuffix);
   return parts.join(' ');

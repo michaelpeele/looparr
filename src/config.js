@@ -345,6 +345,7 @@ const DEFAULT_SETTINGS = {
   paseoTransport: false,
   handoffRecovery: false,
   selfHealing: false,
+  errorRecovery: false,
   showCardAccessRoute: false,
   seedPromptTemplate: DEFAULT_SEED_PROMPT_TEMPLATE,
   analyzePromptTemplate: DEFAULT_ANALYZE_PROMPT_TEMPLATE,
@@ -523,6 +524,7 @@ function normalizeProject(project) {
     temporaryLiftScope: normalizedLiftScope(project.temporaryLiftScope, ''),
     permanentLift: normalizedLiftScope(project.permanentLift, ''),
     autoResumeOnStart: typeof project.autoResumeOnStart === 'boolean' ? project.autoResumeOnStart : false,
+    errorRecovery: typeof project.errorRecovery === 'boolean' ? project.errorRecovery : null,
     githubRepoUrl: normalizedRepoUrl(project.githubRepoUrl),
     dockerRepoUrl: normalizedDockerRepoUrl(project.dockerRepoUrl)
   };
@@ -551,6 +553,7 @@ function normalizeSettings(settings) {
   normalized.paseoTransport = normalized.paseoTransport === true;
   normalized.handoffRecovery = normalized.handoffRecovery === true;
   normalized.selfHealing = normalized.selfHealing === true;
+  normalized.errorRecovery = normalized.errorRecovery === true;
   normalized.showCardAccessRoute = normalized.showCardAccessRoute === true;
   normalized.runnerRotation = normalized.runnerRotation === true;
   normalized.globalRunner = normalizedRunner(normalized.globalRunner, DEFAULT_SETTINGS.globalRunner);
@@ -610,6 +613,14 @@ function resolveRotation(project, settings, modelField = 'model') {
   return globalSettings[field] === true;
 }
 
+// Opt-in error recovery: a per-project boolean wins, otherwise inherit the
+// global default (off unless explicitly enabled).
+function resolveErrorRecovery(project, settings) {
+  const normalized = normalizeProject(project) || {};
+  if (typeof normalized.errorRecovery === 'boolean') return normalized.errorRecovery;
+  return (settings || {}).errorRecovery === true;
+}
+
 function defaults() {
   return { settings: { ...DEFAULT_SETTINGS }, projects: [] };
 }
@@ -663,6 +674,7 @@ module.exports = {
   modelFieldForPhase,
   rotationFieldForModelField,
   resolveRotation,
+  resolveErrorRecovery,
   defaults,
   loadConfig,
   saveConfig,
