@@ -71,6 +71,45 @@ function recordHealerExit(project, rt) {
   selfhealRoundState.lastExitAt[project.id] = rt.healerLastExitAt;
   saveSelfhealRoundState();
 }
+
+// The retry-exhausted notice is emitted at most once per distinct errored
+// checkpoint intent. The digest is persisted per project so a restart into the
+// same exhausted budget cannot replay the line; a new intent (new phase, task or
+// error) logs again, and a manual Retry clears it with the budget.
+function resumeRetryLogPath(project) {
+  return path.join(project.path, '.looparr', 'resume-retry-log.json');
+}
+
+function resumeRetryLogDigestFor(intent, phase, taskText) {
+  const runKey = intent && typeof intent.runKey === 'string' ? intent.runKey : '';
+  const error = intent && typeof intent.error === 'string' ? intent.error.slice(0, 300) : '';
+  return [runKey, String(phase ?? ''), String(taskText ?? ''), error].join('\u0000');
+}
+
+function readResumeRetryLogDigest(project) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(resumeRetryLogPath(project), 'utf8'));
+    return parsed && typeof parsed.digest === 'string' ? parsed.digest : '';
+  } catch {
+    return '';
+  }
+}
+
+function writeResumeRetryLogDigest(project, digest) {
+  try {
+    fs.mkdirSync(path.join(project.path, '.looparr'), { recursive: true });
+    fs.writeFileSync(resumeRetryLogPath(project), `${JSON.stringify({ digest })}\n`, {
+      encoding: 'utf8',
+      mode: 0o600
+    });
+  } catch { /* best effort; callers keep the runtime digest too */ }
+}
+
+function clearResumeRetryLogDigest(project) {
+  try {
+    fs.unlinkSync(resumeRetryLogPath(project));
+  } catch { /* absent is fine */ }
+}
 // Heartbeat cadence so a healthy idle dev daemon keeps the status file fresh.
 const SELFHEAL_HEARTBEAT_MS = 60_000;
 
@@ -133,6 +172,7 @@ function ensureRuntime(project) {
       // consumed once as prior-step prompt context. Both reset per restart.
       resumeRetryCount: 0,
       resumePriorStepOutput: '',
+      resumeRetryLogDigest: readResumeRetryLogDigest(project),
       icon: null,
       iconVersion: null,
       activeRunner: '',
@@ -1408,10 +1448,17 @@ function maybeStartHealer(project, rt, failedPhase, opts = {}) {
   if (!selfHealingEnabled()) {
     const reason = selfHealDisabledReason();
     if (config.settings.selfHealing === true && reason) {
+      // In production the managed standby daemon (looparr-selfheal.service)
+      // owns the round, so the primary reports a delegation instead of a
+      // missing in-process round.
+      const delegated = process.env.NODE_ENV === 'production'
+        && reason.startsWith('NODE_ENV=production');
       appendLog(
         project.id,
         'system',
-        `… Self-heal is enabled but unavailable in this process (${reason}); no round started.`
+        delegated
+          ? `… Self-heal is enabled; the host standby self-heal daemon owns the round (${reason}); no in-process round is needed.`
+          : `… Self-heal is enabled but unavailable in this process (${reason}); no round started.`
       );
     }
     return false;
@@ -1943,6 +1990,14 @@ function start(id, options = {}) {
   rt.pauseAfterStep = false;
   rt.resumeAt = null;
   rt.cooloffUntil = null;
+  if (options.manual) {
+    // A manual Retry/Start re-arms the bounded auto-resume budget. Without this
+    // an exhausted budget strands the project in the restart-blocking "already
+    // retried once" state forever, because no operator action can clear it.
+    rt.resumeRetryCount = 0;
+    rt.resumeRetryLogDigest = '';
+    clearResumeRetryLogDigest(project);
+  }
   rt.error = '';
   rt.currentTask = rt.currentTask || '';
   // Waiting states survive Start: only a real answer PUT (planWrite) or POST
@@ -4078,7 +4133,12 @@ async function resumeOnStart() {
         rt.resumePriorStepOutput = '';
         if (sessionId && sessionUsable) sessionCause = 'retry-exhausted';
         emitState();
-        appendLog(project.id, 'system', '✖ Errored resume already retried once; manual intervention required.');
+        const retryLogDigest = resumeRetryLogDigestFor(intent, phase, taskText);
+        if (rt.resumeRetryLogDigest !== retryLogDigest) {
+          rt.resumeRetryLogDigest = retryLogDigest;
+          writeResumeRetryLogDigest(project, retryLogDigest);
+          appendLog(project.id, 'system', '✖ Errored resume already retried once; use the project Retry/Start control after resolving the error.');
+        }
       } else {
         if (intent.status === 'error') {
           // Bounded auto-retry: increment exactly once per restore; the next

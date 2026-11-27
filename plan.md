@@ -270,3 +270,4 @@ Why: Scriptable on iOS uses native image decoding. It cannot decode SVG (`image/
 - [x] (validation: Frontend) Frontend Validation
 - [x] The add last add after dynamic portion should only list tasks not completed
 - [x] When multiple projects running sometimes a project shows idle before it goes to Awaiting slot, fix so it doesn’t show idle of more tasks and is actively running but just waitings
+- [x] Investigate remaining errors on other projects

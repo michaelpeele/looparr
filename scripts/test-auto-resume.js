@@ -1204,16 +1204,101 @@ async function main() {
   assert.equal(countAudit(drill.id, 'resume-on-start') >= 2, true, 'one resume-on-start per restart');
   const exhaustedAudit = readAudit(drill.id).filter((entry) => entry.event === 'resume-on-start').pop();
   assert.ok((exhaustedAudit.cause || '').includes('retry-exhausted'), 'retry-exhausted cause audited');
+  const noticeText = 'Errored resume already retried once';
+  const exhaustedNoticeCount = (exhausted.logs || []).filter((entry) => String(entry.text).includes(noticeText)).length;
+  assert.equal(exhaustedNoticeCount, 1, 'retry-exhausted notice logged once');
+  const auditBeforeThird = readAudit(drill.id).filter((entry) => entry.event === 'resume-on-start').length;
 
   server = await restartServer(server, true);
   await delay(500);
   const thirdDrill = findProject(await getState(), drill.id);
   assert.equal(thirdDrill.active, false, 'third restart still starts no runner');
+  assertEqual(thirdDrill.status, 'error', 'third restart keeps error status');
   assert.ok(readPrompts(drill).length <= 1, 'third restart wrote no prompt');
   assert.ok(
     readAudit(drill.id).every((entry) => entry.event !== 'resume-on-start' || !(entry.cause || '').includes('retry=')),
     'the retry never runs a second time'
   );
+  const thirdNoticeCount = (thirdDrill.logs || []).filter((entry) => String(entry.text).includes(noticeText)).length;
+  assert.equal(thirdNoticeCount, 1, 'repeated restart does not duplicate the retry-exhausted notice');
+  assert.equal(
+    readAudit(drill.id).filter((entry) => entry.event === 'resume-on-start').length > auditBeforeThird,
+    true,
+    'audit entry still written on repeated restart'
+  );
+
+  // 13d-1. Manual Retry re-arms the bounded auto-resume budget after an
+  // exhausted errored checkpoint. The next error gets exactly one retry, then
+  // stops again when the single retry is exhausted.
+  const retryArm = await createProjectViaApi('manual-retry-rearm', true);
+  const retryArmDigestPath = path.join(retryArm.path, '.looparr', 'resume-retry-log.json');
+  const writeRetryArmErrorIntent = (error, retryCount) => {
+    writeIntentFor(retryArm.id, {
+      nextPhase: 'implement',
+      status: 'error',
+      currentTask: retryArm.task,
+      error,
+      snapshot: {
+        stepTask: { index: 2, text: retryArm.task },
+        stepOutput: 'prior step progress for rearm drill',
+        resumeRetryCount: retryCount
+      }
+    });
+  };
+  writeRetryArmErrorIntent('manual retry drill initial error', autoResume.RESUME_RETRY_LIMIT);
+  server = await restartServer(server, true);
+  const rearmExhausted = findProject(await getState(), retryArm.id);
+  assertEqual(rearmExhausted.active, false, 'rearm drill starts no runner before manual Retry');
+  assertEqual(rearmExhausted.status, 'error', 'rearm drill starts in error before manual Retry');
+  assert.equal(fs.existsSync(retryArmDigestPath), true, 'exhausted notice digest persisted');
+  assert.equal(
+    (rearmExhausted.logs || []).filter((entry) => String(entry.text).includes(noticeText)).length,
+    1,
+    'rearm drill initial exhaustion logs once'
+  );
+
+  await startAndWait(retryArm.id);
+  const rearmedPid = await waitForChildPid(projectById(retryArm.id));
+  let rearmedCheckpoint = null;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const checked = autoResume.readIntent(projectById(retryArm.id));
+    if (checked.ok && checked.intent.reason === 'checkpoint') {
+      rearmedCheckpoint = checked.intent;
+      break;
+    }
+    await delay(50);
+  }
+  assert.ok(rearmedCheckpoint, 'manual Retry writes a fresh checkpoint');
+  assert.equal(rearmedCheckpoint.snapshot.resumeRetryCount, 0, 'manual Retry resets the budget to zero');
+  assert.equal(fs.existsSync(retryArmDigestPath), false, 'manual Retry clears the exhausted notice digest');
+
+  await stopAllProjects();
+  await waitForPidGone(rearmedPid);
+  fs.rmSync(path.join(retryArm.path, '.looparr', 'fake-child.pid'), { force: true });
+  const rearmPromptCount = readPrompts(retryArm).length;
+  writeRetryArmErrorIntent('manual retry drill second error', 0);
+  server = await restartServer(server, true);
+  const rearmedRetry = findProject(await getState(), retryArm.id);
+  assertEqual(rearmedRetry.active, true, 'next error after manual Retry starts one bounded retry');
+  assert.equal(readPrompts(retryArm).length, rearmPromptCount + 1, 'next error after manual Retry starts exactly one prompt');
+  assert.ok(
+    readAudit(retryArm.id).some(
+      (entry) => entry.event === 'resume-on-start' && String(entry.cause || '').includes('retry=1')
+    ),
+    'rearmed retry is audited as retry=1'
+  );
+  const rearmedRetryPid = await waitForChildPid(projectById(retryArm.id));
+
+  await stopAllProjects();
+  await waitForPidGone(rearmedRetryPid);
+  fs.rmSync(path.join(retryArm.path, '.looparr', 'fake-child.pid'), { force: true });
+  const rearmFinalPromptCount = readPrompts(retryArm).length;
+  writeRetryArmErrorIntent('manual retry drill second error', autoResume.RESUME_RETRY_LIMIT);
+  server = await restartServer(server, true);
+  const rearmFinal = findProject(await getState(), retryArm.id);
+  assertEqual(rearmFinal.active, false, 'spent rearmed budget starts no runner');
+  assertEqual(rearmFinal.status, 'error', 'spent rearmed budget stays in error');
+  assert.equal(readPrompts(retryArm).length, rearmFinalPromptCount, 'rearmed retry never loops unboundedly');
 
   // 13e. Snapshot-free degrades and session handling.
   const planMismatchProject = await createProjectViaApi('plan-write-mismatch', true);

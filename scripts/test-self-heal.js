@@ -72,7 +72,13 @@ function testEngine() {
     'disabled reason names the missing dev signal');
   assertIncludes(engine, 'function selfHealDisabledReason', 'disabled-reason helper');
   assertIncludes(engine, 'Self-heal is enabled but unavailable in this process',
-    'guard logs why no round started');
+    'non-prod guard logs why no round started');
+  assertIncludes(engine, 'the host standby self-heal daemon owns the round',
+    'prod guard delegates the round to the standby daemon');
+  assertIncludes(engine, 'no in-process round is needed',
+    'prod guard says no in-process round is needed');
+  assertIncludes(engine, "reason.startsWith('NODE_ENV=production')",
+    'delegation stays limited to the production reason');
   assertIncludes(engine, "config.settings.selfHealing === true && reason",
     'guard log only fires while the setting is on');
   assertIncludes(engine, 'HEALER_MAX_ROUNDS = 1', 'one-round cap constant');
