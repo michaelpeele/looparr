@@ -274,7 +274,7 @@ Why: Scriptable on iOS uses native image decoding. It cannot decode SVG (`image/
 - [x] Investigate remaining errors on other projects
 - [x] Cleanup healer branches on other projects , if they have code needed merge to main. If none are left examine why ui still shows merge under two project cards and correct
 - [x] Add option to archive current plan.md come up with button options and suggest placement options
-- [ ] Change start to a play icon, pause to pause icon, stop to stop sign, remove to red trash can, add a + button that opens an add task model with the same options from project detail page
+- [x] Change start to a play icon, pause to pause icon, stop to stop sign, remove to red trash can, add a + button that opens an add task model with the same options from project detail page
 
 ## Client sign-in card
 
@@ -286,3 +286,8 @@ Relevant files: `src/auth-failures.js` (new), `src/engine.js`, `src/failure.js`,
 - [ ] (plan 02) Host executor sign-in — steps 5–6 of [PLAN-auth-signin-card-steps.md](.project_documents/PLAN-auth-signin-card-steps.md), after 01 lands: `/auth/{login,status,cancel}` handlers in `scripts/host-executor.js` with the `script -qec` pty wrapper and one login session per runner, plus `scripts/test-host-auth-login.js`. Check: `node scripts/test-host-auth-login.js`, then restart with `systemctl --user restart looparr-host-executor` (outside `npm run restart:looparr`) and confirm `/health` and `GET /auth/status` on `http://172.17.0.1:4187`. No app image change.
 - [ ] (plan 03) Server proxies and home card — steps 7–9 of [PLAN-auth-signin-card-steps.md](.project_documents/PLAN-auth-signin-card-steps.md), after 02: `/api/auth/*` proxies in `server.js`, the card above the project cards in `public/index.html`, `public/app.js`, and `public/styles.css` (friendly client names, `AUTH REQUIRED · 401`, Sign in button, `Generating code…` with the live log, clickable `app.kilo.ai/device-auth?code=…` plus the long code), and its UI wiring test under `scripts/`. Check: that test, `npm test`, `git diff --check`, then `npm run restart:looparr` and verify container health plus served HTML/CSS/JS.
 - [ ] (plan 04) Live sign-in verification — steps 10–13 of [PLAN-auth-signin-card-steps.md](.project_documents/PLAN-auth-signin-card-steps.md), after 03: sandbox smoke, live executor probe, one human-approved real Kilo Gateway device-authorization round, and the result recorded in `.project_documents/PROGRESS.md`. Check: the round completes end to end with a successful Kilo step on that runner; a round that could not be completed is recorded as pending, never as passed.
+
+## Release publish
+
+- [ ] Add a push remote for Looparr and push the release commit to origin.
+- [ ] Create a GitHub release tagged `v1.1`, incrementing from `v1.0` by `.1`, and build/publish the multi-arch Docker image using the Curatarr pattern with the same `v1.1` tag plus `latest` on GHCR. Verify the GitHub release tag, the GHCR package tag, the Docker package link, and the Docker button.

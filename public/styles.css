@@ -747,6 +747,20 @@ button.merging:disabled { opacity: 1; cursor: progress; }
 
 .card-controls { display: flex; gap: 8px; flex-wrap: wrap; min-width: 0; margin-top: auto; }
 .card-controls .button { flex: 1 1 auto; min-width: 0; padding: 7px 9px; font-size: 12px; }
+.card-controls .icon-button { width: 34px; height: 34px; }
+.card-controls .icon {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.card-controls .icon use { pointer-events: none; }
+.card-controls .icon-button.danger { color: #fecaca; border-color: rgba(248, 113, 113, 0.35); }
+.card-controls .icon-button.danger:hover:not(:disabled) { color: #fecaca; background: rgba(248, 113, 113, 0.12); border-color: rgba(248, 113, 113, 0.5); }
+.card-controls .icon-button.danger:focus-visible { outline-color: #f87171; }
 .countdown { font-size: 11px; color: var(--amber); }
 
 .empty-state {
@@ -1108,6 +1122,7 @@ body.plan-dragging .checklist { cursor: grabbing; }
   .env-settings-actions { justify-content: stretch; flex-direction: column; align-items: stretch; }
   .checklist { --task-controls-rail: 332px; }
   .task-controls .move-button, .task-controls .drag-handle, .task-controls .icon-button { width: 44px; height: 44px; }
+  .card-controls .icon-button { width: 44px; height: 44px; }
 }
 
 @media (max-width: 640px) {
@@ -1117,6 +1132,8 @@ body.plan-dragging .checklist { cursor: grabbing; }
   .inline-folder-create, .inline-folder-actions { width: 100%; }
   .inline-folder-actions .button { flex: 1 1 100%; width: 100%; }
   .folder-browser { width: calc(100vw - 20px); max-width: none; max-height: calc(100vh - 20px); }
+  .add-task-modal { width: calc(100vw - 20px); max-width: none; max-height: calc(100vh - 20px); }
+  .add-task-modal .modal-task-add-row #modal-task-status { flex: 1 1 100%; width: 100%; }
   .folder-browser-header, .folder-browser-body, .folder-browser-footer { padding: 12px; }
   .folder-browser-toolbar, .folder-selection { align-items: stretch; flex-direction: column; }
   .folder-browser-toolbar .button, .folder-selection .button { width: 100%; }
@@ -1211,6 +1228,31 @@ body.plan-dragging .checklist { cursor: grabbing; }
 .plan-file-modal .plan-file-status { display: block; min-height: 18px; color: var(--muted); }
 .plan-file-modal .plan-file-status.error { color: var(--red); }
 .plan-file-modal .plan-file-modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.add-task-modal {
+  width: min(720px, calc(100vw - 32px));
+  max-width: 720px;
+  max-height: min(86vh, 780px);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.add-task-modal::backdrop { background: rgba(0, 0, 0, 0.65); }
+.add-task-modal .modal-task-add-row { margin-bottom: 0; }
+.add-task-modal .modal-task-add-row #modal-task-status {
+  flex: 0 0 90px;
+  width: 90px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.add-task-modal .plan-file-modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.add-task-modal .folder-browser-actions { justify-content: flex-end; }
 
 .plan-file-ref {
   display: inline;

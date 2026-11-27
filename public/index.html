@@ -38,6 +38,22 @@
       <path d="M6 13V9h3v4M10 13V9h3v4M14 13V9h3v4"/>
       <path d="M18 11h2a2 2 0 0 1 2 2v1h-4v-3Z"/>
     </symbol>
+    <symbol id="icon-play" viewBox="0 0 24 24">
+      <path d="M7 4.5v15l12-7.5-12-7.5Z"/>
+    </symbol>
+    <symbol id="icon-pause" viewBox="0 0 24 24">
+      <rect x="6" y="4.5" width="4" height="15" rx="1"/>
+      <rect x="14" y="4.5" width="4" height="15" rx="1"/>
+    </symbol>
+    <symbol id="icon-stop" viewBox="0 0 24 24">
+      <path d="M8 3h8l5 5v8l-5 5H8l-5-5V8l5-5Z"/>
+    </symbol>
+    <symbol id="icon-trash" viewBox="0 0 24 24">
+      <path d="M4 7h16"/>
+      <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+      <path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/>
+      <path d="M10 11v6M14 11v6"/>
+    </symbol>
   </svg>
   <header class="topbar">
     <button class="nav-toggle" id="nav-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="sidebar-nav">
@@ -686,6 +702,48 @@
       <div class="folder-browser-actions plan-file-modal-actions">
         <button class="button" type="button" id="plan-file-cancel">Cancel</button>
         <button class="button primary" type="button" id="plan-file-save">Save</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="add-task-modal" class="add-task-modal" aria-labelledby="add-task-modal-title">
+    <div class="folder-browser-header">
+      <h2 id="add-task-modal-title">Add task</h2>
+      <button class="icon-button" type="button" id="modal-task-close" aria-label="Close add task">✕</button>
+    </div>
+    <div class="folder-browser-body">
+      <div class="task-add-row modal-task-add-row">
+        <input type="text" id="modal-task-input" placeholder="Add a task" autocomplete="off">
+        <select id="modal-task-sprint-select" class="task-sprint-select" aria-label="Assign to sprint" title="Assign to sprint">
+          <option value="">No sprint</option>
+        </select>
+        <select id="modal-task-validation-type" class="task-validation-type" aria-label="Validation type" title="Validation task type">
+          <option value="">Validation: none</option>
+          <option value="Sprint">Sprint</option>
+          <option value="Backend">Backend</option>
+          <option value="Frontend">Frontend</option>
+          <option value="Docs">Docs</option>
+        </select>
+        <select id="modal-task-insert-position" class="task-insert-position" aria-label="Insert position" title="Where to add the task">
+          <option value="last" selected>Add last</option>
+          <option value="first">Add first</option>
+          <option value="after">Add after</option>
+        </select>
+        <select id="modal-task-insert-after" class="task-insert-after" aria-label="Insert after task" title="Insert after this task" hidden>
+          <option value="">After which task</option>
+        </select>
+        <label class="task-link-doc-row">
+          <input type="checkbox" id="modal-task-link-doc">
+          <span>Link doc</span>
+        </label>
+        <input type="text" id="modal-task-doc-file" placeholder="PREFIX-slug.md" hidden>
+        <span class="muted small-text" id="modal-task-status"></span>
+      </div>
+    </div>
+    <div class="folder-browser-footer">
+      <div class="folder-browser-actions plan-file-modal-actions">
+        <button class="button" type="button" id="modal-task-cancel">Cancel</button>
+        <button class="button primary" type="button" id="modal-task-add">Add task</button>
       </div>
     </div>
   </dialog>

@@ -171,7 +171,19 @@
     terminalClose: $('terminal-close'),
     terminalFollow: $('terminal-follow'),
     terminalLogList: $('terminal-log-list'),
-    drawerTerminalButton: $('drawer-terminal-button')
+    drawerTerminalButton: $('drawer-terminal-button'),
+    addTaskModal: $('add-task-modal'),
+    modalTaskInput: $('modal-task-input'),
+    modalTaskSprintSelect: $('modal-task-sprint-select'),
+    modalTaskValidationType: $('modal-task-validation-type'),
+    modalTaskInsertPosition: $('modal-task-insert-position'),
+    modalTaskInsertAfter: $('modal-task-insert-after'),
+    modalTaskLinkDoc: $('modal-task-link-doc'),
+    modalTaskDocFile: $('modal-task-doc-file'),
+    modalTaskStatus: $('modal-task-status'),
+    modalTaskAdd: $('modal-task-add'),
+    modalTaskCancel: $('modal-task-cancel'),
+    modalTaskClose: $('modal-task-close')
   };
 
   const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -1005,6 +1017,79 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     setPlanFileStatus('');
   }
 
+  function isAddTaskModalOpen() {
+    return Boolean(dom.addTaskModal && (dom.addTaskModal.open || dom.addTaskModal.hasAttribute?.('open')));
+  }
+
+  function closeAddTaskModal() {
+    if (!dom.addTaskModal) return;
+    if (typeof dom.addTaskModal.close === 'function') dom.addTaskModal.close();
+    else dom.addTaskModal.removeAttribute('open');
+    app.modalTaskProjectId = null;
+    if (dom.modalTaskInput) dom.modalTaskInput.value = '';
+    if (dom.modalTaskDocFile) dom.modalTaskDocFile.value = '';
+    if (dom.modalTaskLinkDoc) dom.modalTaskLinkDoc.checked = false;
+    if (dom.modalTaskStatus) dom.modalTaskStatus.textContent = '';
+  }
+
+  function populateModalSprintSelect(projectId) {
+    if (!dom.modalTaskSprintSelect) return;
+    const project = projectById(projectId);
+    const sprints = project?.sprints || [];
+    const options = `<option value="">No sprint</option>${sprints.map((sprint) =>
+      `<option value="${esc(sprint.name)}">${esc(sprint.name)}</option>`).join('')}`;
+    dom.modalTaskSprintSelect.innerHTML = options;
+  }
+
+  async function openAddTaskModal(projectId) {
+    if (!dom.addTaskModal || !projectId) return;
+    app.modalTaskProjectId = projectId;
+    if (dom.modalTaskInput) dom.modalTaskInput.value = '';
+    if (dom.modalTaskDocFile) dom.modalTaskDocFile.value = '';
+    if (dom.modalTaskLinkDoc) dom.modalTaskLinkDoc.checked = false;
+    if (dom.modalTaskDocFile) dom.modalTaskDocFile.hidden = true;
+    if (dom.modalTaskStatus) dom.modalTaskStatus.textContent = '';
+    if (dom.modalTaskValidationType) dom.modalTaskValidationType.value = '';
+    if (dom.modalTaskInsertPosition) dom.modalTaskInsertPosition.value = 'last';
+    populateModalSprintSelect(projectId);
+    if (dom.modalTaskInsertAfter) {
+      dom.modalTaskInsertAfter.innerHTML = '<option value="">After which task</option>';
+      dom.modalTaskInsertAfter.hidden = true;
+    }
+    if (!dom.addTaskModal.open) {
+      if (typeof dom.addTaskModal.showModal === 'function') dom.addTaskModal.showModal();
+      else dom.addTaskModal.setAttribute('open', '');
+    }
+    if (dom.modalTaskInput) dom.modalTaskInput.focus();
+    try {
+      const plan = await api(`/api/projects/${encodeURIComponent(projectId)}/plan`);
+      if (app.modalTaskProjectId !== projectId) return;
+      refreshTaskInsertAfterOptions(dom.modalTaskInsertAfter, dom.modalTaskInsertPosition, plan?.tasks || []);
+    } catch (error) {
+      if (dom.modalTaskStatus && app.modalTaskProjectId === projectId) {
+        dom.modalTaskStatus.textContent = error.message;
+      }
+    }
+  }
+
+  async function submitModalTask() {
+    const id = app.modalTaskProjectId;
+    if (!id) return;
+    const saved = await addTaskToProject(id, {
+      text: dom.modalTaskInput?.value || '',
+      sprint: dom.modalTaskSprintSelect?.value || '',
+      validationType: dom.modalTaskValidationType?.value || '',
+      insertPosition: dom.modalTaskInsertPosition?.value || 'last',
+      insertAfter: dom.modalTaskInsertAfter?.value,
+      linkDoc: Boolean(dom.modalTaskLinkDoc?.checked),
+      docFile: dom.modalTaskDocFile?.value || '',
+      editorEl: null,
+      setStatus: (message) => { if (dom.modalTaskStatus) dom.modalTaskStatus.textContent = message; },
+      resetInput: () => { if (dom.modalTaskInput) dom.modalTaskInput.value = ''; }
+    });
+    if (saved && app.modalTaskProjectId === id) closeAddTaskModal();
+  }
+
   function planFileUrl(projectId, relativePath) {
     return `/api/projects/${encodeURIComponent(projectId)}/plan-file?path=${encodeURIComponent(relativePath)}`;
   }
@@ -1462,10 +1547,21 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       </div>
       <div class="progress-track"><div class="progress-fill"></div></div>
       <div class="card-controls">
-        <button class="button small" type="button" data-action="start">Start</button>
-        <button class="button small" type="button" data-action="pause">Pause</button>
-        <button class="button small" type="button" data-action="stop">Stop</button>
-        <button class="button small danger" type="button" data-action="remove">Remove</button>
+        <button class="icon-button" type="button" data-action="start" title="Start" aria-label="Start">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-play"></use></svg>
+        </button>
+        <button class="icon-button" type="button" data-action="pause" title="Pause" aria-label="Pause">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-pause"></use></svg>
+        </button>
+        <button class="icon-button" type="button" data-action="stop" title="Stop" aria-label="Stop">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-stop"></use></svg>
+        </button>
+        <button class="icon-button danger" type="button" data-action="remove" title="Remove project" aria-label="Remove project">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-trash"></use></svg>
+        </button>
+        <button class="icon-button" type="button" data-action="add-task" title="Add task" aria-label="Add task">
+          <svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
       </div>
       <button class="button small self-heal-merge" type="button" data-action="merge-selfheal" title="Merge healed branch and rebuild" aria-label="Merge healed branch and rebuild" hidden>Merge</button>
       <div class="countdown" hidden></div>`;
@@ -1719,7 +1815,9 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
 
     const buttons = card.querySelectorAll('.card-controls button');
     const disabled = controlDisabled(project);
-    buttons[0].textContent = startActionLabel(project);
+    const startLabel = startActionLabel(project);
+    buttons[0].title = startLabel;
+    buttons[0].setAttribute('aria-label', startLabel);
     buttons[0].disabled = disabled.start;
     buttons[1].disabled = disabled.pause;
     buttons[2].disabled = disabled.stop;
@@ -1753,6 +1851,10 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
   async function handleCardAction(card, action) {
     const project = card._project;
     if (!project) return;
+    if (action === 'add-task') {
+      openAddTaskModal(project.id);
+      return;
+    }
     if (action === 'remove') {
       const ok = window.confirm(
         `Remove ${project.name} from looparr? The project directory and plan.md will not be deleted.`
@@ -2418,11 +2520,10 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     return clean.split(/\s+/).slice(0, 5).join(' ');
   }
 
-  function refreshTaskInsertAfterOptions() {
-    const select = dom.taskInsertAfter;
+  function refreshTaskInsertAfterOptions(select = dom.taskInsertAfter, positionSelect = dom.taskInsertPosition, tasks = app.currentPlan?.tasks || []) {
     if (!select) return;
-    const position = dom.taskInsertPosition ? dom.taskInsertPosition.value : 'last';
-    const selectable = (app.currentPlan?.tasks || []).filter((task) => !task.checked);
+    const position = positionSelect ? positionSelect.value : 'last';
+    const selectable = tasks.filter((task) => !task.checked);
     const previous = select.value;
     const options = ['<option value="">After which task</option>'];
     selectable.forEach((task) => {
@@ -2435,9 +2536,8 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     select.hidden = position !== 'after';
   }
 
-  async function ensurePlanContent() {
-    if (dom.planEditor.value) return dom.planEditor.value;
-    const id = app.drawerId;
+  async function ensurePlanContent(id = app.drawerId, editorEl = dom.planEditor) {
+    if (editorEl && editorEl.value) return editorEl.value;
     if (!id) return '';
     const plan = await api(`/api/projects/${encodeURIComponent(id)}/plan`);
     return plan.content || '';
@@ -2647,8 +2747,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     }
   }
 
-  async function savePlanContent(content, message, change) {
-    const id = app.drawerId;
+  async function savePlanContent(content, message, change, id = app.drawerId) {
     if (!id || app.savingPlan) return false;
     app.savingPlan = true;
     planSavePending += 1;
@@ -2732,23 +2831,42 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
   async function addChecklistTask() {
     const id = app.drawerId;
     if (!id || app.savingPlan) return;
-    const text = cleanTaskText(dom.taskInput.value);
+    await addTaskToProject(id, {
+      text: dom.taskInput.value,
+      sprint: dom.taskSprintSelect?.value || '',
+      validationType: dom.taskValidationType?.value || '',
+      insertPosition: dom.taskInsertPosition?.value || 'last',
+      insertAfter: dom.taskInsertAfter?.value,
+      linkDoc: Boolean(dom.taskLinkDoc?.checked),
+      docFile: dom.taskDocFile?.value || '',
+      editorEl: dom.planEditor,
+      setStatus: (message) => { if (app.drawerId === id) dom.taskStatus.textContent = message; },
+      resetInput: () => { if (app.drawerId === id) dom.taskInput.value = ''; }
+    });
+  }
+
+  async function addTaskToProject(id, options = {}) {
+    const setStatus = options.setStatus || (() => {});
+    const resetInput = options.resetInput || (() => {});
+    const editorEl = options.editorEl || null;
+    if (!id || app.savingPlan) return false;
+    const text = cleanTaskText(options.text || '');
     if (!text) {
-      dom.taskStatus.textContent = 'Enter a task.';
-      return;
+      setStatus('Enter a task.');
+      return false;
     }
-    dom.taskStatus.textContent = 'adding…';
+    setStatus('adding…');
     try {
       let taskText = text;
-      if (dom.taskLinkDoc && dom.taskLinkDoc.checked) {
+      if (options.linkDoc) {
         const title = String(text).replace(/^\s*\(plan\)\s*/i, '');
-        const override = dom.taskDocFile && dom.taskDocFile.value ? String(dom.taskDocFile.value).trim() : '';
+        const override = options.docFile ? String(options.docFile).trim() : '';
         let file;
         try {
           file = await resolveLinkedDocName(title, override, (name) => planFileExists(id, name));
         } catch (error) {
-          dom.taskStatus.textContent = error.message || 'Invalid doc filename.';
-          return;
+          setStatus(error.message || 'Invalid doc filename.');
+          return false;
         }
         const exists = await planFileExists(id, file);
         if (!exists) {
@@ -2758,44 +2876,47 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
               body: JSON.stringify({ path: `.project_documents/${file}`, content: `# ${title}` })
             });
           } catch (error) {
-            dom.taskStatus.textContent = `Doc stub could not be created: ${error.message || 'request failed'}`;
-            return;
+            setStatus(`Doc stub could not be created: ${error.message || 'request failed'}`);
+            return false;
           }
         }
         taskText = formatLinkedTask(title, file);
       }
       // Validation-type dropdown and sprint assignment compose the tokens.
-      const validationType = dom.taskValidationType && dom.taskValidationType.value ? dom.taskValidationType.value : '';
-      const sprintName = dom.taskSprintSelect && dom.taskSprintSelect.value ? dom.taskSprintSelect.value : '';
+      const validationType = options.validationType || '';
+      const sprintName = options.sprint || '';
       if (validationType) {
         taskText = `(validation: ${validationType}) ${validationType} Validation` + (sprintName ? ` [sprint:${sprintName}]` : '');
       } else if (sprintName && !/\[sprint:[^\]]*\]/i.test(taskText)) {
         taskText = `${taskText} [sprint:${sprintName}]`;
       }
-      const content = await ensurePlanContent();
-      const insertPosition = dom.taskInsertPosition?.value || 'last';
+      const content = await ensurePlanContent(id, editorEl);
+      const insertPosition = options.insertPosition || 'last';
       let next;
       if (insertPosition === 'first') {
         next = insertTaskFirst(content, taskText);
       } else if (insertPosition === 'after') {
-        const target = Number(dom.taskInsertAfter?.value);
+        const target = Number(options.insertAfter);
         next = insertTaskAfter(content, taskText, target);
         if (!next) next = appendTask(content, taskText);
       } else {
         next = appendTask(content, taskText);
       }
       if (!next) {
-        dom.taskStatus.textContent = 'Could not add task.';
-        return;
+        setStatus('Could not add task.');
+        return false;
       }
-      dom.planEditor.value = next;
-      markPlanDirty();
-      const saved = await savePlanContent(next, 'task added');
-      if (app.drawerId !== id) return;
-      dom.taskStatus.textContent = saved ? '' : 'Could not add task.';
-      if (saved) dom.taskInput.value = '';
+      if (editorEl) {
+        editorEl.value = next;
+        markPlanDirty();
+      }
+      const saved = await savePlanContent(next, 'task added', undefined, id);
+      setStatus(saved ? '' : 'Could not add task.');
+      if (saved) resetInput();
+      return saved;
     } catch (error) {
-      if (app.drawerId === id) dom.taskStatus.textContent = error.message;
+      setStatus(error.message);
+      return false;
     }
   }
 
@@ -4128,6 +4249,30 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     const position = dom.taskInsertPosition.value;
     if (dom.taskInsertAfter) dom.taskInsertAfter.hidden = position !== 'after';
     if (position === 'after') refreshTaskInsertAfterOptions();
+  });
+  dom.modalTaskAdd?.addEventListener('click', () => { void submitModalTask(); });
+  dom.modalTaskCancel?.addEventListener('click', closeAddTaskModal);
+  dom.modalTaskClose?.addEventListener('click', closeAddTaskModal);
+  dom.modalTaskInsertPosition?.addEventListener('change', () => {
+    const position = dom.modalTaskInsertPosition.value;
+    if (dom.modalTaskInsertAfter) dom.modalTaskInsertAfter.hidden = position !== 'after';
+    if (position === 'after' && app.modalTaskProjectId) {
+      void api(`/api/projects/${encodeURIComponent(app.modalTaskProjectId)}/plan`)
+        .then((plan) => {
+          if (app.modalTaskProjectId) {
+            refreshTaskInsertAfterOptions(dom.modalTaskInsertAfter, dom.modalTaskInsertPosition, plan?.tasks || []);
+          }
+        })
+        .catch(() => {});
+    }
+  });
+  dom.modalTaskLinkDoc?.addEventListener('change', () => {
+    if (dom.modalTaskDocFile) dom.modalTaskDocFile.hidden = !dom.modalTaskLinkDoc.checked;
+  });
+  dom.modalTaskInput?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    void submitModalTask();
   });
   dom.taskInput.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter') return;

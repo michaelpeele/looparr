@@ -70,7 +70,20 @@ async function waitForServer() {
 function extractFunction(source, signature) {
   const start = source.indexOf(signature);
   assert.ok(start >= 0, `Missing function: ${signature}`);
-  const braceStart = source.indexOf('{', start);
+  const parenStart = source.indexOf('(', start);
+  assert.ok(parenStart >= 0, `Missing parameter list: ${signature}`);
+  let parenDepth = 0;
+  let parenEnd = -1;
+  for (let index = parenStart; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === '(') parenDepth += 1;
+    else if (character === ')') {
+      parenDepth -= 1;
+      if (parenDepth === 0) { parenEnd = index; break; }
+    }
+  }
+  assert.ok(parenEnd >= 0, `Unbalanced parameter list: ${signature}`);
+  const braceStart = source.indexOf('{', parenEnd);
   assert.ok(braceStart >= 0, `Missing function body: ${signature}`);
   let depth = 0;
   for (let index = braceStart; index < source.length; index += 1) {
@@ -434,7 +447,8 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(appSource, 'reorderPlanTask(content, fromTaskIndex, toTaskIndex)', 'app raw reorder helper');
   assertIncludes(appSource, 'reorderChecklistTask(fromTaskIndex, toTaskIndex)', 'app checklist reorder helper');
   assertIncludes(appSource, 'function visibleTaskIndexes(tasks, showCompleted)', 'app visible task index helper');
-  assertIncludes(appSource, '(app.currentPlan?.tasks || []).filter((task) => !task.checked)', 'app insert-after dropdown filters completed tasks');
+  assertIncludes(appSource, 'tasks = app.currentPlan?.tasks || []', 'app insert-after dropdown defaults to current plan tasks');
+  assertIncludes(appSource, 'const selectable = tasks.filter((task) => !task.checked)', 'app insert-after dropdown filters completed tasks');
   assertIncludes(appSource, 'function visibleTaskNeighbor(visibleIndexes, fromTaskIndex, direction)', 'app visible neighbor helper');
   assertIncludes(appSource, 'previousVisibleIndex === undefined', 'app move buttons use visible neighbors');
   assertIncludes(appSource, 'visibleTaskNeighbor(visibleIndexes, taskIndex, -1)', 'app click move-up uses visible neighbor');
@@ -741,7 +755,7 @@ function assertServedAssets(indexHtml, appSource, cssSource) {
   assertIncludes(appSource, 'function insertTaskFirst(content, text)', 'app insert-first helper');
   assertIncludes(appSource, 'function insertTaskAfter(content, text, targetTaskIndex)', 'app insert-after helper');
   assertIncludes(appSource, 'function taskSnippet(text)', 'app task snippet helper');
-  assertIncludes(appSource, 'function refreshTaskInsertAfterOptions()', 'app after-options refresh helper');
+  assertIncludes(appSource, 'function refreshTaskInsertAfterOptions(select = dom.taskInsertAfter', 'app after-options refresh helper');
   assertIncludes(cssSource, '#task-insert-position,', 'css insert-position selector rule');
   assertIncludes(cssSource, '#task-insert-after { flex: 0 1 auto; min-width: 0; }', 'css insert-after selector rule');
   assertIncludes(appSource, "const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|research|INVESTIGATION|investigation|HANDOFF|handoff|PROGRESS|progress';", 'app shared prefix constant');
@@ -970,6 +984,7 @@ async function testShowCompletedPureFunctions() {
 async function testAddChecklistTaskStubFailureAborts() {
   const source = fs.readFileSync(path.join(REPO_ROOT, 'public/app.js'), 'utf8');
   const addSource = extractFunction(source, 'async function addChecklistTask()');
+  const addTaskSource = extractFunction(source, 'async function addTaskToProject(id, options = {})');
   const formatSource = extractFunction(source, 'function formatLinkedTask(title, file)');
   const calls = { ensurePlanContent: 0, appendTask: 0, markPlanDirty: 0, savePlanContent: 0 };
   const dom = {
@@ -995,7 +1010,7 @@ async function testAddChecklistTaskStubFailureAborts() {
     'insertTaskAfter',
     'markPlanDirty',
     'savePlanContent',
-    `${addSource}\nreturn addChecklistTask;`
+    `${addTaskSource}\n${addSource}\nreturn addChecklistTask;`
   );
   const addChecklistTask = factory(
     app,
@@ -1035,6 +1050,7 @@ async function testAddChecklistTaskStubFailureAborts() {
 function loadAddChecklistTaskRunner(options = {}) {
   const source = fs.readFileSync(path.join(REPO_ROOT, 'public/app.js'), 'utf8');
   const addSource = extractFunction(source, 'async function addChecklistTask()');
+  const addTaskSource = extractFunction(source, 'async function addTaskToProject(id, options = {})');
   const formatSource = extractFunction(source, 'function formatLinkedTask(title, file)');
   const calls = { ensurePlanContent: 0, appendTask: 0, insertFirst: 0, insertAfter: 0, markPlanDirty: 0, savePlanContent: 0, planFileExists: 0 };
   const apiCalls = [];
@@ -1064,7 +1080,7 @@ function loadAddChecklistTaskRunner(options = {}) {
     'insertTaskAfter',
     'markPlanDirty',
     'savePlanContent',
-    `${addSource}\nreturn addChecklistTask;`
+    `${addTaskSource}\n${addSource}\nreturn addChecklistTask;`
   );
   const addChecklistTask = factory(
     app,
@@ -1117,7 +1133,7 @@ function loadAddChecklistTaskRunner(options = {}) {
 
 function loadRefreshTaskInsertAfterRunner(options = {}) {
   const source = fs.readFileSync(path.join(REPO_ROOT, 'public/app.js'), 'utf8');
-  const refreshSource = extractFunction(source, 'function refreshTaskInsertAfterOptions()');
+  const refreshSource = extractFunction(source, 'function refreshTaskInsertAfterOptions(select = dom.taskInsertAfter');
   const tasks = options.tasks || [
     { index: 0, text: 'First incomplete task', checked: false },
     { index: 1, text: 'Done alpha task', checked: true },
