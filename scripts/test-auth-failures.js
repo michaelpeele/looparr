@@ -53,6 +53,41 @@ assert.equal(
   'extractMessage should skip transcript records'
 );
 
+// Runner logs can place several transcript records on one line.
+const transcriptPair = `${transcriptToolUse} ${transcriptEffect}`;
+assert.equal(store.detect(transcriptPair), false, 'multi-object transcript line should not match');
+assert.equal(store.extractMessage(transcriptPair), '', 'extractMessage should skip multi-object transcripts');
+assert.equal(
+  store.detect(`${transcriptPair} HTTP 401 INVALID_TOKEN`),
+  true,
+  'real auth error beside multi-object transcripts should match'
+);
+
+// Sticky blocks recorded by older builds held transcript echoes as evidence.
+fs.writeFileSync(process.env.LOOPARR_AUTH_FAILURES_STATE, JSON.stringify({
+  version: 1,
+  failures: {
+    opencode: {
+      runnerId: 'opencode',
+      runnerLabel: 'OpenCode',
+      at: '2026-11-27T21:26:36.005Z',
+      message: '{"type":"tool_use","timestamp":1795814088190,"sessionID":"ses_x","part":{"partID":"prt_x","messageID":"msg_x","type":"to',
+      hint: store.hintFor('opencode')
+    },
+    kilo: {
+      runnerId: 'kilo',
+      runnerLabel: 'Kilo',
+      at: '2026-11-27T22:16:09.210Z',
+      message: 'Your authentication token is invalid. Please sign in again.',
+      hint: store.hintFor('kilo')
+    }
+  }
+}), 'utf8');
+store = fresh();
+assert.equal(store.isBlocked('opencode'), false, 'stale transcript block should be pruned');
+assert.equal(store.isBlocked('kilo'), true, 'genuine block should survive migration');
+assert.equal(store.clear('kilo'), true);
+
 const rec = store.record('kilo', {
   runnerLabel: 'Kilo',
   message: 'Your authentication token is invalid. Please sign in again.',

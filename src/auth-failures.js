@@ -30,15 +30,24 @@ const TRANSCRIPT_KEYS = [
 ];
 
 function emptyState() {
-  return { version: 1, failures: {} };
+  return { version: 2, failures: {} };
 }
 
 function load() {
   if (state) return state;
   try {
     const raw = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
-    const failures = raw && typeof raw.failures === 'object' && raw.failures ? { ...raw.failures } : {};
-    state = { version: 1, failures };
+    const stored = raw && typeof raw.failures === 'object' && raw.failures ? raw.failures : {};
+    const failures = {};
+    // Older builds stored transcript echoes as auth failures. Drop any sticky
+    // block whose recorded evidence is no longer an auth failure.
+    for (const [id, entry] of Object.entries(stored)) {
+      if (!entry || typeof entry !== 'object') continue;
+      if (!detect(String(entry.message || ''))) continue;
+      failures[id] = entry;
+    }
+    state = { version: 2, failures };
+    save();
   } catch {
     state = emptyState();
   }
@@ -62,14 +71,54 @@ function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
-function isStructuredLogLine(line) {
-  const trimmed = String(line || '').trim();
-  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return false;
-  let parsed;
-  try { parsed = JSON.parse(trimmed); } catch { return false; }
+// Runner logs can emit more than one transcript record on a single line.
+// Split top-level JSON objects so every record can be classified.
+function parseJsonObjects(line) {
+  const objects = [];
+  let index = 0;
+  while (index < line.length) {
+    while (index < line.length && /\s/.test(line[index])) index += 1;
+    if (index >= line.length) break;
+    if (line[index] !== '{') return null;
+    const start = index;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (; index < line.length; index += 1) {
+      const ch = line[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') inString = true;
+      else if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) { index += 1; break; }
+      }
+    }
+    if (depth !== 0 || inString) return null;
+    let parsed;
+    try { parsed = JSON.parse(line.slice(start, index)); } catch { return null; }
+    objects.push(parsed);
+  }
+  return objects;
+}
+
+function isTranscriptObject(parsed) {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
   if (TRANSCRIPT_TYPES.has(String(parsed.type || '').toLowerCase())) return true;
   return TRANSCRIPT_KEYS.some((key) => Object.prototype.hasOwnProperty.call(parsed, key));
+}
+
+function isStructuredLogLine(line) {
+  const trimmed = String(line || '').trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return false;
+  const objects = parseJsonObjects(trimmed);
+  if (!objects || !objects.length) return false;
+  return objects.every(isTranscriptObject);
 }
 
 function authRelevantText(text) {

@@ -79,6 +79,24 @@ async function main() {
     engine.handleRecoverClose(project, rt, 1, { index: 0, text: 'task' }, { id: 'kilo', label: 'Kilo', isRateLimit: () => false });
     assert.equal(engine.authFailures.isBlocked('kilo'), false, 'transcript close should not record auth block');
 
+    // Multiple transcript records on one line must not record an auth block either.
+    resetAuth();
+    rt.stepOutput = [
+      JSON.stringify({ type: 'step_start', sessionID: 'ses_test' }),
+      JSON.stringify({
+        type: 'tool_use',
+        sessionID: 'ses_test',
+        input: { text: 'HTTP 401 INVALID_TOKEN. Please sign in again.' }
+      })
+    ].join(' ');
+    rt.activeRunner = 'kilo';
+    rt.currentTask = 'task';
+    rt.nextPhase = 'seed';
+    rt.stepTask = { index: 0, text: 'task' };
+    rt.status = 'recover';
+    engine.handleRecoverClose(project, rt, 1, { index: 0, text: 'task' }, { id: 'kilo', label: 'Kilo', isRateLimit: () => false });
+    assert.equal(engine.authFailures.isBlocked('kilo'), false, 'multi-object transcript close should not record auth block');
+
     // Success clears block.
     resetAuth();
     engine.authFailures.record('kilo', { runnerLabel: 'Kilo', message: 'INVALID_TOKEN', hint: engine.authFailures.hintFor('kilo') });
