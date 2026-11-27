@@ -88,6 +88,49 @@ assert.equal(store.isBlocked('opencode'), false, 'stale transcript block should 
 assert.equal(store.isBlocked('kilo'), true, 'genuine block should survive migration');
 assert.equal(store.clear('kilo'), true);
 
+// Real runner logs put several transcript records on one prefixed line, split
+// them across lines, truncate them, or wrap them in ANSI color codes.
+const transcriptUserTurn = JSON.stringify({
+  id: 'user-turn-1',
+  sessionId: 'ses_test',
+  type: 'message',
+  role: 'user',
+  content: [{ type: 'text', text: 'HTTP 401 INVALID_TOKEN. sign in again' }]
+});
+const transcriptReasoning = JSON.stringify({
+  id: 'reasoning-1',
+  sessionId: 'ses_test',
+  type: 'reasoning',
+  text: 'unauthorized'
+});
+const prefixedTranscript = `Warning: project not trusted. ${transcriptUserTurn} ${transcriptReasoning}`;
+assert.equal(store.detect(prefixedTranscript), false, 'prefixed transcript line should not match');
+
+const prettyTranscript = JSON.stringify({ sessionId: 'ses_test', type: 'effect', data: { error: 'unauthorized' } }, null, 2);
+assert.equal(store.detect(`noise\n${prettyTranscript}\nnoise`), false, 'pretty transcript should not match');
+
+const truncatedTranscript = '{"id":"effect-1","sessionId":"ses_test","type":"effect","state":{"outputText":"INVALID_TOKEN"';
+assert.equal(store.detect(truncatedTranscript), false, 'truncated transcript should not match');
+
+const ansiTranscript = `\u001B[32m${transcriptToolUse}\u001B[0m`;
+assert.equal(store.detect(ansiTranscript), false, 'ansi-wrapped transcript should not match');
+
+assert.equal(
+  store.detect(`${prefixedTranscript}\nHTTP 401 INVALID_TOKEN`),
+  true,
+  'real auth error beside prefixed transcript should match'
+);
+assert.equal(
+  store.extractMessage(`${prefixedTranscript}\nHTTP 401 INVALID_TOKEN`),
+  'HTTP 401 INVALID_TOKEN',
+  'extractMessage should skip prefixed transcript records'
+);
+assert.equal(
+  store.detect('{"error":"invalid_token","status":401}'),
+  true,
+  'cli auth error json should still match'
+);
+
 const rec = store.record('kilo', {
   runnerLabel: 'Kilo',
   message: 'Your authentication token is invalid. Please sign in again.',
