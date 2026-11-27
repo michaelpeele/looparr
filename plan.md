@@ -268,4 +268,4 @@ Why: Scriptable on iOS uses native image decoding. It cannot decode SVG (`image/
 - [x] Jump to latest on CLI log detail not appearing until I scroll a little. Please make it appear on initial open
 - [x] (validation: Frontend) Frontend Validation
 - [x] The add last add after dynamic portion should only list tasks not completed
-- [ ] When multiple projects running sometimes a project shows idle before it goes to Awaiting slot, fix so it doesn’t show idle of more tasks and is actively running but just waitings
+- [x] When multiple projects running sometimes a project shows idle before it goes to Awaiting slot, fix so it doesn’t show idle of more tasks and is actively running but just waitings

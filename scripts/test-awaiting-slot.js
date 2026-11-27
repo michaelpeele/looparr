@@ -164,16 +164,81 @@ async function createProject(name, runner) {
   return created.body.project.id;
 }
 
+// Deterministic handoff-gap regression. The flicker happens inside the step
+// close handler: it clears rt.child, sets status 'idle', and emits state
+// before the scheduled tick reassigns the slot — a window too small for HTTP
+// polling to hit reliably. Drive engine.getState() through that exact runtime
+// state in-process and assert the queued project never reads as Idle.
+function testHandoffGap({ statusInfo, taskFallback }) {
+  const gapRoot = path.join(TEMP_DIR, 'gap');
+  const holderDir = path.join(gapRoot, 'holder');
+  const queuedDir = path.join(gapRoot, 'queued');
+  const freshDir = path.join(gapRoot, 'fresh');
+  for (const dir of [holderDir, queuedDir, freshDir]) {
+    fs.mkdirSync(path.join(dir, '.looparr'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'plan.md'), '- [ ] Task one\n- [ ] Task two\n', 'utf8');
+  }
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify({
+    settings: { maxConcurrent: 1, mode: 'serial' },
+    projects: [
+      { id: 'gap-holder', name: 'gap-holder', path: holderDir, runner: 'opencode' },
+      { id: 'gap-queued', name: 'gap-queued', path: queuedDir, runner: 'opencode' },
+      { id: 'gap-fresh', name: 'gap-fresh', path: freshDir, runner: 'opencode' }
+    ]
+  }, null, 2), 'utf8');
+  const engine = require(path.join(REPO_ROOT, 'src', 'engine'));
+  engine.init();
+  try {
+    const holderRt = engine.ensureRuntime({ id: 'gap-holder' });
+    const queuedRt = engine.ensureRuntime({ id: 'gap-queued' });
+    // Holder mid-step: owns the only worker slot.
+    holderRt.active = true;
+    holderRt.status = 'seed';
+    holderRt.currentTask = 'Task one';
+    holderRt.stepTask = { index: 0, text: 'Task one' };
+    holderRt.child = { kill() {} };
+    // Queued: started while the pool is full.
+    queuedRt.active = true;
+
+    const byId = (state, id) => state.projects.find((project) => project.id === id);
+    const fullState = engine.getState();
+    assertEqual(byId(fullState, 'gap-queued').awaitingSlot, true, 'queued awaiting slot while pool is full');
+
+    // Handoff gap: the holder's step finished (child cleared, status idle) but
+    // the slot is not reassigned yet. The old slotsFull-derived flag went false
+    // here, so queued work with a live plan read as Idle for one tick.
+    holderRt.child = null;
+    holderRt.status = 'idle';
+    holderRt.currentTask = '';
+    holderRt.stepTask = null;
+
+    const state = engine.getState();
+    const queued = byId(state, 'gap-queued');
+    const holder = byId(state, 'gap-holder');
+    const fresh = byId(state, 'gap-fresh');
+    assertEqual(queued.awaitingSlot, true, 'queued awaiting slot across handoff gap');
+    assertEqual(statusInfo(queued).label, 'Awaiting Slot', 'queued badge across handoff gap');
+    assertEqual(taskFallback(queued), AWAITING_TEXT, 'queued fallback across handoff gap');
+    assertEqual(holder.awaitingSlot, true, 'finished holder awaiting its next slot');
+    assertEqual(statusInfo(holder).label, 'Awaiting Slot', 'holder badge across handoff gap');
+    assertEqual(fresh.awaitingSlot, false, 'fresh project not awaiting slot');
+    assertEqual(statusInfo(fresh).label, 'Idle', 'fresh badge stays Idle');
+  } finally {
+    engine.shutdown();
+  }
+}
+
 async function main() {
   fs.rmSync(TEMP_DIR, { recursive: true, force: true });
   fs.mkdirSync(PROJECTS_ROOT, { recursive: true });
   createFixture();
+  const { taskFallback, statusInfo } = loadClientHelpers();
+  testHandoffGap({ statusInfo, taskFallback });
   fs.writeFileSync(CONFIG_PATH, JSON.stringify({
     settings: { maxConcurrent: 1, mode: 'serial' },
     projects: []
   }, null, 2));
 
-  const { taskFallback, statusInfo } = loadClientHelpers();
   const server = await spawnServer();
 
   const holderId = await createProject('holder');
