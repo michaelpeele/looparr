@@ -259,3 +259,7 @@ Why: Scriptable on iOS uses native image decoding. It cannot decode SVG (`image/
 - [x] Link GitHub repo, push to origin with tag as v1.0
 - [x] Publish docker container with multi arch testing similar to how we did Curatarr. Link docker container repo link to project so button appears
 - [x] When I click the docker button it gets 404d I see /-/ in the link correct it
+- [x] When I got to the GitHub repo the docker package isn’t linked, also the docker button is still broken
+- [x] If one project is in error it shouldn’t hold another project from continuing
+- [ ] If multiple projects are running serially the text shouldn’t indicate to press start if it’s already pressed and project idle. Verbiage should indicate awaiting worker slot
+- [ ] Jump to latest on CLI log detail not appearing until I scroll a little. Please make it appear on initial open un

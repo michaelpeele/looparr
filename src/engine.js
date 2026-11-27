@@ -159,6 +159,36 @@ function ensureRuntime(project) {
   return rt;
 }
 
+// Release every worker slot a project still holds as it enters `error`. An
+// errored project must contribute 0 to the tick's running count so it can never
+// starve other projects of a slot. Bumps rt.token so in-flight close/error
+// handlers (guarded by rt.token !== token) become no-ops, kills any still-live
+// child/sprint/validation handles, and clears the starting flag. Does NOT touch
+// resume bookkeeping (paseoAgentId, resumeSessionId, stepTask, nextPhase, error,
+// active): callers own those (an errored step checkpoints paseoAgentId so a
+// restart can resume the same agent).
+function releaseWorkerSlots(rt) {
+  rt.token += 1;
+  if (rt.child && rt.child.exitCode == null && rt.child.signalCode == null) {
+    try { rt.child.kill('SIGTERM'); } catch { /* already gone */ }
+  }
+  rt.child = null;
+  for (const run of rt.sprintRuns) {
+    if (run.child && run.child.exitCode == null && run.child.signalCode == null) {
+      try { run.child.kill('SIGTERM'); } catch { /* already gone */ }
+    }
+    run.child = null;
+  }
+  if (rt.sprintValidation
+      && rt.sprintValidation.child
+      && rt.sprintValidation.child.exitCode == null
+      && rt.sprintValidation.child.signalCode == null) {
+    try { rt.sprintValidation.child.kill('SIGTERM'); } catch { /* already gone */ }
+  }
+  rt.sprintValidation = null;
+  rt.starting = false;
+}
+
 function findProject(id) {
   return config.projects.find((project) => project.id === id) || null;
 }
@@ -313,6 +343,8 @@ function getState() {
         id: project.id,
         name: project.name,
         path: project.path,
+        githubRepoUrl: project.githubRepoUrl || '',
+        dockerRepoUrl: project.dockerRepoUrl || '',
         runner: project.runner || config.settings.globalRunner,
         runnerRotation: project.runnerRotation ?? null,
         effectiveRunnerRotation: effectiveRunnerRotation(project),
@@ -2129,6 +2161,7 @@ async function spawnRunnerAttempt(project, rt, runner, options) {
       rt.child = null;
       rt.status = 'error';
       rt.active = false;
+      releaseWorkerSlots(rt);
       rt.error = error.message;
       appendLog(project.id, 'system', `✖ ${error.message}`);
       emitState();
@@ -2180,6 +2213,7 @@ async function spawnRunnerAttempt(project, rt, runner, options) {
     rt.child = null;
     rt.status = 'error';
     rt.active = false;
+    releaseWorkerSlots(rt);
     rt.error = error.message;
     appendLog(project.id, 'system', `✖ ${error.message}`);
     emitState();
@@ -2205,6 +2239,7 @@ function handlePlanPromptClose(project, rt, task, phase) {
     rt.nextPhase = phase;
     rt.status = 'error';
     rt.active = false;
+    releaseWorkerSlots(rt);
     rt.error = message;
     appendLog(project.id, 'system', `✖ ${message}`);
     emitState();
@@ -2265,6 +2300,7 @@ function handleClose(project, rt, code, task, phase, runner) {
     if (code !== 0) {
       rt.status = 'error';
       rt.active = false;
+      releaseWorkerSlots(rt);
       rt.error = `${phase} step exited with code ${code}`;
       writeCheckpointIntent(project, rt);
       appendLog(project.id, 'system', `✖ ${rt.error}`);
@@ -2287,6 +2323,7 @@ function handleClose(project, rt, code, task, phase, runner) {
         rt.nextPhase = 'analyze';
         rt.status = 'error';
         rt.active = false;
+        releaseWorkerSlots(rt);
         rt.error = `Analyze handoff rejected (${metaCheck.reason}); meta-instruction handoffs cannot advance to Implement. Re-run Analyze with a real implementation prompt.`;
         appendLog(project.id, 'system', '✖ Analyze produced meta-prompt handoff; retrying analyze.');
         emitState();
@@ -2324,6 +2361,7 @@ function handleClose(project, rt, code, task, phase, runner) {
   } catch (error) {
     rt.status = 'error';
     rt.active = false;
+    releaseWorkerSlots(rt);
     rt.error = error.message;
     appendLog(project.id, 'system', `✖ ${error.message}`);
     emitState();
@@ -2523,6 +2561,7 @@ function sprintRunFailed(project, rt, entry, message, tail) {
   rt.error = redacted;
   rt.status = 'error';
   rt.active = false;
+  releaseWorkerSlots(rt);
   appendLog(project.id, 'system', `✖ ${redacted}`);
   if (tail) {
     appendLog(project.id, 'system', '--- BEGIN UNTRUSTED SPRINT OUTPUT ---');
@@ -2941,6 +2980,7 @@ async function startStep(project) {
         rt.nextPhase = 'analyze';
         rt.status = 'error';
         rt.active = false;
+        releaseWorkerSlots(rt);
         rt.error = `Stale meta-prompt handoff rejected before Implement (${metaCheck.reason}); re-run Analyze with a real implementation prompt.`;
         appendLog(project.id, 'system', '✖ Stale meta-prompt handoff; retrying analyze.');
         emitState();
@@ -3029,6 +3069,7 @@ async function startStep(project) {
           rt.nextPhase = 'analyze';
           rt.status = 'error';
           rt.active = false;
+          releaseWorkerSlots(rt);
           rt.error = `Stale meta-prompt handoff rejected before Implement (${metaCheck.reason}); re-run Analyze with a real implementation prompt.`;
           appendLog(project.id, 'system', '✖ Stale meta-prompt handoff; retrying analyze.');
           emitState();
@@ -3166,6 +3207,7 @@ async function startStep(project) {
   } catch (error) {
     rt.status = 'error';
     rt.active = false;
+    releaseWorkerSlots(rt);
     rt.error = error.message;
     appendLog(project.id, 'system', `✖ ${error.message}`);
     emitState();
@@ -3192,10 +3234,16 @@ function scheduleTick() {
 
 function eligibleProjects() {
   return config.projects.filter((project) => {
-    const rt = ensureRuntime(project);
-    // Waiting plan states are only advanced by an answer PUT or plan-confirm.
-    if (WAITING_STATUSES.has(rt.status)) return false;
-    return rt.active && !rt.paused && !rt.child && !rt.starting && !rt.resumeAt && rt.status !== 'done' && rt.status !== 'error' && (!rt.cooloffUntil || Date.now() >= rt.cooloffUntil);
+    try {
+      const rt = ensureRuntime(project);
+      // Waiting plan states are only advanced by an answer PUT or plan-confirm.
+      if (WAITING_STATUSES.has(rt.status)) return false;
+      return rt.active && !rt.paused && !rt.child && !rt.starting && !rt.resumeAt && rt.status !== 'done' && rt.status !== 'error' && (!rt.cooloffUntil || Date.now() >= rt.cooloffUntil);
+    } catch (error) {
+      // One project's runtime must never abort the whole eligibility sweep.
+      console.error(`[engine] tick skipped ${project.id}: ${error && error.message}`);
+      return false;
+    }
   });
 }
 
@@ -3204,20 +3252,32 @@ function tick() {
   const limit = maxWorkers();
   let running = 0;
   for (const project of config.projects) {
-    const rt = ensureRuntime(project);
-    if (rt.child) running += 1;
-    for (const run of rt.sprintRuns) {
-      if (run.child) running += 1;
-    }
-    if (rt.sprintValidation) running += 1;
-    if (rt.resumeAt && rt.active && !rt.paused && Date.now() >= rt.resumeAt) {
-      rt.resumeAt = null;
-      if (rt.status === 'rateLimited') rt.status = 'idle';
-      emitState();
-    }
-    if (rt.cooloffUntil && rt.active && !rt.paused && Date.now() >= rt.cooloffUntil) {
-      rt.cooloffUntil = null;
-      emitState();
+    try {
+      const rt = ensureRuntime(project);
+      if (rt.status === 'error') {
+        // An errored project contributes 0 slots: drop any stale child/sprint
+        // handles so it can never starve a healthy project of a worker slot.
+        releaseWorkerSlots(rt);
+      } else {
+        if (rt.child) running += 1;
+        for (const run of rt.sprintRuns) {
+          if (run.child) running += 1;
+        }
+        if (rt.sprintValidation) running += 1;
+      }
+      if (rt.resumeAt && rt.active && !rt.paused && Date.now() >= rt.resumeAt) {
+        rt.resumeAt = null;
+        if (rt.status === 'rateLimited') rt.status = 'idle';
+        emitState();
+      }
+      if (rt.cooloffUntil && rt.active && !rt.paused && Date.now() >= rt.cooloffUntil) {
+        rt.cooloffUntil = null;
+        emitState();
+      }
+    } catch (error) {
+      // A single project's runtime must never abort the running-count sweep.
+      console.error(`[engine] tick skipped ${project.id}: ${error && error.message}`);
+      continue;
     }
   }
   const now = Date.now();
@@ -3252,16 +3312,41 @@ function tick() {
       const index = roundRobinCursor % eligible.length;
       const project = eligible[index];
       roundRobinCursor = (index + 1) % eligible.length;
-      startStep(project);
-      running += 1;
+      try {
+        const pending = startStep(project);
+        if (pending && typeof pending.catch === 'function') {
+          pending.catch((error) => {
+            console.error(`[engine] startStep rejected ${project.id}: ${error && error.message}`);
+          });
+        }
+      } catch (error) {
+        // A synchronous throw from one project must not skip later projects.
+        console.error(`[engine] tick skipped ${project.id}: ${error && error.message}`);
+        continue;
+      }
+      const rt = ensureRuntime(project);
+      if (rt.starting || rt.child) running += 1;
+      else break; // no slot taken; retry on the next tick instead of spinning
     }
     return;
   }
 
   for (const project of eligible) {
     if (running >= limit) break;
-    startStep(project);
-    running += 1;
+    try {
+      const pending = startStep(project);
+      if (pending && typeof pending.catch === 'function') {
+        pending.catch((error) => {
+          console.error(`[engine] startStep rejected ${project.id}: ${error && error.message}`);
+        });
+      }
+    } catch (error) {
+      // A synchronous throw from one project must not skip later projects.
+      console.error(`[engine] tick skipped ${project.id}: ${error && error.message}`);
+      continue;
+    }
+    const rt = ensureRuntime(project);
+    if (rt.starting || rt.child) running += 1;
   }
 }
 
@@ -3779,6 +3864,10 @@ function shutdown() {
 module.exports = {
   init,
   shutdown,
+  tick,
+  eligibleProjects,
+  maxWorkers,
+  ensureRuntime,
   getState,
   addProject,
   removeProject,
