@@ -457,6 +457,7 @@ input[type="number"] { max-width: 130px; }
 .env-reveal { flex: 0 0 34px; }
 .env-settings-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding-top: 14px; }
 #env-settings-status { color: var(--muted); font-size: 12px; }
+#settings-status.error { color: var(--red); }
 
 .button {
   border: 1px solid var(--border);
