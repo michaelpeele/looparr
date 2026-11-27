@@ -20,6 +20,15 @@ const HINTS = {
   kilo: 'Open CLI and /models, pick Kilo gateway and reauthenticate.'
 };
 
+// Runner transcripts echo prompts and logs as structured JSON. Auth words in
+// those records are conversation data, not CLI auth failures.
+const TRANSCRIPT_TYPES = new Set([
+  'tool_use', 'tool_result', 'effect', 'message', 'step', 'result', 'user', 'assistant'
+]);
+const TRANSCRIPT_KEYS = [
+  'sessionID', 'sessionId', 'turnId', 'messageID', 'partID', 'inputEntryId', 'part'
+];
+
 function emptyState() {
   return { version: 1, failures: {} };
 }
@@ -53,13 +62,30 @@ function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function isStructuredLogLine(line) {
+  const trimmed = String(line || '').trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return false;
+  let parsed;
+  try { parsed = JSON.parse(trimmed); } catch { return false; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+  if (TRANSCRIPT_TYPES.has(String(parsed.type || '').toLowerCase())) return true;
+  return TRANSCRIPT_KEYS.some((key) => Object.prototype.hasOwnProperty.call(parsed, key));
+}
+
+function authRelevantText(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .filter((line) => !isStructuredLogLine(line))
+    .join('\n');
+}
+
 function looksLikeFetchedHtml(text) {
   const value = String(text || '');
   return /<html[\s>]|<!doctype html|<body[\s>]/i.test(value);
 }
 
 function detect(text) {
-  const raw = String(text || '');
+  const raw = authRelevantText(text);
   const haystack = raw.toLowerCase();
   if (!haystack) return false;
   const hasSignature = SIGNATURES.some((sig) => haystack.includes(sig));
@@ -92,7 +118,7 @@ function detect(text) {
 }
 
 function extractMessage(text) {
-  const raw = String(text || '');
+  const raw = authRelevantText(text);
   const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const match = lines.find((line) => detect(line));
   const picked = match || lines.find((line) => /invalid|unauthorized|sign in|token/i.test(line)) || '';
