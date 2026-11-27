@@ -1972,9 +1972,9 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     app.terminalId = id;
     dom.terminalTitle.textContent = `${project.name} · agent terminal`;
     app.terminalFollow = true;
-    renderTerminalLogs(id);
     dom.terminalOverlay.hidden = false;
     document.body.style.overflow = 'hidden';
+    renderTerminalLogs(id);
     dom.terminalClose.focus();
   }
 

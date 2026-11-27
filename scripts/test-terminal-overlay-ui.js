@@ -188,10 +188,10 @@ function loadOverlayFunctions({ drawerId = null, open = false } = {}) {
     drawerId,
     terminalFollow: true
   };
-  const calls = { renderTerminalLogs: [] };
+  const calls = { renderTerminalLogs: [], renderAtHidden: [] };
   const factory = new Function('app', 'dom', 'document', 'calls', [
     "function projectById(id) { return id === 'p1' ? { id: 'p1', name: 'Demo' } : null; }",
-    'function renderTerminalLogs(id) { calls.renderTerminalLogs.push(id); }',
+    'function renderTerminalLogs(id) { calls.renderTerminalLogs.push(id); calls.renderAtHidden.push(dom.terminalOverlay.hidden); toggleTerminalFollowButton(); }',
     streamClass,
     formatLogText,
     makeLogLine,
@@ -377,6 +377,9 @@ function testOpenAndCloseTerminal() {
   assertEqual(helpers.dom.terminalOverlay.hidden, false, 'openTerminal shows the overlay');
   assertEqual(helpers.documentStub.body.style.overflow, 'hidden', 'openTerminal locks page scroll');
   assert.deepEqual(helpers.calls.renderTerminalLogs, ['p1'], 'openTerminal renders project logs');
+  assert.deepEqual(helpers.calls.renderAtHidden, [false], 'openTerminal reveals overlay before rendering logs');
+  assert.equal(helpers.app.terminalFollow, true, 'openTerminal starts in follow mode');
+  assert.equal(helpers.dom.terminalFollow.hidden, true, 'openTerminal keeps follow button hidden while following');
   assert.ok(String(helpers.dom.terminalTitle.textContent).includes('Demo'), 'openTerminal titles with project name');
   assertEqual(helpers.dom.terminalClose.focusCount, 1, 'openTerminal focuses the close button');
 
