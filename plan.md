@@ -12,7 +12,7 @@ Stale production assets have shipped three times. For every batch that changes s
 
 ## Promotion automation batch
 
-- [ ] Move add task button left of start button, right align remove button
+- [x] Move add task button left of start button, right align remove button
 - [x] Retry doesn’t appear to do anything while rate limited, also looparr card shows rate limited but other projects are working fine
 - [x] Correct splitarr error
 - [x] Make promotion idempotent and observable — see [PLAN-idempotent-promotion.md](.project_documents/PLAN-idempotent-promotion.md). Automatable scope: known promotion log/status artifact, pre-promote evidence check (skip rebuild when current source hashes already deployed + container healthy + `/api/state` OK), bounded compose phase logging/journal capture, lock release on timeout/failure, watchdog-aware recovery hook, and focused tests. No manual UI gates.

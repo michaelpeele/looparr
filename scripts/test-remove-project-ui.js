@@ -43,7 +43,7 @@ assertIncludes(
 );
 assertIncludes(handler, 'flashCard(card, error.message);', 'inline error handling');
 assertExcludes(handler, '/remove', 'no POST path ends in /remove');
-assertIncludes(appSource, 'buttons[3].disabled = false;', 'remove button stays enabled');
+assertIncludes(appSource, 'removeButton.disabled = false;', 'remove button stays enabled');
 
 for (const action of ['start', 'pause', 'stop']) {
   assertIncludes(appSource, `data-action="${action}"`, `card ${action} button`);

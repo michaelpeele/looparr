@@ -759,6 +759,7 @@ button.merging:disabled { opacity: 1; cursor: progress; }
 }
 .card-controls .icon use { pointer-events: none; }
 .card-controls .icon-button.danger { color: #fecaca; border-color: rgba(248, 113, 113, 0.35); }
+.card-controls .icon-button.danger { margin-left: auto; }
 .card-controls .icon-button.danger:hover:not(:disabled) { color: #fecaca; background: rgba(248, 113, 113, 0.12); border-color: rgba(248, 113, 113, 0.5); }
 .card-controls .icon-button.danger:focus-visible { outline-color: #f87171; }
 .countdown { font-size: 11px; color: var(--amber); }

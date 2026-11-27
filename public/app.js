@@ -1547,6 +1547,9 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       </div>
       <div class="progress-track"><div class="progress-fill"></div></div>
       <div class="card-controls">
+        <button class="icon-button" type="button" data-action="add-task" title="Add task" aria-label="Add task">
+          <svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
         <button class="icon-button" type="button" data-action="start" title="Start" aria-label="Start">
           <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-play"></use></svg>
         </button>
@@ -1558,9 +1561,6 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
         </button>
         <button class="icon-button danger" type="button" data-action="remove" title="Remove project" aria-label="Remove project">
           <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-trash"></use></svg>
-        </button>
-        <button class="icon-button" type="button" data-action="add-task" title="Add task" aria-label="Add task">
-          <svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
         </button>
       </div>
       <button class="button small self-heal-merge" type="button" data-action="merge-selfheal" title="Merge healed branch and rebuild" aria-label="Merge healed branch and rebuild" hidden>Merge</button>
@@ -1814,14 +1814,19 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     }
 
     const buttons = card.querySelectorAll('.card-controls button');
+    const byAction = (action) => buttons.querySelector(`[data-action="${action}"]`);
+    const startButton = byAction('start');
+    const pauseButton = byAction('pause');
+    const stopButton = byAction('stop');
+    const removeButton = byAction('remove');
     const disabled = controlDisabled(project);
     const startLabel = startActionLabel(project);
-    buttons[0].title = startLabel;
-    buttons[0].setAttribute('aria-label', startLabel);
-    buttons[0].disabled = disabled.start;
-    buttons[1].disabled = disabled.pause;
-    buttons[2].disabled = disabled.stop;
-    buttons[3].disabled = false;
+    startButton.title = startLabel;
+    startButton.setAttribute('aria-label', startLabel);
+    startButton.disabled = disabled.start;
+    pauseButton.disabled = disabled.pause;
+    stopButton.disabled = disabled.stop;
+    removeButton.disabled = false;
 
     updateCountdown(card, project);
   }
