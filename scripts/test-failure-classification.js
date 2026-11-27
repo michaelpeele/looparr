@@ -11,6 +11,7 @@ const cases = [
   ['advance', 'Error: provider returned [400]: unsupported property reasoning_details', {}],
   ['advance', 'Error: 503 service unavailable', {}],
   ['advance', 'Error: model not found', {}],
+  ['advance', 'connect ECONNREFUSED 172.17.0.1:4187', {}],
   ['advance', 'read ECONNRESET', {}],
   ['advance', 'SessionError: Service temporarily unavailable: all targets were skipped by pre-dispatch filters', {}],
   ['stop', 'Error: billing: subscription required', {}],
