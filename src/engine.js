@@ -1728,45 +1728,92 @@ async function validateHealer(project, healer) {
 // Human-gated merge for a healed branch. Git stays local: the branch is merged
 // into the checkout and the restart helper is started, but nothing is published;
 // opening the PR stays a human step.
-function mergeHealerBranch(id) {
+// Merge a self-heal branch into the current branch of `repoRoot`. Idempotent:
+// when the branch is already an ancestor of HEAD it reports alreadyMerged and
+// creates no empty merge commit. Returns { ok, alreadyMerged, error? }. Never
+// pushes. Extracted so the git mechanics can be unit-tested against throwaway
+// repos without touching the live checkout.
+function mergeBranchIntoRepo(repoRoot, branch) {
+  const ancestor = spawnSync(
+    'git',
+    ['-C', repoRoot, 'merge-base', '--is-ancestor', branch, 'HEAD'],
+    { encoding: 'utf8', timeout: 60_000 }
+  );
+  if (ancestor.status === 0) return { ok: true, alreadyMerged: true };
+  const merged = spawnSync(
+    'git',
+    ['-C', repoRoot, 'merge', '--no-ff', '-m', `selfheal: merge ${branch}`, branch],
+    { encoding: 'utf8', timeout: 60_000 }
+  );
+  if (merged.status !== 0) {
+    const detail = String(merged.stderr || merged.stdout || '').trim().slice(0, 300);
+    return { ok: false, alreadyMerged: false, error: detail || `git merge exited ${merged.status}` };
+  }
+  return { ok: true, alreadyMerged: false };
+}
+
+function mergeHealerBranch(id, expectedBranch) {
   const project = findProject(id);
   if (!project) return { ok: false, status: 404, error: 'Project not found' };
   if (!selfHealingEnabled()) return { ok: false, status: 403, error: 'Self-healing is disabled' };
   const rt = ensureRuntime(project);
-  const healer = rt.healer || rt.lastHealer;
-  if (!healer || healer.state !== 'healed') {
-    return { ok: false, status: 409, error: 'No healed self-heal branch to merge' };
+  let healer = rt.healer || rt.lastHealer;
+  let branch;
+  let repoRoot;
+  let auditPhase;
+  let statusRecord = null;
+  if (healer && healer.state === 'healed' && (!expectedBranch || expectedBranch === healer.branch)) {
+    branch = healer.branch;
+    repoRoot = healer.repoRoot;
+    auditPhase = healerAuditPhase(healer.phase);
+  } else {
+    // No usable in-memory healed healer (e.g. the daemon restarted without a
+    // snapshotted lastHealer): fall back to the fresh on-disk status file so dev
+    // and prod agree. validateMergeRequest enforces healed + not merged + branch.
+    const validation = selfhealStatus.validateMergeRequest(selfhealRepoRoot(), id, { branch: expectedBranch });
+    if (!validation.ok) {
+      return { ok: false, status: validation.status || 409, error: validation.error || 'No healed self-heal branch to merge' };
+    }
+    statusRecord = validation.record;
+    branch = statusRecord.branch;
+    repoRoot = selfhealRepoRoot();
+    auditPhase = healerAuditPhase(statusRecord.phase);
+    healer = { state: 'healed', branch, phase: statusRecord.phase, repoRoot };
   }
-  const auditPhase = healerAuditPhase(healer.phase);
-  const merged = spawnSync(
-    'git',
-    ['-C', healer.repoRoot, 'merge', '--no-ff', '-m', `selfheal: merge ${healer.branch}`, healer.branch],
-    { encoding: 'utf8', timeout: 60_000 }
-  );
-  if (merged.status !== 0) {
+  const merge = mergeBranchIntoRepo(repoRoot, branch);
+  if (!merge.ok) {
     autoResume.appendAudit(project, 'healer-failed', { phase: auditPhase, task: project.name, cause: 'merge-failed' });
-    appendLog(project.id, 'system', `✖ Self-heal merge failed: ${String(merged.stderr || '').trim().slice(0, 300)}`);
+    appendLog(project.id, 'system', `✖ Self-heal merge failed: ${merge.error || 'unknown error'}`);
     emitState();
     return { ok: false, status: 500, error: 'Merge failed; branch kept for review' };
   }
-  healer.mergedAt = new Date().toISOString();
-  writeHealerStatus(project, healer);
-  autoResume.appendAudit(project, 'healer-merged', { phase: auditPhase, task: project.name, cause: healer.branch });
+  const alreadyMerged = merge.alreadyMerged;
+  const mergedAt = new Date().toISOString();
+  if (statusRecord) {
+    statusRecord.mergedAt = mergedAt;
+    selfhealStatus.writeStatus(selfhealRepoRoot(), statusRecord, Date.now());
+  } else {
+    healer.mergedAt = mergedAt;
+    writeHealerStatus(project, healer);
+  }
+  autoResume.appendAudit(project, 'healer-merged', { phase: auditPhase, task: project.name, cause: branch });
   appendLog(
     project.id,
     'system',
-    `✓ Self-heal branch ${healer.branch} merged locally and restart requested. Nothing was published; open the PR yourself.`
+    alreadyMerged
+      ? `✓ Self-heal branch ${branch} already contained in main; marked merged and restart requested. Nothing was published.`
+      : `✓ Self-heal branch ${branch} merged locally and restart requested. Nothing was published; open the PR yourself.`
   );
   try {
-    const restart = spawn(process.execPath, [path.join(healer.repoRoot, 'scripts', 'restart-looparr.js')], {
-      cwd: healer.repoRoot,
+    const restart = spawn(process.execPath, [path.join(repoRoot, 'scripts', 'restart-looparr.js')], {
+      cwd: repoRoot,
       detached: true,
       stdio: 'ignore'
     });
     restart.unref();
   } catch { /* merge stands; a human can rebuild */ }
   emitState();
-  return { ok: true, branch: healer.branch };
+  return { ok: true, branch, alreadyMerged };
 }
 
 function getAnswer(id) {
@@ -4146,6 +4193,7 @@ module.exports = {
   selfHealingEnabled,
   maybeStartHealer,
   mergeHealerBranch,
+  mergeBranchIntoRepo,
   selfhealStatusAvailable,
   readHealerStatus,
   selfhealRepoRoot,

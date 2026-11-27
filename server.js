@@ -894,7 +894,8 @@ app.post('/api/projects/:id/sprint/merge', (req, res) => {
 app.post('/api/projects/:id/selfheal/merge', async (req, res) => {  if (!findProject(req.params.id)) return fail(res, 404, 'Project not found');
   // Dev checkout: the local engine owns the checkout and merges in-process.
   if (engine.selfHealingEnabled()) {
-    const result = engine.mergeHealerBranch(req.params.id);
+    const branch = req.body && typeof req.body.branch === 'string' ? req.body.branch : undefined;
+    const result = engine.mergeHealerBranch(req.params.id, branch);
     if (!result.ok) return fail(res, result.status || 409, result.error || 'Could not merge self-heal branch');
     return res.json(result);
   }

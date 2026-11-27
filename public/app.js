@@ -782,24 +782,28 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     const engaged = (state.projects || [])
       .map((project) => (project.selfHealer ? { ...project.selfHealer, projectId: project.id } : null))
       .filter(Boolean)
-      .find((healer) => healer.state && healer.state !== 'idle') || null;
-    const healerState = engaged ? engaged.state : 'idle';
+      .filter((healer) => healer.state && healer.state !== 'idle');
+    // The header pill shows `healed` whenever any project has a healed, unmerged
+    // round; otherwise it reflects the first engaged state.
+    const healedUnmerged = engaged.filter((healer) => healer.state === 'healed' && !healer.mergedAt);
+    const healerState = healedUnmerged.length > 0 ? 'healed' : (engaged[0] ? engaged[0].state : 'idle');
     dom.selfHealPill.dataset.state = healerState;
     if (dom.selfHealState) dom.selfHealState.textContent = SELF_HEAL_LABELS[healerState] || 'Idle';
     if (dom.selfHealBranch) {
-      // Show the merge button only while healed and not yet merged; once
-      // mergedAt is set the round is done and the button must not reappear.
-      const merged = engaged ? Boolean(engaged.mergedAt) : false;
-      dom.selfHealBranch.hidden = healerState !== 'healed' || merged;
-      dom.selfHealBranch.dataset.projectId = engaged ? engaged.projectId : '';
-      dom.selfHealBranch.dataset.branch = engaged ? engaged.branch || '' : '';
+      // The header merge button only covers the exactly-one-healed-project case;
+      // with zero or many healed projects the per-card merge buttons handle each
+      // one. Once mergedAt is set the round is done and no button reappears.
+      const showHeader = healedUnmerged.length === 1;
+      dom.selfHealBranch.hidden = !showHeader;
+      dom.selfHealBranch.dataset.projectId = showHeader ? healedUnmerged[0].projectId : '';
+      dom.selfHealBranch.dataset.branch = showHeader ? (healedUnmerged[0].branch || '') : '';
     }
   }
 
-  function mergeSelfHealBranch() {
-    const button = dom.selfHealBranch;
-    if (!button || !button.dataset.projectId) return;
-    const branch = button.dataset.branch || 'the healed branch';
+  function mergeSelfHealBranch(button) {
+    const target = button || dom.selfHealBranch;
+    if (!target || !target.dataset.projectId) return;
+    const branch = target.dataset.branch || 'the healed branch';
     const confirmed = window.confirm(
       `Test complete on ${branch}. Merge to main and rebuild/restart? Nothing is published.`
     );
@@ -807,8 +811,8 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     // The rebuild recreates the server, so the POST may drop mid-request. Treat a
     // dropped connection as "restarting" and confirm the merge on reconnect.
     dom.settingsStatus.textContent = `merging ${branch}…`;
-    button.disabled = true;
-    fetch(`/api/projects/${encodeURIComponent(button.dataset.projectId)}/selfheal/merge`, {
+    target.disabled = true;
+    fetch(`/api/projects/${encodeURIComponent(target.dataset.projectId)}/selfheal/merge`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ branch })
@@ -830,7 +834,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
         dom.settingsStatus.textContent = `merge submitted for ${branch}; waiting for restart…`;
       })
       .finally(() => {
-        button.disabled = false;
+        target.disabled = false;
       });
   }
 
@@ -1409,6 +1413,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
         <button class="button small" type="button" data-action="stop">Stop</button>
         <button class="button small danger" type="button" data-action="remove">Remove</button>
       </div>
+      <button class="button small self-heal-merge" type="button" data-action="merge-selfheal" title="Merge healed branch and rebuild" aria-label="Merge healed branch and rebuild" hidden>Merge</button>
       <div class="countdown" hidden></div>`;
 
     card.querySelectorAll('.task-expand-toggle').forEach(bindTaskToggle);
@@ -1429,6 +1434,11 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       if (!button) return;
       event.stopPropagation();
       handleCardAction(card, button.dataset.action);
+    });
+    const mergeButton = card.querySelector('.self-heal-merge');
+    mergeButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      mergeSelfHealBranch(mergeButton);
     });
     card.addEventListener('click', (event) => {
       if (event.target.closest('button')) return;
@@ -1637,6 +1647,15 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     }
 
     renderRepoLinks(card.querySelector('.card-model-row'), project);
+
+    const mergeButton = card.querySelector('.self-heal-merge');
+    if (mergeButton) {
+      const healer = project.selfHealer;
+      const showMerge = !!healer && healer.state === 'healed' && !healer.mergedAt;
+      mergeButton.hidden = !showMerge;
+      mergeButton.dataset.projectId = showMerge ? String(project.id) : '';
+      mergeButton.dataset.branch = showMerge ? (healer.branch || '') : '';
+    }
 
     const buttons = card.querySelectorAll('.card-controls button');
     const disabled = controlDisabled(project);
@@ -3790,7 +3809,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
   /* ---------- boot ---------- */
 
   dom.settingsForm.addEventListener('submit', saveSettings);
-  dom.selfHealBranch?.addEventListener('click', mergeSelfHealBranch);
+  dom.selfHealBranch?.addEventListener('click', () => mergeSelfHealBranch(dom.selfHealBranch));
   dom.envSettingsForm.addEventListener('submit', saveEnvSettings);
   dom.envSettingsFields.addEventListener('input', (event) => {
     const input = event.target.closest('.env-input');

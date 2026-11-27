@@ -87,6 +87,8 @@ function testEngine() {
   assertIncludes(engine, 'snapshot.healer', 'healer persisted in resume snapshot');
   assertIncludes(engine, "'merge', '--no-ff'", 'merge runs locally');
   assertIncludes(engine, 'mergeHealerBranch', 'healer merge entry point');
+  assertIncludes(engine, "'merge-base', '--is-ancestor'", 'already-ancestor idempotent merge path');
+  assertIncludes(engine, 'validateMergeRequest(selfhealRepoRoot()', 'status-file fallback when no in-memory healer');
   assertIncludes(engine, 'function healerAnalysis(', 'end-of-round analysis writeup');
   assertIncludes(engine, '-analysis.md', 'analysis filename');
   assertIncludes(engine, 'function finishHealerRound(', 'end-of-round teardown');
@@ -116,7 +118,11 @@ function testUi() {
   assertIncludes(html, 'id="self-healing-toggle"', 'settings toggle');
   assertIncludes(app, 'function renderSelfHealing', 'pill renderer');
   assertIncludes(app, 'selfHealingAvailable', 'availability gate');
-  assertIncludes(app, "dom.selfHealBranch.hidden = healerState !== 'healed'", 'merge button only when healed');
+  assertIncludes(app, 'dom.selfHealBranch.hidden = !showHeader', 'header merge button only for exactly-one-healed');
+  assertIncludes(app, 'healedUnmerged.length === 1', 'header button gated to single healed project');
+  assertIncludes(app, 'self-heal-merge', 'per-card merge button class');
+  assertIncludes(app, "healer.state === 'healed' && !healer.mergedAt", 'per-card merge only when healed and unmerged');
+  assertIncludes(app, 'mergeSelfHealBranch(mergeButton)', 'per-card merge wired to its own button');
   assertIncludes(app, 'Test complete on', 'merge confirmation');
   assertIncludes(app, 'Merge to main and rebuild/restart?', 'human-gated merge copy');
   assertIncludes(app, 'Nothing is published', 'merge never publishes');

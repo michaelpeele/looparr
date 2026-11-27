@@ -7,6 +7,8 @@ const path = require('node:path');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const selfhealStatus = require(path.join(REPO_ROOT, 'src/selfheal-status.js'));
+const engine = require(path.join(REPO_ROOT, 'src/engine.js'));
+const { spawnSync } = require('node:child_process');
 
 function assertEqual(actual, expected, label) {
   assert.equal(actual, expected, `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
@@ -355,6 +357,116 @@ async function testExecutorRelay() {
   }
 }
 
+// --- Engine-level merge mechanics (throwaway git repos) ---
+
+function gitIn(cwd, args) {
+  return spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
+}
+
+function makeGitRepo() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'looparr-selfheal-merge-'));
+  const run = (args) => {
+    const res = gitIn(dir, args);
+    if (res.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${res.stderr}`);
+    return res.stdout;
+  };
+  run(['init', '-b', 'main']);
+  run(['config', 'user.email', 'test@example.com']);
+  run(['config', 'user.name', 'Test']);
+  run(['config', 'commit.gpgsign', 'false']);
+  fs.writeFileSync(path.join(dir, 'base.txt'), 'base\n');
+  run(['add', 'base.txt']);
+  run(['commit', '-m', 'base']);
+  return dir;
+}
+
+function headCommit(dir) {
+  return gitIn(dir, ['rev-parse', 'HEAD']).stdout.trim();
+}
+
+function commitCount(dir) {
+  return Number(gitIn(dir, ['rev-list', '--count', 'HEAD']).stdout.trim());
+}
+
+function testMergeBranchExports() {
+  assertEqual(typeof engine.mergeBranchIntoRepo, 'function', 'mergeBranchIntoRepo is exported');
+  assertEqual(typeof engine.mergeHealerBranch, 'function', 'mergeHealerBranch is exported');
+  console.log('selfheal merge exports ok');
+}
+
+function testMergeAlreadyAncestorIdempotent() {
+  const repo = makeGitRepo();
+  try {
+    // Branch pointing at the same commit as main: already an ancestor.
+    const branch = 'looparr-selfheal-1700000000000-0';
+    gitIn(repo, ['branch', branch]);
+    const before = headCommit(repo);
+    const countBefore = commitCount(repo);
+
+    const res = engine.mergeBranchIntoRepo(repo, branch);
+    assertEqual(res.ok, true, 'already-ancestor merge ok');
+    assertEqual(res.alreadyMerged, true, 'already-ancestor flagged idempotent');
+    assertEqual(headCommit(repo), before, 'HEAD unchanged (no empty merge commit)');
+    assertEqual(commitCount(repo), countBefore, 'commit count unchanged');
+
+    const again = engine.mergeBranchIntoRepo(repo, branch);
+    assertEqual(again.alreadyMerged, true, 'repeat merge stays idempotent');
+    assertEqual(headCommit(repo), before, 'HEAD still unchanged after repeat');
+    console.log('selfheal merge already-ancestor idempotent ok');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+function testMergeRealBranchAdvancesHead() {
+  const repo = makeGitRepo();
+  try {
+    const branch = 'looparr-selfheal-1700000000000-1';
+    gitIn(repo, ['checkout', '-b', branch]);
+    fs.writeFileSync(path.join(repo, 'fix.txt'), 'fix\n');
+    gitIn(repo, ['add', 'fix.txt']);
+    gitIn(repo, ['commit', '-m', 'fix']);
+    gitIn(repo, ['checkout', 'main']);
+
+    const before = headCommit(repo);
+    const res = engine.mergeBranchIntoRepo(repo, branch);
+    assertEqual(res.ok, true, 'real merge ok');
+    assertEqual(res.alreadyMerged, false, 'real merge not flagged idempotent');
+    assertOk(headCommit(repo) !== before, 'HEAD advanced by the merge');
+    assertOk(fs.existsSync(path.join(repo, 'fix.txt')), 'merged file present');
+    assertEqual(gitIn(repo, ['remote']).stdout.trim(), '', 'repo has no remote to push to');
+    console.log('selfheal merge real merge ok');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+function testMergeConflictKeepsBranch() {
+  const repo = makeGitRepo();
+  try {
+    const branch = 'looparr-selfheal-1700000000000-2';
+    gitIn(repo, ['checkout', '-b', branch]);
+    fs.writeFileSync(path.join(repo, 'conflict.txt'), 'branch\n');
+    gitIn(repo, ['add', 'conflict.txt']);
+    gitIn(repo, ['commit', '-m', 'branch change']);
+    gitIn(repo, ['checkout', 'main']);
+    fs.writeFileSync(path.join(repo, 'conflict.txt'), 'main\n');
+    gitIn(repo, ['add', 'conflict.txt']);
+    gitIn(repo, ['commit', '-m', 'main change']);
+
+    const before = headCommit(repo);
+    const res = engine.mergeBranchIntoRepo(repo, branch);
+    assertEqual(res.ok, false, 'conflict is not ok');
+    assertEqual(res.alreadyMerged, false, 'conflict is not idempotent');
+    assertOk(res.error && res.error.length > 0, 'conflict surfaces an error string');
+    assertEqual(headCommit(repo), before, 'HEAD unchanged after conflict');
+    assertOk(gitIn(repo, ['branch', '--list', branch]).stdout.includes(branch), 'conflicted branch kept');
+    console.log('selfheal merge conflict keeps branch ok');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+}
+
 testRoundTripAndTtl();
 testIdleStatus();
 testPathContainment();
@@ -363,6 +475,12 @@ testProdMapping();
 testMergeValidation();
 testAccountedStatus();
 testNoPushGuard();
+// Engine-level merge mechanics against throwaway git repos (never the live
+// checkout): already-ancestor idempotence, a real merge, and a conflict.
+testMergeBranchExports();
+testMergeAlreadyAncestorIdempotent();
+testMergeRealBranchAdvancesHead();
+testMergeConflictKeepsBranch();
 testExecutorRelay().then(() => {
   console.log('selfheal status tests passed');
 }).catch((error) => {
