@@ -11,6 +11,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const APP = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+const CSS = fs.readFileSync(path.join(__dirname, '..', 'public', 'styles.css'), 'utf8');
 
 // The previous implementation, kept as a behavioural proof of the regression:
 // a NodeList has no querySelector, an array plus find does.
@@ -44,4 +45,19 @@ assert.ok(
   'updateCard runs inside a per-card try/catch'
 );
 
-console.log('card render guard: control lookup and per-card isolation verified.');
+// Progress alignment: the bottom stack is pinned as one unit so a card without
+// an up-next task keeps its progress bar on the same line as its neighbours.
+assert.ok(APP.includes('<div class="card-bottom">'), 'card bottom stack wrapper exists');
+const countdownAt = APP.indexOf('<div class="countdown" hidden></div>');
+const progressAt = APP.indexOf('<div class="progress-row">');
+assert.ok(countdownAt > 0 && progressAt > countdownAt, 'variable-height countdown sits above the progress row');
+assert.ok(
+  /\.card-bottom \{[^}]*margin-top: auto;/.test(CSS),
+  'the bottom stack is bottom-pinned'
+);
+assert.ok(
+  !/\.card-controls \{[^}]*margin-top: auto;/.test(CSS),
+  'the controls row no longer competes for the same free space'
+);
+
+console.log('card render guard: control lookup, per-card isolation, and progress alignment verified.');

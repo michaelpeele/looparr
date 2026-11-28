@@ -1576,6 +1576,9 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       <p class="card-task task-detail-wrap" data-task-field="current" data-project-id="${esc(project.id)}" data-fallback="true"><span class="task-detail-text task-detail-clamped" id="${currentTextId}"></span><button class="task-expand-toggle" type="button" aria-controls="${currentTextId}" aria-expanded="false" aria-label="Expand current task" title="Expand current task" hidden>▼</button></p>
       <div class="card-model-row"><div class="card-model mono"></div><button class="icon-button terminal-button" type="button" aria-label="Open agent terminal" title="Agent terminal"><svg class="terminal-icon" aria-hidden="true" focusable="false"><use href="#icon-terminal"></use></svg></button><a class="icon-button repo-link" data-repo-link="github" hidden target="_blank" rel="noopener noreferrer" aria-label="Open GitHub repository" title="GitHub repository"><svg class="repo-icon" aria-hidden="true" focusable="false"><use href="#icon-github"></use></svg></a><a class="icon-button repo-link" data-repo-link="docker" hidden target="_blank" rel="noopener noreferrer" aria-label="Open Docker image repository" title="Docker image repository"><svg class="repo-icon" aria-hidden="true" focusable="false"><use href="#icon-docker"></use></svg></a></div>
       <div class="card-up" data-task-field="next" data-project-id="${esc(project.id)}" data-fallback="true"><strong>Up next:</strong> <span class="task-detail-wrap"><span class="task-detail-text task-detail-clamped" id="${nextTextId}"></span><button class="task-expand-toggle" type="button" aria-controls="${nextTextId}" aria-expanded="false" aria-label="Expand up next" title="Expand up next" hidden>▼</button></span></div>
+      <div class="card-bottom">
+      <button class="button small self-heal-merge" type="button" data-action="merge-selfheal" title="Merge healed branch and rebuild" aria-label="Merge healed branch and rebuild" hidden>Merge</button>
+      <div class="countdown" hidden></div>
       <div class="progress-row">
         <span>Progress</span>
         <span class="progress-count"></span>
@@ -1598,8 +1601,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
           <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-trash"></use></svg>
         </button>
       </div>
-      <button class="button small self-heal-merge" type="button" data-action="merge-selfheal" title="Merge healed branch and rebuild" aria-label="Merge healed branch and rebuild" hidden>Merge</button>
-      <div class="countdown" hidden></div>`;
+      </div>`;
 
     card.querySelectorAll('.task-expand-toggle').forEach(bindTaskToggle);
 
