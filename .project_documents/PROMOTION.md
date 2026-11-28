@@ -272,6 +272,25 @@ onto `master` by hand. Both paths require the verified sequence above.
   rebuild was forced; plan 04 (live human-approved sign-in round) is still
   outstanding.
 
+- 2026-11-27 — Home page cleanup batch: progress-row alignment, Projects heading
+  removed, Access card removed, configured runner card split into Active and
+  Rate limited, then a 1s countdown tick for the Rate limited rows.
+  `npm test` green and `git diff --check` clean for both promotions. First run
+  rebuilt via `systemd-run --user --unit=looparr-promote`, exit 0, image
+  `sha256:8527ceda2000d41c92d30764b94559f367319d95c935cbf494e1ac67dcff05bf`,
+  container `c45aeda6ce8c` healthy, 109/109 container source hashes matched,
+  served assets matched, `/api/state` carried `rotation`. Second run (countdown
+  tick, invocation `59e2c98f…` family) exit 0, image
+  `sha256:72609a70fbb685f557ac0c30000bb591cdae36012d9844f44f974b6bf17e2399`,
+  container `355c73a8f25a` healthy, restarts 0, served `/app.js` matched local.
+  Live browser checks: 5/5 cards render, progress rows equal per grid row,
+  no `Projects`/Access text, runner card spans the page, and an injected 5s
+  cooldown counted 5s → 3s → moved the model from Rate limited to Active with
+  no reload. `npm run watchdog:check` steady. Nonfatal: active-run postcheck
+  fetch failed, matching documented precedent. Note: each promotion restart
+  resumes a paused project (paused state is not persisted), so looparr was
+  re-paused by hand afterwards.
+
 ## Idempotent, observable promotion (promotion-status.json)
 
 `npm run restart:looparr` is idempotent. Every run writes
