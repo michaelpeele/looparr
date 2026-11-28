@@ -302,6 +302,12 @@ Relevant files: `src/auth-failures.js` (new), `src/engine.js`, `src/failure.js`,
 
 - [ ] Keep the progress row and bar in the same place on every home card. When a project has no up-next task the progress bar shifts up and the bars no longer line up across cards. Reserve the up-next row (or an empty placeholder of the same height) so progress aligns on all cards, including the drawer card.
 
+## Home page cleanup and runner status
+
+- [ ] Remove the visible `Projects` heading from the project page; the cards make the page obvious and the word is unnecessary chrome. Keep the section labelled for assistive tech via `aria-label` instead, and update the `aria-labelledby="projects-heading"` reference plus any test that asserts the heading.
+- [ ] Remove the Access card (`Tailnet Serve` / `Funnel disabled`) from the home page; that deployment detail is not needed there.
+- [ ] Expand the Configured runner card to full width and split it into two sections, `Active` and `Rate limited`: a model whose cooldown is still counting down moves under `Rate limited` with its remaining time, and a runner whose every configured model is cooling is itself marked rate limited in the same manner. The browser has no cooldown data today (it lives only in `src/rotation-store.js`), so `/api/state` must expose the active cooldowns first, then the card markup, styles, and a UI test.
+
 ## Release publish
 
 - [ ] Add a push remote for Looparr and push the release commit to origin.
