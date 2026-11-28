@@ -445,6 +445,8 @@ function getState() {
     settings: { ...config.settings },
     selfHealingAvailable: available,
     authFailures: authFailures.list(),
+    // Active provider cooldowns, for the dashboard Active/Rate limited split.
+    rotation: rotationStore.snapshot(),
     runners: listRunners(),
     projects: config.projects.map((project) => {
       const rt = ensureRuntime(project);

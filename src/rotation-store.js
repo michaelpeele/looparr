@@ -108,6 +108,20 @@ function pick(list, { skipCooling = true } = {}) {
   return { id: list[start], index: start, waitMs: earliest === Infinity ? 0 : earliest - now };
 }
 
+// Read-only view of the active cooldowns for the dashboard: model/subject id to
+// the epoch ms it becomes usable again. Expired entries are pruned first.
+function snapshot() {
+  const current = load();
+  prune();
+  const now = Date.now();
+  const cooling = {};
+  for (const [id, until] of Object.entries(current.cooldowns)) {
+    const value = Number(until);
+    if (value > now) cooling[id] = value;
+  }
+  return { cooling };
+}
+
 function reset() {
   state = emptyState();
   save();
@@ -125,5 +139,6 @@ module.exports = {
   readyAt,
   isReady,
   pick,
+  snapshot,
   reset
 };

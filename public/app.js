@@ -44,6 +44,7 @@
     envSettingsStatus: $('env-settings-status'),
     hostRunner: $('host-runner'),
     hostRunnerDetail: $('host-runner-detail'),
+    hostRunnerStatus: $('host-runner-status'),
     settingsBadge: $('settings-badge'),
     settingsGear: document.querySelector('button.side-link[data-view="settings"]'),
     addForm: $('add-form'),
@@ -1503,10 +1504,114 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     }
   }
 
-  function appendModelSummary(parts, label, value) {
-    const ids = modelList(value);
-    if (!ids.length) return;
-    parts.push(`${label}: ${ids.join(', ')}`);
+  // Every configured model id, global and per project, deduped in first-seen
+  // order. The runner card groups these by the runner that owns each id.
+  function configuredModelIds(state) {
+    const settings = state.settings || {};
+    const lists = settings.effectiveModelLists || {};
+    const values = [
+      lists.model ?? settings.model,
+      lists.seed ?? settings.seedModel,
+      lists.analyze ?? settings.analyzeModel,
+      lists.implement ?? settings.implementModel,
+      lists.plan ?? settings.planModel
+    ];
+    for (const project of state.projects || []) {
+      const projectLists = project.effectiveModelLists || {};
+      const fallback = project.effectiveModel || '';
+      values.push(
+        projectLists.model ?? fallback,
+        projectLists.seed ?? fallback,
+        projectLists.analyze ?? fallback,
+        projectLists.implement ?? fallback,
+        projectLists.plan ?? fallback
+      );
+    }
+    const ids = [];
+    const seen = new Set();
+    for (const value of values) {
+      for (const id of modelList(value)) {
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        ids.push(id);
+      }
+    }
+    return ids;
+  }
+
+  function runnerStatusEntries(state) {
+    const runners = state.runners || [];
+    const runnerIds = modelList(state.settings?.globalRunner);
+    const configured = configuredModelIds(state);
+    const entries = runnerIds.map((id) => {
+      const runner = runners.find((item) => item.id === id);
+      return {
+        id,
+        label: runner?.label || id,
+        catalogue: new Set(runner?.models || []),
+        models: []
+      };
+    });
+    // A model id can appear in more than one catalogue (OpenCode also runs the
+    // keyless kilo provider), so the id's own namespace wins. Otherwise the
+    // first configured runner that claims the id owns it.
+    for (const modelId of configured) {
+      const namespace = modelId.includes('/') ? modelId.slice(0, modelId.indexOf('/')) : '';
+      const owner = entries.find((entry) => entry.catalogue.has(modelId) && entry.id === namespace)
+        || entries.find((entry) => entry.catalogue.has(modelId))
+        || entries[0];
+      if (owner && !owner.models.includes(modelId)) owner.models.push(modelId);
+    }
+    return entries;
+  }
+
+  // Two sections: models ready to run, and models still cooling after a provider
+  // limit. A runner whose every configured model is cooling is itself marked
+  // rate limited instead of listing each id.
+  function renderRunnerStatus(state) {
+    if (!dom.hostRunnerStatus) return;
+    const cooling = (state.rotation && state.rotation.cooling) || {};
+    const now = Date.now();
+    const waitFor = (id) => {
+      const until = Number(cooling[id]) || 0;
+      return until > now ? Math.ceil((until - now) / 1000) : 0;
+    };
+    const active = [];
+    const limited = [];
+    for (const entry of runnerStatusEntries(state)) {
+      if (!entry.models.length) {
+        active.push({ label: `${entry.label} · default`, wait: 0 });
+        continue;
+      }
+      const waits = entry.models.map((id) => ({ id, wait: waitFor(id) }));
+      if (waits.every((item) => item.wait > 0)) {
+        limited.push({
+          label: `${entry.label} · rate limited`,
+          wait: Math.min(...waits.map((item) => item.wait)),
+          runner: true
+        });
+        continue;
+      }
+      for (const item of waits) {
+        const label = `${entry.label} · ${item.id}`;
+        (item.wait > 0 ? limited : active).push({ label, wait: item.wait });
+      }
+    }
+    const rows = (items, extraClass = '') => (items.length
+      ? items.map((item) => `<li class="runner-model ${extraClass}${item.runner ? ' runner-limited' : ''}">`
+        + `<span class="runner-model-name">${esc(item.label)}</span>`
+        + `${item.wait > 0 ? `<span class="runner-model-wait">${item.wait}s</span>` : ''}`
+        + '</li>').join('')
+      : '<li class="runner-status-empty">None</li>');
+    dom.hostRunnerStatus.innerHTML = `
+      <section class="runner-status-group">
+        <h3 class="runner-status-title">Active</h3>
+        <ul class="runner-status-list">${rows(active)}</ul>
+      </section>
+      <section class="runner-status-group">
+        <h3 class="runner-status-title">Rate limited</h3>
+        <ul class="runner-status-list">${rows(limited, 'limited ')}</ul>
+      </section>`;
   }
 
   function displayModelList(value, emptyLabel = 'OpenCode default') {
@@ -1516,30 +1621,19 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
 
   function updateHostSummary(state) {
     const settings = state.settings || {};
-    const runner = (state.runners || []).find((item) => item.id === settings.globalRunner);
-    dom.hostRunner.textContent = runner?.label || settings.globalRunner || 'Unknown';
-    const settingsLists = settings.effectiveModelLists || {};
-    const modelParts = [];
-    appendModelSummary(modelParts, 'default', settingsLists.model ?? settings.model);
-    appendModelSummary(modelParts, 'seed', settingsLists.seed ?? settings.seedModel);
-    appendModelSummary(modelParts, 'analyze', settingsLists.analyze ?? settings.analyzeModel);
-    appendModelSummary(modelParts, 'implement', settingsLists.implement ?? settings.implementModel);
-    appendModelSummary(modelParts, 'plan', settingsLists.plan ?? settings.planModel);
+    const runners = state.runners || [];
+    const selected = modelList(settings.globalRunner)
+      .map((id) => runners.find((item) => item.id === id))
+      .filter(Boolean);
+    dom.hostRunner.textContent = selected.length
+      ? selected.map((item) => item.label || item.id).join(' + ')
+      : (settings.globalRunner || 'Unknown');
+    dom.hostRunnerDetail.textContent = selected
+      .map((item) => item.description)
+      .filter(Boolean)
+      .join(' · ') || 'Server-side executor';
+    renderRunnerStatus(state);
     const projects = state.projects || [];
-    for (const project of projects) {
-      const name = project.name || project.id || 'project';
-      const lists = project.effectiveModelLists || project.effectiveModels || {};
-      const fallback = project.effectiveModel || '';
-      appendModelSummary(modelParts, `${name} default`, lists.model ?? fallback);
-      appendModelSummary(modelParts, `${name} seed`, lists.seed ?? fallback);
-      appendModelSummary(modelParts, `${name} analyze`, lists.analyze ?? fallback);
-      appendModelSummary(modelParts, `${name} implement`, lists.implement ?? fallback);
-      appendModelSummary(modelParts, `${name} plan`, lists.plan ?? fallback);
-    }
-    const detail = runner?.description || 'Server-side executor';
-    dom.hostRunnerDetail.textContent = modelParts.length
-      ? `${detail} · ${modelParts.join(' · ')}`
-      : detail;
     const setupCount = projects.filter(isPlanSetup).length;
     if (dom.settingsBadge) {
       dom.settingsBadge.textContent = String(setupCount);
