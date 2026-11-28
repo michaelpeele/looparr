@@ -84,6 +84,7 @@
     projectPermanentLift: $('project-permanent-lift'),
     addStatus: $('add-status'),
     projectGrid: $('project-grid'),
+    authCard: $('auth-card'),
     emptyState: $('empty-state'),
     drawerBackdrop: $('drawer-backdrop'),
     drawer: $('drawer'),
@@ -325,6 +326,13 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     envSettings: [],
     envDirty: new Set(),
     envInputs: new Map(),
+    auth: {
+      clients: [],
+      available: false,
+      session: null,
+      pollTimer: null,
+      loaded: false
+    },
     browser: {
       relative: '',
       parent: null,
@@ -3562,6 +3570,8 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       readRunnerSelect(dom.projectRunner) || settings.globalRunner || ''
     );
     renderCards(state.projects || []);
+    renderAuthCard();
+    refreshAuthClients();
 
     for (const project of state.projects || []) addLogEntries(project.id, project.logs);
 
@@ -4475,6 +4485,263 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     }
   });
 
+  // --- Client sign-in card (plan 03) ---------------------------------------
+  // The card is the primary recovery surface for a blocked CLI runner. The
+  // blocked list comes from /api/state (authFailures); the friendly labels and
+  // executor availability come from /api/auth/clients. The browser never sees
+  // the executor token: server.js adds it on the proxy routes.
+  const AUTH_CLIENT_META = {
+    kilo: { name: 'Kilo CLI', detail: 'Kilo Gateway', method: 'Kilo Gateway (Device Authorization)' }
+  };
+  const AUTH_LOG_MAX_LINES = 200;
+  const AUTH_URL_PREFIX = 'https://app.kilo.ai/';
+
+  function authClientMeta(runnerId) {
+    return AUTH_CLIENT_META[runnerId] || { name: runnerId, detail: '', method: '' };
+  }
+
+  function authLogLines(log) {
+    if (!Array.isArray(log)) return [];
+    return log.slice(-AUTH_LOG_MAX_LINES);
+  }
+
+  function authLastLogLine(log) {
+    const lines = authLogLines(log).map((line) => String(line).replace(/\s+$/, '')).filter(Boolean);
+    return lines.length ? lines[lines.length - 1] : '';
+  }
+
+  function authCardEntries() {
+    const byRunner = new Map();
+    for (const client of Array.isArray(app.auth.clients) ? app.auth.clients : []) {
+      if (client && client.runnerId) byRunner.set(client.runnerId, { ...client });
+    }
+    const session = app.auth.session;
+    if (session && session.runner) {
+      const entry = byRunner.get(session.runner) || { runnerId: session.runner };
+      entry.active = true;
+      entry.sessionState = session.state;
+      byRunner.set(session.runner, entry);
+    }
+    return Array.from(byRunner.values());
+  }
+
+  function authSafeUrl(url) {
+    return typeof url === 'string' && url.startsWith(AUTH_URL_PREFIX) ? url : '';
+  }
+
+  function renderAuthCard() {
+    const card = dom.authCard;
+    if (!card) return;
+    const entries = authCardEntries();
+    if (!entries.length) {
+      card.hidden = true;
+      card.innerHTML = '';
+      stopAuthPolling();
+      return;
+    }
+    const nearBottom = {};
+    card.querySelectorAll('[data-log-runner]').forEach((block) => {
+      const runner = block.getAttribute('data-log-runner');
+      nearBottom[runner] = block.scrollHeight - block.scrollTop - block.clientHeight < 24;
+    });
+    const session = app.auth.session;
+    card.hidden = false;
+    card.innerHTML = entries.map((entry) => {
+      const meta = authClientMeta(entry.runnerId);
+      const name = esc(meta.name || entry.runnerLabel || entry.runnerId);
+      const detail = meta.detail ? ` · ${esc(meta.detail)}` : '';
+      const runnerId = esc(entry.runnerId);
+      const at = entry.at ? esc(entry.at) : '';
+      const message = entry.message ? esc(entry.message) : '';
+      const hint = entry.hint ? esc(entry.hint) : '';
+      const titleParts = [];
+      if (at) titleParts.push(at);
+      titleParts.push(`${meta.name || entry.runnerLabel || entry.runnerId} (${entry.runnerId})`);
+      if (entry.message) titleParts.push(entry.message);
+      if (entry.hint) titleParts.push(entry.hint);
+      const title = esc(titleParts.join(' — '));
+      const active = session && session.runner === entry.runnerId;
+      const state = active ? session.state : '';
+      const working = active && (state === 'starting' || state === 'waiting');
+      let statusLine = '';
+      let controls = '';
+      let logBlock = '';
+      if (active && state === 'starting' && !authSafeUrl(session.url)) {
+        statusLine = '<span class="auth-generating"><span class="auth-pixels" aria-hidden="true">' +
+          '<i class="auth-pixel"></i><i class="auth-pixel"></i><i class="auth-pixel"></i></span>' +
+          'Generating code…</span>';
+      } else if (active && authSafeUrl(session.url)) {
+        const url = esc(authSafeUrl(session.url));
+        const code = session.code ? `<code class="auth-code">${esc(session.code)}</code>` : '';
+        statusLine = `<span class="auth-status">Waiting for authorization…</span>` +
+          `<a class="auth-link" href="${url}" target="_blank" rel="noopener noreferrer">Open Kilo sign-in</a>` + code;
+      } else if (active && state === 'failed') {
+        const lastErr = session.error ? esc(session.error) : '';
+        statusLine = `<span class="auth-status auth-status-error">${lastErr || 'Sign-in failed.'}</span>`;
+      }
+      if (working) {
+        controls = `<button type="button" class="auth-button" data-auth-action="cancel" data-runner="${runnerId}">Cancel</button>`;
+      } else if (active && state === 'failed') {
+        controls = `<button type="button" class="auth-button" data-auth-action="login" data-runner="${runnerId}">Retry</button>`;
+      } else if (!active) {
+        const disabled = app.auth.available ? '' : ' disabled';
+        const note = app.auth.available ? '' : ' title="Host executor unavailable"';
+        controls = `<button type="button" class="auth-button" data-auth-action="login" data-runner="${runnerId}"${disabled}${note}>Sign in</button>`;
+      }
+      if (active && Array.isArray(session.log) && session.log.length) {
+        const logText = authLogLines(session.log).join('');
+        logBlock = `<pre class="auth-log" data-log-runner="${runnerId}">${esc(logText)}</pre>`;
+      }
+      return `<article class="auth-client" data-auth-runner="${runnerId}" data-auth-method="${esc(meta.method || '')}">` +
+        `<div class="auth-client-head"><span class="auth-client-name">${name}${detail}</span>` +
+        `<span class="auth-badge">AUTH REQUIRED · 401</span></div>` +
+        `<div class="auth-client-body" title="${title}">` +
+        (message ? `<p class="auth-message">${message}</p>` : '') +
+        (hint ? `<p class="auth-hint">${hint}</p>` : '') +
+        (statusLine ? `<div class="auth-session">${statusLine}</div>` : '') +
+        (logBlock || '') +
+        (controls ? `<div class="auth-actions">${controls}</div>` : '') +
+        `</div></article>`;
+    }).join('');
+    card.querySelectorAll('[data-log-runner]').forEach((block) => {
+      const runner = block.getAttribute('data-log-runner');
+      if (nearBottom[runner] !== false) block.scrollTop = block.scrollHeight;
+    });
+  }
+
+  async function refreshAuthClients() {
+    try {
+      const res = await fetch('/api/auth/clients');
+      const body = await res.json().catch(() => null);
+      if (!res.ok || !body) throw new Error(`clients ${res.status}`);
+      app.auth.clients = Array.isArray(body.clients) ? body.clients : [];
+      app.auth.available = body.available === true;
+      app.auth.loaded = true;
+    } catch (error) {
+      app.auth.available = false;
+      app.auth.loaded = true;
+    }
+    renderAuthCard();
+  }
+
+  function stopAuthPolling() {
+    if (app.auth.pollTimer) {
+      clearInterval(app.auth.pollTimer);
+      app.auth.pollTimer = null;
+    }
+  }
+
+  function startAuthPolling(runner) {
+    stopAuthPolling();
+    app.auth.pollTimer = setInterval(() => pollAuthStatus(runner), 1500);
+  }
+
+  async function startAuthLogin(runner) {
+    const existing = app.auth.session;
+    if (existing && existing.runner === runner && (existing.state === 'starting' || existing.state === 'waiting')) return;
+    app.auth.session = { runner, state: 'starting', url: null, code: null, startedAt: null, finishedAt: null, log: [], error: '' };
+    renderAuthCard();
+    let body;
+    try {
+      const res = await fetch(`/api/auth/${encodeURIComponent(runner)}/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}'
+      });
+      body = await res.json().catch(() => null);
+      if (!res.ok || !body) throw new Error((body && body.error) || `Sign-in failed (${res.status})`);
+    } catch (error) {
+      if (app.auth.session && app.auth.session.runner === runner) {
+        app.auth.session.state = 'failed';
+        app.auth.session.error = error.message;
+      }
+      renderAuthCard();
+      return;
+    }
+    if (!app.auth.session || app.auth.session.runner !== runner) return;
+    const session = app.auth.session;
+    session.state = body.state || 'starting';
+    session.url = body.url || null;
+    session.code = body.code || null;
+    session.startedAt = body.startedAt || session.startedAt;
+    renderAuthCard();
+    startAuthPolling(runner);
+  }
+
+  async function cancelAuthLogin(runner) {
+    stopAuthPolling();
+    try {
+      await fetch(`/api/auth/${encodeURIComponent(runner)}/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}'
+      });
+    } catch (error) {
+      /* best effort cancel */
+    }
+    app.auth.session = null;
+    renderAuthCard();
+    refreshState();
+  }
+
+  async function pollAuthStatus(runner) {
+    let body;
+    try {
+      const res = await fetch(`/api/auth/${encodeURIComponent(runner)}/status`);
+      body = await res.json().catch(() => null);
+      if (!res.ok || !body) throw new Error((body && body.error) || `Status failed (${res.status})`);
+    } catch (error) {
+      if (app.auth.session && app.auth.session.runner === runner) {
+        app.auth.session.error = error.message;
+        renderAuthCard();
+      }
+      return;
+    }
+    if (!app.auth.session || app.auth.session.runner !== runner) return;
+    const session = app.auth.session;
+    session.state = body.state || session.state;
+    session.url = body.url || session.url;
+    session.code = body.code || session.code;
+    session.startedAt = body.startedAt || session.startedAt;
+    session.finishedAt = body.finishedAt || session.finishedAt;
+    if (Array.isArray(body.log)) session.log = body.log;
+    if (body.state === 'authorized') {
+      stopAuthPolling();
+      app.auth.session = null;
+      app.auth.clients = (app.auth.clients || []).filter((client) => client.runnerId !== runner);
+      renderAuthCard();
+      refreshState();
+      return;
+    }
+    if (body.state === 'failed') {
+      stopAuthPolling();
+      session.error = authLastLogLine(session.log) || 'Sign-in failed.';
+      renderAuthCard();
+      return;
+    }
+    if (body.state === 'idle') {
+      stopAuthPolling();
+      app.auth.session = null;
+      renderAuthCard();
+      refreshState();
+      return;
+    }
+    renderAuthCard();
+  }
+
+  function bindAuthCard() {
+    if (!dom.authCard) return;
+    dom.authCard.addEventListener('click', (event) => {
+      const target = event.target.closest('[data-auth-action]');
+      if (!target) return;
+      const runner = target.getAttribute('data-runner');
+      if (!runner) return;
+      const action = target.getAttribute('data-auth-action');
+      if (action === 'login') startAuthLogin(runner);
+      else if (action === 'cancel') cancelAuthLogin(runner);
+    });
+  }
+
   function connect() {
     const source = new EventSource('/api/events');
     source.onopen = () => setConnection('online', 'connected');
@@ -4492,6 +4759,8 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
 
   [dom.drawerTaskToggle, dom.drawerNextToggle].forEach(bindTaskToggle);
   window.addEventListener('resize', syncAllTaskExpansion);
+  bindAuthCard();
+  renderAuthCard();
   showView('projects');
   loadEnvSettings();
   fetch('/api/state').then((res) => res.json()).then(applyState).catch((error) => {

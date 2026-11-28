@@ -989,6 +989,95 @@ app.get('/api/runners', (req, res) => {
   res.json({ runners: listRunners() });
 });
 
+// Client sign-in proxies (plan 03). The browser never sees
+// LOOPARR_EXECUTOR_TOKEN: these routes add it and relay to the host executor.
+// When the bridge is not configured we answer 503 so the home card hides
+// instead of breaking the page (local dev without the executor).
+const AUTH_CLIENTS = {
+  kilo: { name: 'Kilo CLI', detail: 'Kilo Gateway', method: 'Kilo Gateway (Device Authorization)' }
+};
+
+function authExecutorConfig() {
+  const executorUrl = (process.env.LOOPARR_EXECUTOR_URL || 'http://172.17.0.1:4187').replace(/\/$/, '');
+  const token = process.env.LOOPARR_EXECUTOR_TOKEN || '';
+  return { executorUrl, token };
+}
+
+function authClientKnown(runner) {
+  return Object.prototype.hasOwnProperty.call(AUTH_CLIENTS, runner);
+}
+
+async function authExecutorFetch(route, { method = 'GET', body } = {}) {
+  const { executorUrl, token } = authExecutorConfig();
+  if (!token) {
+    return { ok: false, status: 503, error: 'Host executor is not configured (LOOPARR_EXECUTOR_TOKEN missing)' };
+  }
+  try {
+    const upstream = await fetch(`${executorUrl}${route}`, {
+      method,
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal: AbortSignal.timeout(method === 'GET' ? 15_000 : 20_000)
+    });
+    const relayBody = await upstream.json().catch(() => null);
+    return { ok: true, status: upstream.status, body: relayBody };
+  } catch (error) {
+    return { ok: false, status: 502, error: `Host executor unreachable: ${error.message}` };
+  }
+}
+
+app.get('/api/auth/clients', (req, res) => {
+  const state = engine.getState();
+  const blocked = Array.isArray(state.authFailures) ? state.authFailures : [];
+  const { token } = authExecutorConfig();
+  const clients = blocked.map((failure) => {
+    const meta = AUTH_CLIENTS[failure.runnerId] || { name: failure.runnerLabel || failure.runnerId, detail: '' };
+    return {
+      runnerId: failure.runnerId,
+      name: meta.name,
+      detail: meta.detail,
+      method: meta.method || '',
+      at: failure.at,
+      message: failure.message,
+      hint: failure.hint
+    };
+  });
+  return res.json({ ok: true, available: Boolean(token), clients });
+});
+
+app.post('/api/auth/:runner/login', async (req, res) => {
+  const runner = String(req.params.runner || '').toLowerCase();
+  if (!authClientKnown(runner)) return fail(res, 404, 'Unknown auth client');
+  const relay = await authExecutorFetch(`/auth/${encodeURIComponent(runner)}/login`, { method: 'POST', body: {} });
+  if (!relay.ok) return fail(res, relay.status, relay.error);
+  if (relay.status >= 400 || !relay.body) {
+    return fail(res, relay.status || 502, (relay.body && relay.body.error) || 'Host executor rejected the sign-in request');
+  }
+  return res.status(relay.status || 200).json(relay.body);
+});
+
+app.get('/api/auth/:runner/status', async (req, res) => {
+  const runner = String(req.params.runner || '').toLowerCase();
+  if (!authClientKnown(runner)) return fail(res, 404, 'Unknown auth client');
+  const relay = await authExecutorFetch(`/auth/${encodeURIComponent(runner)}/status`);
+  if (!relay.ok) return fail(res, relay.status, relay.error);
+  if (relay.status >= 400 || !relay.body) {
+    return fail(res, relay.status || 502, (relay.body && relay.body.error) || 'Host executor rejected the status request');
+  }
+  return res.status(200).json(relay.body);
+});
+
+app.post('/api/auth/:runner/cancel', async (req, res) => {
+  const runner = String(req.params.runner || '').toLowerCase();
+  if (!authClientKnown(runner)) return fail(res, 404, 'Unknown auth client');
+  const relay = await authExecutorFetch(`/auth/${encodeURIComponent(runner)}/cancel`, { method: 'POST', body: {} });
+  if (!relay.ok) return fail(res, relay.status, relay.error);
+  if (relay.status >= 400 || !relay.body) {
+    return fail(res, relay.status || 502, (relay.body && relay.body.error) || 'Host executor rejected the cancel request');
+  }
+  return res.status(200).json(relay.body);
+});
+
 app.get('/api/env-settings', (req, res) => {
   res.set('Cache-Control', 'no-store');
   return res.json({ ok: true, entries: envSettings.list() });
