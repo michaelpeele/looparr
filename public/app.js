@@ -1603,7 +1603,7 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
         + `${item.wait > 0 ? `<span class="runner-model-wait">${item.wait}s</span>` : ''}`
         + '</li>').join('')
       : '<li class="runner-status-empty">None</li>');
-    dom.hostRunnerStatus.innerHTML = `
+    const html = `
       <section class="runner-status-group">
         <h3 class="runner-status-title">Active</h3>
         <ul class="runner-status-list">${rows(active)}</ul>
@@ -1612,6 +1612,12 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
         <h3 class="runner-status-title">Rate limited</h3>
         <ul class="runner-status-list">${rows(limited, 'limited ')}</ul>
       </section>`;
+    // The 1s countdown tick re-renders this from the last state snapshot, so a
+    // model leaves Rate limited on its own when its cooldown expires without a
+    // page reload. Skip the DOM write while the markup is unchanged.
+    if (dom.hostRunnerStatus.dataset.markup === html) return;
+    dom.hostRunnerStatus.dataset.markup = html;
+    dom.hostRunnerStatus.innerHTML = html;
   }
 
   function displayModelList(value, emptyLabel = 'OpenCode default') {
@@ -2028,6 +2034,9 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
 
   function updateAllCountdowns() {
     [...dom.projectGrid.children].forEach((card) => updateCountdown(card, card._project));
+    // Keep the runner card's rate-limit seconds burning down between state
+    // pushes, then reclassify once a cooldown actually expires.
+    if (app.state) renderRunnerStatus(app.state);
     if (app.drawerId) {
       const project = projectById(app.drawerId);
       if (project) {

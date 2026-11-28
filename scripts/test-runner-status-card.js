@@ -31,6 +31,8 @@ assert.ok(APP.includes('<h3 class="runner-status-title">Active</h3>'), 'Active s
 assert.ok(APP.includes('<h3 class="runner-status-title">Rate limited</h3>'), 'Rate limited section label');
 assert.ok(APP.includes('state.rotation && state.rotation.cooling'), 'model state comes from rotation cooldowns');
 assert.ok(APP.includes('rate limited`'), 'a fully limited runner is labelled rate limited');
+assert.ok(APP.includes('if (app.state) renderRunnerStatus(app.state);'), 'the 1s tick refreshes the sections');
+assert.ok(APP.includes("dom.hostRunnerStatus.dataset.markup === html"), 'unchanged markup skips the DOM write');
 assert.ok(APP.includes("' runner-limited'"), 'runner-level limit gets its own class');
 assert.ok(CSS.includes('.runner-model.runner-limited'), 'styles.css emphasises a rate-limited runner');
 
