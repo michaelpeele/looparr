@@ -63,7 +63,12 @@ function checkStaticAssets() {
   assertExcludes(html, 'id="host-setup"', 'index.html no longer has the Setup host item');
   assertExcludes(html, '>Setup</span>', 'index.html no longer has a Setup host label');
   assertIncludes(html, 'id="host-runner"', 'index.html keeps the Configured runner item');
-  assertIncludes(html, '>Access</span>', 'index.html keeps the Access item');
+  assertExcludes(html, '>Access</span>', 'index.html no longer has the Access item');
+  assertExcludes(html, 'Tailnet Serve', 'index.html no longer has the Tailnet Serve detail');
+  assert.ok(
+    /\.host-strip\s*\{[^}]*grid-template-columns:\s*1fr/s.test(css),
+    'styles.css lets the configured runner card span the page'
+  );
 
   assertIncludes(app, "settingsBadge: $('settings-badge')", 'app.js binds the settings badge');
   assertExcludes(app, "$('host-setup')", 'app.js no longer binds host-setup');
