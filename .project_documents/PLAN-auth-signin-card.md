@@ -1,6 +1,6 @@
 # Client sign-in card on the home page
 
-Status: draft — investigation complete, implementation not started.
+Status: steps 01–03 implemented and promoted (2026-11-27). Plan 04 verification on 2026-11-28: steps 10–12 passed; step 13 pending — no human-approved Kilo Gateway round or successful Kilo step completed.
 Evidence gathered 2026-11-27. Companion spec: [AUTH_FAILURE_UI.md](../AUTH_FAILURE_UI.md).
 Executable build steps: [PLAN-auth-signin-card-steps.md](PLAN-auth-signin-card-steps.md).
 

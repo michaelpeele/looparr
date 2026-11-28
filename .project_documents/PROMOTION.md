@@ -291,6 +291,22 @@ onto `master` by hand. Both paths require the verified sequence above.
   resumes a paused project (paused state is not persisted), so looparr was
   re-paused by hand afterwards.
 
+- 2026-11-28 — Plan 04 live sign-in verification promotion gate. No source
+  changes. Dry run reported `promotion-evidence: ok:true, failures:[]`,
+  `Evidence check: current source is already deployed and healthy.`, and
+  `Dry run: Docker was not called.`. Real `npm run restart:looparr` exited 0
+  with `Skipping rebuild: current source already deployed (use --force to
+  rebuild).`; no rebuild was forced. Container `355c73a8f25a` was running and
+  healthy with restarts 0 on image
+  `sha256:72609a70fbb685f557ac0c30000bb591cdae36012d9844f44f974b6bf17e2399`.
+  Local-to-container hashes matched for 108 tracked files in `public`, `src`,
+  and `scripts`. Served `/`, `/styles.css`, `/app.js`, and `/favicon.svg` from
+  `http://127.0.0.1:4188/` matched local `public/` by SHA-256, and served
+  `/app.js` contained 3 auth-card markers. `/api/state` returned `projects=5`,
+  settings present, `authFailures=0`; `/api/auth/clients` returned HTTP 200 with
+  `{ok:true, available:true, clients:[]}`. `npm run watchdog:check` reported
+  steady. Live human-approved round remained separate from promotion.
+
 ## Idempotent, observable promotion (promotion-status.json)
 
 `npm run restart:looparr` is idempotent. Every run writes
