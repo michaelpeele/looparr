@@ -310,5 +310,5 @@ Relevant files: `src/auth-failures.js` (new), `src/engine.js`, `src/failure.js`,
 
 ## Release publish
 
-- [ ] Add a push remote for Looparr and push the release commit to origin.
+- [x] Add a push remote for Looparr and push the release commit to origin.
 - [ ] Create a GitHub release tagged `v1.1`, incrementing from `v1.0` by `.1`, and build/publish the multi-arch Docker image using the Curatarr pattern with the same `v1.1` tag plus `latest` on GHCR. Verify the GitHub release tag, the GHCR package tag, the Docker package link, and the Docker button.
