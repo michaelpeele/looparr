@@ -17,7 +17,10 @@ const falsePositives = [
   'We track tokens per minute usage in the dashboard',
   'The plan mentions tokens per minute and 429 handling as prose',
   '"status":400',
-  '{"status":200,"message":"ok"}'
+  '{"status":200,"message":"ok"}',
+  'the team reviewed the budget for next quarter',
+  'max price is configured in the account settings',
+  'a spending limit exists on the card'
 ];
 
 const truePositives = [
@@ -38,7 +41,13 @@ const truePositives = [
   '[429]: Tokens per minute limit exceeded',
   '"status":429',
   "'code': 429",
-  '{"status":429,"message":"Too Many Requests"}'
+  '{"status":429,"message":"Too Many Requests"}',
+  'Error: Vibe budget exhausted.',
+  'budget exceeded',
+  'max price exceeded',
+  'spending limit reached',
+  'error: Free usage limit reached. Connect a provider or subscribe to OpenCode Go to keep going, or switch models.',
+  '{"type":"error","error":{"type":"provider.free-limit","message":"Free usage limit reached"}}'
 ];
 
 for (const text of falsePositives) {

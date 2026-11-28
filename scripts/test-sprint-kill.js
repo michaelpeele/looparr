@@ -173,4 +173,60 @@ run('non-transient failures still park (no requeue)', () => {
   assert.equal(rt.sprintPending.length, 0, 'ordinary failure is not requeued');
 });
 
+const rateRunner = {
+  id: 'opencode',
+  label: 'OpenCode',
+  isRateLimit: (text) => /usage limit reached|budget exhausted/i.test(String(text || ''))
+};
+
+run('provider limit requeues the sprint task instead of parking', () => {
+  const { project, rt } = makeRuntime();
+  const entry = makeEntry('task R');
+  entry.output = 'error: Free usage limit reached. Connect a provider or subscribe to OpenCode Go to keep going, or switch models.';
+  const before = Date.now();
+  const handled = engine.sprintRateLimit(project, rt, entry, rateRunner);
+  assert.equal(handled, true, 'rate-limit output is handled here');
+  assert.equal(rt.status, 'rateLimited', 'flagged rateLimited, not error');
+  assert.equal(rt.active, true, 'stays active for the retry');
+  assert.equal(rt.error, '', 'no operator error recorded');
+  assert.ok(rt.resumeAt >= before, 'backoff deadline set');
+  assert.equal(rt.sprintRateLimitRetries, 1, 'requeue counter increments');
+  assert.equal(rt.sprintPending.length, 1, 'task requeued for a fresh branch');
+  assert.equal(rt.sprintPending[0].taskText, 'task R', 'requeued the limited task');
+  assert.equal(entry.branch, 'looparr/task/s1/slug', 'branch preserved for review');
+});
+
+run('repeated provider limits park at the bound with rate-limit wording', () => {
+  const { project, rt } = makeRuntime();
+  for (let i = 0; i < engine.SPRINT_RATE_LIMIT_RETRY_LIMIT; i += 1) {
+    const entry = makeEntry(`task ${i}`);
+    entry.output = 'Error: Vibe budget exhausted.';
+    assert.equal(engine.sprintRateLimit(project, rt, entry, rateRunner), true, `attempt ${i + 1} handled`);
+    assert.equal(rt.status, 'rateLimited', `attempt ${i + 1} stays rateLimited`);
+  }
+  const finalEntry = makeEntry('task final');
+  finalEntry.output = 'Error: Vibe budget exhausted.';
+  assert.equal(engine.sprintRateLimit(project, rt, finalEntry, rateRunner), true);
+  assert.equal(rt.status, 'error', 'parks after the bound');
+  assert.equal(rt.active, false, 'inactive after the bound');
+  assert.match(rt.error, /rate limit/i, 'parked message names the provider limit');
+});
+
+run('terminal auth text in a rate-limited sprint parks instead', () => {
+  const { project, rt } = makeRuntime();
+  const entry = makeEntry('task auth');
+  entry.output = 'SessionError: [429] rate limit exceeded but 401 invalid api key';
+  assert.equal(engine.sprintRateLimit(project, rt, entry, rateRunner), false, 'auth wins; generic path parks');
+  assert.equal(rt.status, 'idle', 'no rate-limit requeue for terminal auth');
+  assert.equal(rt.sprintPending.length, 0, 'terminal auth is not requeued');
+});
+
+run('non-provider sprint output is not a rate limit', () => {
+  const { project, rt } = makeRuntime();
+  const entry = makeEntry('task crash');
+  entry.output = 'TypeError: cannot read properties of undefined (reading id)';
+  assert.equal(engine.sprintRateLimit(project, rt, entry, rateRunner), false, 'ordinary crash stays generic');
+  assert.equal(rt.status, 'idle', 'no rate-limit state for a crash');
+});
+
 console.log(`\n${pass} test(s) passed`);

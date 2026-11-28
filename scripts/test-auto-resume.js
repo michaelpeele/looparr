@@ -748,6 +748,23 @@ async function testHandoffRecovery(engine) {
   );
   assertEqual(waitRt.status, 'error', 'waiting project stays error');
 
+  // A provider limit (budget/usage cap) must never be resumed by the sweep:
+  // re-running the phase every interval re-spends the exhausted budget.
+  const limitProject = makeRecoveryProject('provider-limit', 'Task iota');
+  writeHandoff(limitProject, 'Implement task iota now.', 'Task iota');
+  const limitRt = baseRt({ currentTask: 'Task iota', error: 'Error: Vibe budget exhausted.' });
+  const limited = await engine.runHandoffRecoverySweep({
+    force: true,
+    projects: [limitProject],
+    runtimeFor: () => limitRt,
+    listActiveRuns: async () => []
+  });
+  assert.deepEqual(limited, [], 'provider limit recovers nothing');
+  assertEqual(limitRt.status, 'error', 'provider limit keeps error status');
+  assert.equal(fs.existsSync(handoffPath(limitProject)), true, 'handoff kept for the operator');
+  assert.ok(auditEvents(limitProject).includes('handoff-recovery-provider-limit'), 'provider-limit audit');
+  assert.ok(!auditEvents(limitProject).includes('handoff-recovered'), 'no recovery audit for a provider limit');
+
   // Global gate: off by default, so the sweep is inert without force.
   const gatedProject = makeRecoveryProject('gated', 'Task theta');
   writeHandoff(gatedProject, 'Implement task theta now.', 'Task theta');

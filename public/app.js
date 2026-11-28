@@ -1840,8 +1840,8 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
       }
     }
 
-    const buttons = card.querySelectorAll('.card-controls button');
-    const byAction = (action) => buttons.querySelector(`[data-action="${action}"]`);
+    const buttons = [...card.querySelectorAll('.card-controls button')];
+    const byAction = (action) => buttons.find((button) => button.dataset.action === action);
     const startButton = byAction('start');
     const pauseButton = byAction('pause');
     const stopButton = byAction('stop');
@@ -1858,17 +1858,35 @@ const PLAN_FILE_PREFIXES = 'PLAN|plan|PROMPT|prompt|ANALYSIS|analysis|RESEARCH|r
     updateCountdown(card, project);
   }
 
+  // One project must never blank the home grid for the others: a card-level
+  // throw used to abort the whole render, so only the cards before the faulty
+  // project appeared. Report once per project/error instead of on every state
+  // push, then keep rendering the rest and still drop stale cards.
+  const cardErrorSeen = new Set();
+
+  function reportCardError(projectId, error) {
+    const message = (error && error.message) || String(error || 'unknown error');
+    const key = `${projectId}:${message}`;
+    if (cardErrorSeen.has(key)) return;
+    cardErrorSeen.add(key);
+    console.error(`[looparr] card ${projectId} failed to render: ${message}`);
+  }
+
   function renderCards(projects) {
     const existing = new Map([...dom.projectGrid.children].map((card) => [card.dataset.id, card]));
     projects.forEach((project) => {
-      let card = existing.get(project.id);
-      if (!card) {
-        card = createCard(project);
-        dom.projectGrid.appendChild(card);
-      } else {
-        existing.delete(project.id);
+      try {
+        let card = existing.get(project.id);
+        if (!card) {
+          card = createCard(project);
+          dom.projectGrid.appendChild(card);
+        } else {
+          existing.delete(project.id);
+        }
+        updateCard(card, project);
+      } catch (error) {
+        reportCardError(project.id, error);
       }
-      updateCard(card, project);
     });
     existing.forEach((card) => card.remove());
 

@@ -240,6 +240,23 @@ onto `master` by hand. Both paths require the verified sequence above.
   proxy, so container-local fetch was used for served assets. Nonfatal
   `Active-run postcheck failed: fetch failed`, matching documented precedent.
   `public/favicon.svg` is unchanged from HEAD after restoring the original art.
+- 2026-11-27 — Sprint provider-limit handling, handoff-loop guard, and the
+  home-grid card render fix. `npm test` green and `git diff --check` clean;
+  dry-run detected 10 stale container files + 1 missing test and made no Docker
+  call. `npm run restart:looparr` promoted through `systemd-run --user
+  --unit=looparr-promote` (build invocation `f10b9a6f982c4c41ac6dfa3743a02bab`,
+  18.405s; up invocation `0c708d91237c4ce6bf95a9ebc724824b`, 6.574s), exit 0.
+  Image `sha256:ee8ddb4382c0528b86501cbaea28ce522cc73a4a119d3953f6907df3ad34ba04`,
+  container `896eb6e4535e` healthy, restarts 0. All 108 container
+  `src`/`public`/`scripts`/`package.json` hashes matched local (`mismatch=0`,
+  `local-not-in-container=0`); served `/`, `/styles.css`, `/app.js`,
+  `/favicon.svg` matched local `public/`; `/api/state` returned `projects=5
+  settings=31`; `npm run watchdog:check` steady. Live headless-browser check of
+  `http://127.0.0.1:4188/`: all 5 project cards rendered, zero console errors
+  (previously only the first card and a repeating
+  `buttons.querySelector is not a function`). Nonfatal: active-run postcheck
+  fetch failed, matching documented precedent.
+
 ## Idempotent, observable promotion (promotion-status.json)
 
 `npm run restart:looparr` is idempotent. Every run writes

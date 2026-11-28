@@ -188,6 +188,9 @@ function ensureRuntime(project) {
       // only becomes implement-ready after its own seed+analyze completed.
       sprintRuns: [],
       sprintPending: [],
+      // Bounded provider-limit requeue budget for sprint implement runs.
+      // Reset per finished task and by a manual Retry/Start.
+      sprintRateLimitRetries: 0,
       sprintValidation: null
     };
     runtime.set(project.id, rt);
@@ -1164,6 +1167,20 @@ function applyHandoffRecovery(project, rt) {
   return true;
 }
 
+// Provider usage caps (429, free usage limit, budget/price cap) use the shared
+// runner pattern, so every CLI runner is covered by one definition.
+function providerLimitText(text) {
+  const value = String(text || '').trim();
+  if (!value) return false;
+  const runner = getRunner('opencode');
+  if (!runner || typeof runner.isRateLimit !== 'function') return false;
+  try {
+    return runner.isRateLimit(value) === true;
+  } catch {
+    return false;
+  }
+}
+
 // A run already active for this project means the user resumed the session
 // outside Looparr; the sweep must never fight a continuing session.
 function activeOpenCodeRunsFor(project) {
@@ -1197,6 +1214,13 @@ async function runHandoffRecoverySweep(options = {}) {
       rt.lastRecoveryAuditAt = at;
       autoResume.appendAudit(project, event, { phase: rt.nextPhase, task: rt.currentTask || '' });
     };
+    // A provider limit is not a stuck handoff: resuming the same phase every
+    // interval re-spends the exhausted budget (observed as a 15s analyze loop).
+    // The project resumes from the rate-limit backoff or a manual Retry instead.
+    if (providerLimitText(rt.error) || providerLimitText(rt.stepOutput)) {
+      auditOnce('handoff-recovery-provider-limit');
+      continue;
+    }
     let runs = [];
     try { runs = await listRuns(project); } catch { runs = []; }
     if (Array.isArray(runs) && runs.length) {
@@ -2045,6 +2069,8 @@ function start(id, options = {}) {
     rt.resumeRetryCount = 0;
     // A manual Retry/Start also re-arms the transient-kill auto-requeue budget.
     rt.transientKillRetryCount = 0;
+    // ...and the sprint provider-limit requeue budget.
+    rt.sprintRateLimitRetries = 0;
     rt.resumeRetryLogDigest = '';
     clearResumeRetryLogDigest(project);
     authFailures.clear();
@@ -3004,6 +3030,69 @@ function sprintRunFailed(project, rt, entry, message, tail, failure) {
   emitState();
 }
 
+// A sprint child that dies on a provider limit (429, free usage limit, budget
+// exhausted) is not an operator error: the same signal that makes a single step
+// back off must requeue the sprint task instead of parking the project. Bounded
+// per task so a lasting outage cannot spin; terminal auth/billing text wins and
+// still parks through the normal path. Returns true when it handled the exit.
+const SPRINT_RATE_LIMIT_RETRY_LIMIT = 3;
+
+function sprintRateLimit(project, rt, entry, runner) {
+  if (!runner || typeof runner.isRateLimit !== 'function') return false;
+  const output = String(entry.output || '');
+  if (!output.trim()) return false;
+  if (authFailures.detect(output)) return false;
+  if (!runner.isRateLimit(output)) return false;
+  const attempts = Number.isInteger(rt.sprintRateLimitRetries) ? rt.sprintRateLimitRetries : 0;
+  entry.status = 'failed';
+  entry.endedAt = Date.now();
+  if (entry.exitCode == null) entry.exitCode = 1;
+  const pauseMs = rateLimitPauseMs();
+  if (attempts < SPRINT_RATE_LIMIT_RETRY_LIMIT && entry.taskIndex != null) {
+    rt.sprintRateLimitRetries = attempts + 1;
+    rt.error = '';
+    rt.status = 'rateLimited';
+    rt.active = true;
+    rt.resumeAt = Date.now() + pauseMs;
+    rt.nextPhase = 'implement';
+    releaseWorkerSlots(rt);
+    // Keep the limited branch/worktree for review; requeue a fresh pending entry
+    // so the retry cuts a new -N suffixed branch via the normal start path.
+    rt.sprintPending.push({
+      runKey: entry.runKey,
+      taskIndex: entry.taskIndex,
+      taskText: entry.taskText,
+      sprint: entry.sprint,
+      mergePrevious: entry.mergePrevious,
+      deployMain: entry.deployMain,
+      prompt: entry.prompt
+    });
+    if (!rt.currentTask) rt.currentTask = entry.taskText || '';
+    appendLog(
+      project.id,
+      'system',
+      `Provider limit on ${runner.label || runner.id} in sprint implement; task requeued `
+      + `(attempt ${attempts + 1}/${SPRINT_RATE_LIMIT_RETRY_LIMIT}) — retrying in ${Math.round(pauseMs / 1000)}s. `
+      + `Branch ${entry.branch} and worktree kept for review.`
+    );
+    gitStateCache.delete(project.id);
+    emitState();
+    writeCheckpointIntent(project, rt);
+    rateLimitRetry(project, rt, pauseMs);
+    return true;
+  }
+  sprintRunFailed(
+    project,
+    rt,
+    entry,
+    `Provider rate limit reached in sprint implement after ${SPRINT_RATE_LIMIT_RETRY_LIMIT} requeues; `
+    + 'use the project Retry/Start control once the provider resets.',
+    entry.output,
+    { killed: false, transient: false, exitCode: entry.exitCode }
+  );
+  return true;
+}
+
 // Classify sprint child exits. Exit 137 is 128+SIGKILL, commonly an OOM or
 // cgroup kill of the agent CLI. This is separate from model-rotation failure
 // classification; sprint failures must keep the branch and worktree for review.
@@ -3050,6 +3139,8 @@ function finishSprintRun(project, rt, entry, flags) {
     }
   }
   rt.sprintRuns = rt.sprintRuns.filter((run) => run !== entry);
+  // A finished task starts the next one with a fresh provider-limit budget.
+  rt.sprintRateLimitRetries = 0;
   gitStateCache.delete(project.id);
   appendLog(project.id, 'system', `✓ Sprint task done: ${entry.taskText}`);
   emitState();
@@ -3171,6 +3262,9 @@ function startSprintRun(project, rt, entry, options = {}) {
     const failure = sprintExitFailure(code, signal);
     entry.exitCode = failure.exitCode;
     if (code === 0) finishSprintRun(project, rt, entry);
+    // Provider limits first (a 429-class exit must requeue, not park), then the
+    // existing SIGKILL/OOM transient handling, then the generic park.
+    else if (sprintRateLimit(project, rt, entry, runner)) { /* handled */ }
     else sprintRunFailed(project, rt, entry, failure.message, entry.output, failure);
   });
   emitState();
@@ -4465,5 +4559,8 @@ module.exports = {
   startedTaskIndexes,
   mergeSprintBranches,
   sprintExitFailure,
+  sprintRateLimit,
+  SPRINT_RATE_LIMIT_RETRY_LIMIT,
+  providerLimitText,
   sprintRunFailed
 };

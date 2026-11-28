@@ -217,7 +217,7 @@ function buildCommand({ prompt, cwd, url = SERVER_URL, files = [], model = '', r
   };
 }
 
-const RATE_LIMIT_PATTERN = /\b(?:HTTP(?:\/[\d.]+)?|status|code)["']?[\s:=]+429\b|\b429[\s\]:.+-]+(?:too\s+many\s+requests|rate[\s-]?limit|quota|usage\s+limit|tokens\s+per\s+minute|throttl)|\b(?:too\s+many\s+requests|quota\s+(?:exceeded|reached)|usage\s+limit\s+(?:exceeded|reached)|rate[\s-]?limit\s+(?:exceeded|reached|error)|tokens\s+per\s+minute\s+limit\s+(?:exceeded|reached)|throttl(?:e|ed|ing)\s+(?:error|limit|request))\b/i;
+const RATE_LIMIT_PATTERN = /\b(?:HTTP(?:\/[\d.]+)?|status|code)["']?[\s:=]+429\b|\b429[\s\]:.+-]+(?:too\s+many\s+requests|rate[\s-]?limit|quota|usage\s+limit|tokens\s+per\s+minute|throttl)|\b(?:too\s+many\s+requests|quota\s+(?:exceeded|reached)|usage\s+limit\s+(?:exceeded|reached)|rate[\s-]?limit\s+(?:exceeded|reached|error)|tokens\s+per\s+minute\s+limit\s+(?:exceeded|reached)|throttl(?:e|ed|ing)\s+(?:error|limit|request)|budget\s+(?:exhausted|exceeded)|max[\s-]?price\s+(?:exceeded|reached)|spend(?:ing)?\s+limit\s+(?:exceeded|reached))\b/i;
 
 // Git metadata is not runner output: an agent that commits (or diffs) inside a
 // step prints commit messages and hunks to stderr, and those can quote 429

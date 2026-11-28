@@ -6,7 +6,7 @@
 const TERMINAL_RE = /\b(?:401|403)\b|unauthorized|forbidden|invalid[ _-]?api[ _-]?key|incorrect api key|api key (?:is )?(?:invalid|missing)|payment required|billing|subscription|out of credits|insufficient (?:credits|funds|balance)|plan (?:limit|required|upgrade)|higher_plan/i;
 
 // Provider-shaped failures that another candidate may avoid.
-const RETRYABLE_RE = /\b(?:429|500|502|503|504)\b|too many requests|rate[ _-]?limit|quota (?:exceeded|reached)|usage limit|throttl|tokens per minute|timed? out|timeout|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|model (?:not found|does not exist|unsupported|unavailable)|unsupported (?:field|property|parameter|model)|reasoning_details|provider error|overloaded|internal server error|service temporarily unavailable|all targets were skipped by pre-dispatch filters/i;
+const RETRYABLE_RE = /\b(?:429|500|502|503|504)\b|too many requests|rate[ _-]?limit|quota (?:exceeded|reached)|usage limit|throttl|tokens per minute|budget (?:exhausted|exceeded)|max[\s-]?price (?:exceeded|reached)|spend(?:ing)? limit (?:exceeded|reached)|timed? out|timeout|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|model (?:not found|does not exist|unsupported|unavailable)|unsupported (?:field|property|parameter|model)|reasoning_details|provider error|overloaded|internal server error|service temporarily unavailable|all targets were skipped by pre-dispatch filters/i;
 
 // Transient process kills: SIGKILL / exit 137 (128+9), OOM, and resource/cgroup
 // kills of the agent CLI. Phrasing matches what engine.sprintExitFailure emits.
