@@ -257,6 +257,21 @@ onto `master` by hand. Both paths require the verified sequence above.
   `buttons.querySelector is not a function`). Nonfatal: active-run postcheck
   fetch failed, matching documented precedent.
 
+- 2026-11-27 — Client sign-in card and `/api/auth/*` proxies (plan 03),
+  committed `af62f98`. `npm test` green, `git diff --check` clean. Dry run and
+  the real `npm run restart:looparr` both reported
+  `promotion-evidence: ok:true, failures:[]`; the run exited 0 with
+  `result: "skipped"`, `skipReason: "skipped-already-deployed"`, because the
+  running image already served this source (the batch had been live in the
+  working tree since before the previous promotion). Image
+  `sha256:ee8ddb4382c0528b86501cbaea28ce522cc73a4a119d3953f6907df3ad34ba04`,
+  container `896eb6e4535e`, healthy, restarts 0. Served `/`, `/styles.css`,
+  `/app.js`, `/favicon.svg` matched local `public/`; `/api/auth/clients`
+  returned `{ok:true, available:true, clients:[]}`; `/api/state` returned
+  `projects=5` with `authFailures: []`; `npm run watchdog:check` steady. No
+  rebuild was forced; plan 04 (live human-approved sign-in round) is still
+  outstanding.
+
 ## Idempotent, observable promotion (promotion-status.json)
 
 `npm run restart:looparr` is idempotent. Every run writes
